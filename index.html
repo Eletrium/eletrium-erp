@@ -29,13 +29,30 @@
     .col-count { background: #ffffff14; border-radius: 999px; padding: 0 8px; font-size: .75rem; color: #8b949e; }
     .col-sum { color: #3fb950; font-size: .8rem; margin-top: 3px; }
     .col-body { padding: 0 10px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; cursor: pointer; }
+    .card:hover { border-color: #58a6ff; }
     .card .num { font-weight: 600; font-size: .92rem; }
     .card .cli { color: #8b949e; font-size: .82rem; margin: 3px 0; }
     .card .val { color: #3fb950; font-weight: 600; font-size: .85rem; margin-top: 5px; }
     .empty { color: #484f58; font-size: .8rem; text-align: center; padding: 14px 0; }
     pre { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 320px; font-size: .78rem; margin: 0 20px 24px; }
     .err { color: #f85149; }
+
+    /* --- Drawer de detalhe --- */
+    .overlay { position: fixed; inset: 0; background: #000a; opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 10; }
+    .overlay.open { opacity: 1; pointer-events: auto; }
+    .drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 420px; max-width: 92vw; background: #0d1117; border-left: 1px solid #30363d; transform: translateX(100%); transition: transform .18s ease; z-index: 11; display: flex; flex-direction: column; }
+    .drawer.open { transform: translateX(0); }
+    .drawer-head { padding: 16px 18px; border-bottom: 1px solid #30363d; display: flex; align-items: flex-start; gap: 10px; }
+    .drawer-head .t { flex: 1; }
+    .drawer-head .num { font-size: 1.1rem; font-weight: 600; }
+    .drawer-head .etapa { display: inline-block; margin-top: 6px; border-radius: 6px; padding: 2px 9px; font-size: .78rem; color: #0d1117; font-weight: 600; }
+    .drawer-head .x { background: transparent; border: 1px solid #30363d; color: #8b949e; padding: 4px 10px; }
+    .drawer-body { padding: 6px 18px 24px; overflow-y: auto; }
+    .drawer-body dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; margin: 14px 0; }
+    .drawer-body dt { color: #8b949e; font-size: .82rem; }
+    .drawer-body dd { margin: 0; font-size: .88rem; word-break: break-word; }
+    .drawer-body .raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; margin-top: 10px; display: inline-block; }
   </style>
 </head>
 <body>
@@ -52,6 +69,9 @@
   <div class="board" id="board"></div>
   <pre id="json" hidden></pre>
 
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
   <script>
     // ===================== CONFIG =====================
     const CONFIG = {
@@ -63,12 +83,14 @@
     };
     const GRAPH = "https://graph.microsoft.com/v1.0";
     const BRL = (n) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    const fmtDate = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d) ? s : d.toLocaleDateString("pt-BR"); };
     // ==================================================
 
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
     let account = null, msalApp = null, lastPayload = null;
     window.currentUser = null; // identidade delegada real (equivalente ao varUsuario, sempre preenchido)
+    let propMap = {}, nomeClienteMap = {};
 
     async function init() {
       msalApp = new msal.PublicClientApplication({
@@ -105,7 +127,7 @@
       await msalApp.logoutPopup({ account }); account = null; window.currentUser = null;
       setStatus("Não autenticado."); $("user").textContent = ""; $("btnLogin").disabled = false;
       ["btnLoad","btnJson","btnLogout"].forEach(id => $(id).disabled = true);
-      $("board").innerHTML = ""; $("etapaWarn").className = "warn hidden";
+      $("board").innerHTML = ""; $("etapaWarn").className = "warn hidden"; closeDrawer();
     };
 
     $("btnLoad").onclick = async () => {
@@ -118,16 +140,17 @@
         const etapa = (cols.value || []).find(c => c.name === "Etapa_Pipeline");
         const choices = etapa && etapa.choice ? etapa.choice.choices : [];
 
-        // TRAVA: valida ETAPA_CONFIG contra os choices reais e avisa na tela se divergir.
         renderEtapaWarn(window.validateEtapasConfig(choices));
 
         const props = await gget("/sites/" + site.id + "/lists/Propostas/items?expand=fields&$top=500", t);
         const clientes = await gget("/sites/" + site.id + "/lists/Clientes/items?expand=fields($select=Title)&$top=500", t);
-        const nomeCliente = {};
-        (clientes.value || []).forEach(c => { nomeCliente[c.id] = c.fields.Title; });
+        nomeClienteMap = {};
+        (clientes.value || []).forEach(c => { nomeClienteMap[c.id] = c.fields.Title; });
+        propMap = {};
+        (props.value || []).forEach(p => { propMap[p.id] = p; });
 
-        lastPayload = { site: site.displayName, choices, propostas: props.value, clientesMap: nomeCliente };
-        renderBoard(choices, props.value, nomeCliente);
+        lastPayload = { site: site.displayName, choices, propostas: props.value, clientesMap: nomeClienteMap };
+        renderBoard(choices, props.value);
         setStatus("OK — " + (props.value || []).length + " proposta(s) em " + choices.length + " etapa(s).");
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
@@ -143,32 +166,31 @@
       el.innerHTML = html; el.className = "warn";
     }
 
-    function cardHtml(p, nomeCliente) {
+    const cliNome = (f) => nomeClienteMap[f.ClienteLookupId] || ("cliente #" + (f.ClienteLookupId ?? "?"));
+
+    function cardHtml(p) {
       const f = p.fields || {};
-      const cli = nomeCliente[f.ClienteLookupId] || ("cliente #" + (f.ClienteLookupId ?? "?"));
-      return `<div class="card">
+      return `<div class="card" data-id="${p.id}">
         <div class="num">${f.Title ?? "(sem número)"}</div>
-        <div class="cli">${cli}</div>
+        <div class="cli">${cliNome(f)}</div>
         <div class="val">${BRL(f.ValorTotal)}</div>
       </div>`;
     }
 
-    // Agrupa as propostas por Etapa_Pipeline, na ORDEM dos choices do SharePoint.
-    // Cards sem etapa (ou com etapa fora dos choices) vão para uma coluna "(sem etapa)" — nada é escondido.
-    function renderBoard(choices, propostas, nomeCliente) {
+    // Agrupa por Etapa_Pipeline na ORDEM dos choices; cards sem etapa vão para "(sem etapa)" — nada some.
+    function renderBoard(choices, propostas) {
       const byEtapa = {}; choices.forEach(c => byEtapa[c] = []);
       const semEtapa = [];
       (propostas || []).forEach(p => {
         const e = p.fields && p.fields.Etapa_Pipeline;
         if (e && byEtapa[e]) byEtapa[e].push(p); else semEtapa.push(p);
       });
-
       const colunas = choices.map(c => ({ nome: c, cor: window.etapaCor(c), items: byEtapa[c] }));
       if (semEtapa.length) colunas.push({ nome: "(sem etapa)", cor: window.ETAPA_COR_FALLBACK, items: semEtapa });
 
       $("board").innerHTML = colunas.map(col => {
         const sum = col.items.reduce((s, p) => s + ((p.fields && p.fields.ValorTotal) || 0), 0);
-        const body = col.items.map(p => cardHtml(p, nomeCliente)).join("") || "<div class='empty'>—</div>";
+        const body = col.items.map(cardHtml).join("") || "<div class='empty'>—</div>";
         return `<div class="col">
           <div class="col-head" style="border-top-color:${col.cor}">
             <div class="col-title" style="color:${col.cor}">${col.nome} <span class="col-count">${col.items.length}</span></div>
@@ -177,6 +199,60 @@
           <div class="col-body">${body}</div>
         </div>`;
       }).join("");
+    }
+
+    // --- Detalhe (drawer) ---
+    $("board").addEventListener("click", (ev) => {
+      const card = ev.target.closest(".card"); if (!card) return;
+      const p = propMap[card.dataset.id]; if (p) openDrawer(p);
+    });
+    $("overlay").onclick = closeDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+    function row(label, value) { return value == null || value === "" ? "" : `<dt>${label}</dt><dd>${value}</dd>`; }
+
+    function openDrawer(p) {
+      const f = p.fields || {};
+      const cor = window.etapaCor(f.Etapa_Pipeline);
+      const campos = [
+        row("Cliente", cliNome(f)),
+        row("Status", f.Status),
+        row("Valor total", f.ValorTotal != null ? BRL(f.ValorTotal) : null),
+        row("Valor serviços", f.Valor_Servico != null ? BRL(f.Valor_Servico) : null),
+        row("Valor materiais", f.Valor_Materiais != null ? BRL(f.Valor_Materiais) : null),
+        row("Margem prevista", f.Margem_Prevista_Pct != null ? f.Margem_Prevista_Pct + "%" : null),
+        row("Descrição", f.Descricao),
+        row("Emissão", fmtDate(f.DataEmissao)),
+        row("Validade", fmtDate(f.DataValidade)),
+        row("Entrada na etapa", fmtDate(f.Data_Entrada_Etapa)),
+        row("Forma pgto", f.FormaPagamento),
+        row("Prazo execução", f.PrazoExecucao),
+        row("Probabilidade", f.Probabilidade_Fechamento != null ? f.Probabilidade_Fechamento + "%" : null),
+        row("Responsável", f.Responsavel_Principal),
+        row("Origem do lead", f.Origem_Lead),
+        row("Observações", f.Observacoes)
+      ].join("");
+      $("drawer").innerHTML = `
+        <div class="drawer-head">
+          <div class="t">
+            <div class="num">${f.Title ?? "(sem número)"}</div>
+            <span class="etapa" style="background:${cor}">${f.Etapa_Pipeline ?? "(sem etapa)"}</span>
+          </div>
+          <button class="x" id="drawerClose">Fechar ✕</button>
+        </div>
+        <div class="drawer-body">
+          <dl>${campos}</dl>
+          <span class="raw-toggle" id="rawToggle">ver campos crus (Graph)</span>
+          <pre id="rawFields" hidden style="margin:8px 0 0">${JSON.stringify(f, null, 2)}</pre>
+        </div>`;
+      $("drawerClose").onclick = closeDrawer;
+      $("rawToggle").onclick = () => { const r = $("rawFields"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden", "false");
+      $("overlay").classList.add("open");
+    }
+    function closeDrawer() {
+      $("drawer").classList.remove("open"); $("drawer").setAttribute("aria-hidden", "true");
+      $("overlay").classList.remove("open");
     }
 
     init().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
