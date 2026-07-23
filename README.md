@@ -44,11 +44,21 @@ Renderiza os choices como chips e cada proposta como um mini-card (Número, Clie
   Em Negociação · Aguardando Decisão · Ganho · Perdido. **Têm acento** — comparar exato.
 - **Volume:** 1 proposta hoje (nº `26.0307.001`, Cliente Teste CRM Ltda, R$ 15.000, etapa "Ganho").
 
-## Próximo passo
+## Kanban (feito)
 
-Desenhar a estrutura das colunas do Kanban a partir dos 8 choices acima (agrupar cards por
-`Etapa_Pipeline`). Com 1 registro só, o layout nasce com 7 colunas vazias — considerar dados de
-teste para validar o visual.
+`renderBoard()` agrupa as propostas em 8 colunas por `Etapa_Pipeline`, **na ordem dos choices do
+SharePoint**, com a cor de cada coluna vinda do `ETAPA_CONFIG`. Cabeçalho de cada coluna mostra a
+contagem e a soma de `ValorTotal`. Cards com etapa nula/fora dos choices vão para uma coluna
+**"(sem etapa)"** — nada é escondido (o oposto do bug do Kanban do canvas). Com 1 proposta hoje, o
+board nasce com o card em "Ganho" e as demais colunas vazias.
+
+## Próximos passos
+
+- Massa de dados de teste para validar o visual com colunas povoadas.
+- Mover card entre etapas (drag-drop) → exige **escrita** via Graph (`PATCH` no item), o que precisa
+  de permissão delegada de escrita (`Sites.ReadWrite.All` ou `Sites.Selected` no app) — hoje o app só
+  tem `Sites.Read.All`. Decisão de escopo antes de implementar.
+- Abrir detalhe da proposta ao clicar no card.
 
 ## Notas
 
