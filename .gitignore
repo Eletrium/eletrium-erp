@@ -1,0 +1,7 @@
+# dependências (quando/se introduzirmos build)
+node_modules/
+
+# logs e temporários
+*.log
+.DS_Store
+Thumbs.db

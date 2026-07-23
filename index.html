@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Web (Propostas / Kanban)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="pipeline.js"></script>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; background: #0d1117; color: #e6edf3; }
+    header { padding: 14px 20px; border-bottom: 1px solid #30363d; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    header h1 { font-size: 1.05rem; margin: 0; flex: 1; }
+    header .user { font-size: .82rem; color: #8b949e; }
+    button { font-size: .92rem; padding: 7px 14px; border-radius: 6px; border: 1px solid #0078D4; background: #0078D4; color: #fff; cursor: pointer; }
+    button.sec { background: transparent; color: #58a6ff; border-color: #30363d; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    #status { font-size: .85rem; color: #8b949e; padding: 8px 20px; }
+    main { padding: 12px 20px 40px; }
+    .warn { margin: 8px 20px; padding: 10px 14px; border-radius: 8px; border: 1px solid #d2992255; background: #d2992218; color: #e3b341; font-size: .85rem; }
+    .warn.hidden { display: none; }
+    .warn code { background: #ffffff14; padding: 1px 5px; border-radius: 4px; }
+    .choices { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 20px; }
+    .chip { border-radius: 999px; padding: 4px 12px; font-size: .8rem; border: 1px solid; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px; }
+    .card .num { font-weight: 600; font-size: 1rem; }
+    .card .cli { color: #8b949e; font-size: .85rem; margin: 4px 0; }
+    .card .val { color: #3fb950; font-weight: 600; margin-top: 6px; }
+    .card .etapa { display: inline-block; margin-top: 8px; border-radius: 6px; padding: 2px 8px; font-size: .78rem; color: #0d1117; font-weight: 600; }
+    pre { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 320px; font-size: .78rem; margin-top: 20px; }
+    .err { color: #f85149; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP — Propostas (fonte do Kanban)</h1>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar Propostas</button>
+    <button id="btnJson" class="sec" disabled>Ver JSON</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="etapaWarn" class="warn hidden"></div>
+  <main>
+    <div><strong>Etapas do pipeline</strong> (colunas do Kanban — nomes/ordem do SharePoint, cor do ETAPA_CONFIG):</div>
+    <div class="choices" id="choices"></div>
+    <div><strong>Cards</strong> (dados reais de Propostas):</div>
+    <div class="cards" id="cards"></div>
+    <pre id="json" hidden></pre>
+  </main>
+
+  <script>
+    // ===================== CONFIG =====================
+    const CONFIG = {
+      clientId: "f0c63078-fe75-4f7a-8f87-8783c12e7df8", // Eletrium ERP - Web App (delegado, SPA)
+      tenantId: "6b76ebcc-abef-462d-a0be-eebf5a9e434b",
+      siteHost: "gwtecheletrica.sharepoint.com",
+      sitePath: "/sites/EletriumERP",
+      scopes: ["User.Read", "Sites.Read.All"]
+    };
+    const GRAPH = "https://graph.microsoft.com/v1.0";
+    // ==================================================
+
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    let account = null, msalApp = null, lastPayload = null;
+    // Identidade do usuário logado (equivalente ao varUsuario do canvas, mas sempre real/preenchido).
+    window.currentUser = null;
+
+    async function init() {
+      msalApp = new msal.PublicClientApplication({
+        auth: { clientId: CONFIG.clientId, authority: "https://login.microsoftonline.com/" + CONFIG.tenantId, redirectUri: window.location.origin },
+        cache: { cacheLocation: "sessionStorage" }
+      });
+      await msalApp.initialize();
+      const a = msalApp.getAllAccounts();
+      if (a.length) { account = a[0]; await onIn(); }
+    }
+
+    async function onIn() {
+      setStatus("Autenticado como " + account.username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnJson").disabled = false; $("btnLogout").disabled = false;
+      // Graph /me — identidade autoritativa (id/nome/e-mail) para atribuir responsável em gravações.
+      try {
+        const me = await gget("/me?$select=id,displayName,userPrincipalName,mail", await token());
+        window.currentUser = { id: me.id, nome: me.displayName, email: me.mail || me.userPrincipalName };
+        $("user").textContent = "👤 " + window.currentUser.nome;
+      } catch (e) { $("user").textContent = "👤 " + account.username + " (falha no /me)"; }
+    }
+
+    async function token() {
+      const req = { scopes: CONFIG.scopes, account };
+      try { return (await msalApp.acquireTokenSilent(req)).accessToken; }
+      catch { return (await msalApp.acquireTokenPopup(req)).accessToken; }
+    }
+    const gget = async (url, t) => (await fetch(url.startsWith("http") ? url : GRAPH + url, { headers: { Authorization: "Bearer " + t, Accept: "application/json" } })).json();
+
+    $("btnLogin").onclick = async () => {
+      try { const r = await msalApp.loginPopup({ scopes: CONFIG.scopes }); account = r.account; msalApp.setActiveAccount(account); await onIn(); }
+      catch (e) { setStatus("Falha no login: " + e.message, "err"); }
+    };
+    $("btnLogout").onclick = async () => {
+      await msalApp.logoutPopup({ account }); account = null; window.currentUser = null;
+      setStatus("Não autenticado."); $("user").textContent = ""; $("btnLogin").disabled = false;
+      ["btnLoad","btnJson","btnLogout"].forEach(id => $(id).disabled = true);
+      $("choices").innerHTML = ""; $("cards").innerHTML = ""; $("etapaWarn").className = "warn hidden";
+    };
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando via Graph...");
+        const t = await token();
+        const site = await gget("/sites/" + CONFIG.siteHost + ":" + CONFIG.sitePath, t);
+        if (!site.id) throw new Error("não resolveu o site");
+        const cols = await gget("/sites/" + site.id + "/lists/Propostas/columns", t);
+        const etapa = (cols.value || []).find(c => c.name === "Etapa_Pipeline");
+        const choices = etapa && etapa.choice ? etapa.choice.choices : [];
+
+        // TRAVA: valida ETAPA_CONFIG contra os choices reais e avisa na tela se divergir.
+        renderEtapaWarn(window.validateEtapasConfig(choices));
+
+        const props = await gget("/sites/" + site.id + "/lists/Propostas/items?expand=fields&$top=200", t);
+        const clientes = await gget("/sites/" + site.id + "/lists/Clientes/items?expand=fields($select=Title)&$top=500", t);
+        const nomeCliente = {};
+        (clientes.value || []).forEach(c => { nomeCliente[c.id] = c.fields.Title; });
+
+        lastPayload = { site: site.displayName, choices, propostas: props.value, clientesMap: nomeCliente };
+        render(choices, props.value, nomeCliente);
+        setStatus("OK — " + (props.value || []).length + " proposta(s), " + choices.length + " etapa(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    $("btnJson").onclick = () => { const p = $("json"); p.hidden = !p.hidden; p.textContent = JSON.stringify(lastPayload, null, 2); };
+
+    function renderEtapaWarn(v) {
+      const el = $("etapaWarn");
+      if (v.ok) { el.className = "warn hidden"; el.innerHTML = ""; return; }
+      let html = "<strong>⚠️ Divergência entre ETAPA_CONFIG e os choices do SharePoint:</strong><br>";
+      if (v.semChoice.length) html += "No código mas <em>não</em> existem como etapa (typo/acento?): " + v.semChoice.map(x => "<code>" + x + "</code>").join(" ") + "<br>";
+      if (v.semConfig.length) html += "Etapa do SharePoint <em>sem</em> cor no ETAPA_CONFIG (usará fallback): " + v.semConfig.map(x => "<code>" + x + "</code>").join(" ");
+      el.innerHTML = html; el.className = "warn";
+    }
+
+    function render(choices, propostas, nomeCliente) {
+      $("choices").innerHTML = choices.map(c => {
+        const cor = window.etapaCor(c);
+        return `<span class="chip" style="border-color:${cor};color:${cor}">${c}</span>`;
+      }).join("");
+      $("cards").innerHTML = (propostas || []).map(p => {
+        const f = p.fields || {};
+        const cli = nomeCliente[f.ClienteLookupId] || ("cliente #" + (f.ClienteLookupId ?? "?"));
+        const valor = (f.ValorTotal ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+        const cor = window.etapaCor(f.Etapa_Pipeline);
+        return `<div class="card">
+          <div class="num">${f.Title ?? "(sem número)"}</div>
+          <div class="cli">${cli}</div>
+          <div class="val">${valor}</div>
+          <div class="etapa" style="background:${cor}">${f.Etapa_Pipeline ?? "(sem etapa)"}</div>
+        </div>`;
+      }).join("") || "<em style='color:#8b949e'>Nenhuma proposta.</em>";
+    }
+
+    init().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
