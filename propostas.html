@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Propostas</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <script src="pipeline.js"></script>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html" class="active">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <main>
+    <table id="tbl" hidden>
+      <thead><tr><th>Número</th><th>Cliente</th><th>Etapa</th><th>Valor</th><th>Status</th><th>Validade</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>Nenhuma proposta.</div>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    let itemMap = {}, nomeCliente = {};
+
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando propostas...");
+        const [props, cli] = await Promise.all([EG.listItems("Propostas"), EG.listItems("Clientes", "expand=fields($select=Title)&$top=500")]);
+        nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields.Title);
+        itemMap = {}; props.forEach(p => itemMap[p.id] = p);
+        render(props);
+        setStatus("OK — " + props.length + " proposta(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    const cliNome = (f) => nomeCliente[f.ClienteLookupId] || ("cliente #" + (f.ClienteLookupId ?? "?"));
+
+    function render(props) {
+      if (!props.length) { $("tbl").hidden = true; $("empty").hidden = false; return; }
+      $("empty").hidden = true; $("tbl").hidden = false;
+      $("tbody").innerHTML = props.map(p => {
+        const f = p.fields || {};
+        const cor = window.etapaCor(f.Etapa_Pipeline);
+        return `<tr data-id="${p.id}">
+          <td>${f.Title ?? "—"}</td>
+          <td>${cliNome(f)}</td>
+          <td><span class="badge" style="border-color:${cor};color:${cor}">${f.Etapa_Pipeline ?? "—"}</span></td>
+          <td class="num">${EG.BRL(f.ValorTotal)}</td>
+          <td>${f.Status ?? "—"}</td>
+          <td>${EG.fmtDate(f.DataValidade) ?? "—"}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    // drawer
+    $("tbody").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && itemMap[tr.dataset.id]) openDrawer(itemMap[tr.dataset.id]); });
+    $("overlay").onclick = closeDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${l}</dt><dd>${v}</dd>`;
+
+    function openDrawer(p) {
+      const f = p.fields || {};
+      const rows = [
+        rowD("Cliente", cliNome(f)), rowD("Etapa", f.Etapa_Pipeline), rowD("Status", f.Status),
+        rowD("Valor total", f.ValorTotal != null ? EG.BRL(f.ValorTotal) : null),
+        rowD("Valor serviços", f.Valor_Servico != null ? EG.BRL(f.Valor_Servico) : null),
+        rowD("Valor materiais", f.Valor_Materiais != null ? EG.BRL(f.Valor_Materiais) : null),
+        rowD("Descrição", f.Descricao), rowD("Emissão", EG.fmtDate(f.DataEmissao)), rowD("Validade", EG.fmtDate(f.DataValidade)),
+        rowD("Entrada na etapa", EG.fmtDate(f.Data_Entrada_Etapa)), rowD("Forma pgto", f.FormaPagamento),
+        rowD("Prazo execução", f.PrazoExecucao), rowD("Probabilidade", f.Probabilidade_Fechamento != null ? f.Probabilidade_Fechamento + "%" : null),
+        rowD("Responsável", f.Responsavel_Principal), rowD("Origem do lead", f.Origem_Lead), rowD("Observações", f.Observacoes)
+      ].join("");
+      $("drawer").innerHTML = `
+        <div class="drawer-head"><div class="t">${f.Title ?? "(sem número)"}</div><button class="x" id="dc">Fechar ✕</button></div>
+        <div class="drawer-body"><dl>${rows}</dl>
+          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
+          <pre id="rf" hidden style="margin-top:8px">${JSON.stringify(f, null, 2)}</pre>
+        </div>`;
+      $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Clientes</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html" class="active">Clientes</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <main><div class="grid" id="grid"></div></main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    let itemMap = {};
+
+    async function boot() {
+      const logged = await EG.init();
+      if (logged) await onIn();
+    }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando clientes...");
+        const items = await EG.listItems("Clientes");
+        itemMap = {}; items.forEach(i => itemMap[i.id] = i);
+        render(items);
+        setStatus("OK — " + items.length + " cliente(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    function render(items) {
+      $("grid").innerHTML = items.map(i => {
+        const f = i.fields || {};
+        const loc = [f.Cidade, f.Estado].filter(Boolean).join(" / ");
+        return `<div class="card" data-id="${i.id}">
+          <div class="t">${f.Title ?? "(sem nome)"}</div>
+          <div class="s">${f.CNPJ_CPF ?? "—"}${loc ? " · " + loc : ""}</div>
+          ${f.Status ? `<span class="badge">${f.Status}</span>` : ""}
+          ${f.Segmento ? `<span class="badge">${f.Segmento}</span>` : ""}
+        </div>`;
+      }).join("") || "<div class='empty'>Nenhum cliente.</div>";
+    }
+
+    // drawer
+    $("grid").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c && itemMap[c.dataset.id]) openDrawer(itemMap[c.dataset.id]); });
+    $("overlay").onclick = closeDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${l}</dt><dd>${v}</dd>`;
+
+    function openDrawer(i) {
+      const f = i.fields || {};
+      const rows = [
+        rowD("CNPJ / CPF", f.CNPJ_CPF), rowD("Tipo de pessoa", f.TipoPessoa),
+        rowD("Contato", f.Contato), rowD("E-mail", f.Email), rowD("Telefone", f.Telefone),
+        rowD("Endereço", f.Endereco), rowD("Cidade", f.Cidade), rowD("Estado", f.Estado), rowD("CEP", f.CEP),
+        rowD("Segmento", f.Segmento), rowD("Status", f.Status), rowD("Relacionamento", f.Status_Relacionamento),
+        rowD("Responsável comercial", f.Responsavel_Comercial),
+        rowD("Ticket médio", f.Ticket_Medio != null ? EG.BRL(f.Ticket_Medio) : null),
+        rowD("Total faturado", f.Total_Faturado != null ? EG.BRL(f.Total_Faturado) : null),
+        rowD("Qtd. propostas", f.Qtd_Propostas), rowD("Qtd. projetos", f.Qtd_Projetos),
+        rowD("Última compra", EG.fmtDate(f.Data_Ultima_Compra)), rowD("Dias sem compra", f.Dias_Sem_Compra),
+        rowD("Origem do lead", f.Origem_Lead), rowD("Observações", f.Observacoes)
+      ].join("");
+      $("drawer").innerHTML = `
+        <div class="drawer-head"><div class="t">${f.Title ?? "(sem nome)"}</div><button class="x" id="dc">Fechar ✕</button></div>
+        <div class="drawer-body"><dl>${rows}</dl>
+          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
+          <pre id="rf" hidden style="margin-top:8px">${JSON.stringify(f, null, 2)}</pre>
+        </div>`;
+      $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
