@@ -24,13 +24,15 @@
     /* --- Kanban --- */
     .board { display: flex; gap: 12px; overflow-x: auto; padding: 12px 20px 28px; align-items: flex-start; }
     .col { flex: 0 0 262px; max-width: 262px; background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 190px); }
+    .col.drop { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff inset; }
     .col-head { padding: 12px 14px 10px; border-top: 3px solid #6e7681; border-radius: 10px 10px 0 0; }
     .col-title { font-weight: 600; font-size: .9rem; display: flex; align-items: center; gap: 8px; }
     .col-count { background: #ffffff14; border-radius: 999px; padding: 0 8px; font-size: .75rem; color: #8b949e; }
     .col-sum { color: #3fb950; font-size: .8rem; margin-top: 3px; }
-    .col-body { padding: 0 10px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
-    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; cursor: pointer; }
+    .col-body { padding: 0 10px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
+    .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; cursor: grab; }
     .card:hover { border-color: #58a6ff; }
+    .card.dragging { opacity: .5; }
     .card .num { font-weight: 600; font-size: .92rem; }
     .card .cli { color: #8b949e; font-size: .82rem; margin: 3px 0; }
     .card .val { color: #3fb950; font-weight: 600; font-size: .85rem; margin-top: 5px; }
@@ -79,7 +81,7 @@
       tenantId: "6b76ebcc-abef-462d-a0be-eebf5a9e434b",
       siteHost: "gwtecheletrica.sharepoint.com",
       sitePath: "/sites/EletriumERP",
-      scopes: ["User.Read", "Sites.Read.All"]
+      scopes: ["User.Read", "Sites.ReadWrite.All"] // ReadWrite: necessário p/ arrastar-e-salvar (PATCH)
     };
     const GRAPH = "https://graph.microsoft.com/v1.0";
     const BRL = (n) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -88,8 +90,8 @@
 
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
-    let account = null, msalApp = null, lastPayload = null;
-    window.currentUser = null; // identidade delegada real (equivalente ao varUsuario, sempre preenchido)
+    let account = null, msalApp = null, lastPayload = null, siteId = null;
+    window.currentUser = null;
     let propMap = {}, nomeClienteMap = {};
 
     async function init() {
@@ -136,14 +138,15 @@
         const t = await token();
         const site = await gget("/sites/" + CONFIG.siteHost + ":" + CONFIG.sitePath, t);
         if (!site.id) throw new Error("não resolveu o site");
-        const cols = await gget("/sites/" + site.id + "/lists/Propostas/columns", t);
+        siteId = site.id;
+        const cols = await gget("/sites/" + siteId + "/lists/Propostas/columns", t);
         const etapa = (cols.value || []).find(c => c.name === "Etapa_Pipeline");
         const choices = etapa && etapa.choice ? etapa.choice.choices : [];
 
         renderEtapaWarn(window.validateEtapasConfig(choices));
 
-        const props = await gget("/sites/" + site.id + "/lists/Propostas/items?expand=fields&$top=500", t);
-        const clientes = await gget("/sites/" + site.id + "/lists/Clientes/items?expand=fields($select=Title)&$top=500", t);
+        const props = await gget("/sites/" + siteId + "/lists/Propostas/items?expand=fields&$top=500", t);
+        const clientes = await gget("/sites/" + siteId + "/lists/Clientes/items?expand=fields($select=Title)&$top=500", t);
         nomeClienteMap = {};
         (clientes.value || []).forEach(c => { nomeClienteMap[c.id] = c.fields.Title; });
         propMap = {};
@@ -151,7 +154,7 @@
 
         lastPayload = { site: site.displayName, choices, propostas: props.value, clientesMap: nomeClienteMap };
         renderBoard(choices, props.value);
-        setStatus("OK — " + (props.value || []).length + " proposta(s) em " + choices.length + " etapa(s).");
+        setStatus("OK — " + (props.value || []).length + " proposta(s). Arraste cards entre colunas para mover.");
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
@@ -170,14 +173,13 @@
 
     function cardHtml(p) {
       const f = p.fields || {};
-      return `<div class="card" data-id="${p.id}">
+      return `<div class="card" draggable="true" data-id="${p.id}">
         <div class="num">${f.Title ?? "(sem número)"}</div>
         <div class="cli">${cliNome(f)}</div>
         <div class="val">${BRL(f.ValorTotal)}</div>
       </div>`;
     }
 
-    // Agrupa por Etapa_Pipeline na ORDEM dos choices; cards sem etapa vão para "(sem etapa)" — nada some.
     function renderBoard(choices, propostas) {
       const byEtapa = {}; choices.forEach(c => byEtapa[c] = []);
       const semEtapa = [];
@@ -185,13 +187,13 @@
         const e = p.fields && p.fields.Etapa_Pipeline;
         if (e && byEtapa[e]) byEtapa[e].push(p); else semEtapa.push(p);
       });
-      const colunas = choices.map(c => ({ nome: c, cor: window.etapaCor(c), items: byEtapa[c] }));
-      if (semEtapa.length) colunas.push({ nome: "(sem etapa)", cor: window.ETAPA_COR_FALLBACK, items: semEtapa });
+      const colunas = choices.map(c => ({ nome: c, etapa: c, cor: window.etapaCor(c), items: byEtapa[c] }));
+      if (semEtapa.length) colunas.push({ nome: "(sem etapa)", etapa: "", cor: window.ETAPA_COR_FALLBACK, items: semEtapa });
 
       $("board").innerHTML = colunas.map(col => {
         const sum = col.items.reduce((s, p) => s + ((p.fields && p.fields.ValorTotal) || 0), 0);
         const body = col.items.map(cardHtml).join("") || "<div class='empty'>—</div>";
-        return `<div class="col">
+        return `<div class="col" data-etapa="${col.etapa}">
           <div class="col-head" style="border-top-color:${col.cor}">
             <div class="col-title" style="color:${col.cor}">${col.nome} <span class="col-count">${col.items.length}</span></div>
             <div class="col-sum">${BRL(sum)}</div>
@@ -201,8 +203,39 @@
       }).join("");
     }
 
+    // --- Drag & drop: mover proposta de etapa (PATCH no Graph) ---
+    const board = $("board");
+    board.addEventListener("dragstart", (e) => { const c = e.target.closest(".card"); if (c) { e.dataTransfer.setData("text/plain", c.dataset.id); c.classList.add("dragging"); } });
+    board.addEventListener("dragend", (e) => { const c = e.target.closest(".card"); if (c) c.classList.remove("dragging"); });
+    board.addEventListener("dragover", (e) => { const col = e.target.closest(".col"); if (col && col.dataset.etapa) { e.preventDefault(); col.classList.add("drop"); } });
+    board.addEventListener("dragleave", (e) => { const col = e.target.closest(".col"); if (col) col.classList.remove("drop"); });
+    board.addEventListener("drop", (e) => {
+      const col = e.target.closest(".col"); if (!col || !col.dataset.etapa) return;
+      e.preventDefault(); col.classList.remove("drop");
+      moveProposta(e.dataTransfer.getData("text/plain"), col.dataset.etapa);
+    });
+
+    async function moveProposta(id, novaEtapa) {
+      const p = propMap[id]; if (!p) return;
+      const atual = p.fields.Etapa_Pipeline;
+      if (!novaEtapa || novaEtapa === atual) return;
+      setStatus("Movendo " + (p.fields.Title || id) + " → " + novaEtapa + "...");
+      try {
+        const t = await token();
+        const url = GRAPH + "/sites/" + siteId + "/lists/Propostas/items/" + id + "/fields";
+        const body = { Etapa_Pipeline: novaEtapa, Data_Entrada_Etapa: new Date().toISOString() };
+        const res = await fetch(url, { method: "PATCH", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        if (!res.ok) throw new Error(res.status + " " + (await res.text()));
+        // sucesso: atualiza estado local e re-renderiza (sem refetch)
+        p.fields.Etapa_Pipeline = novaEtapa;
+        p.fields.Data_Entrada_Etapa = body.Data_Entrada_Etapa;
+        renderBoard(lastPayload.choices, lastPayload.propostas);
+        setStatus("✔ " + (p.fields.Title || id) + " movida para " + novaEtapa + ".");
+      } catch (e) { setStatus("Falha ao mover (nada foi alterado): " + e.message, "err"); }
+    }
+
     // --- Detalhe (drawer) ---
-    $("board").addEventListener("click", (ev) => {
+    board.addEventListener("click", (ev) => {
       const card = ev.target.closest(".card"); if (!card) return;
       const p = propMap[card.dataset.id]; if (p) openDrawer(p);
     });

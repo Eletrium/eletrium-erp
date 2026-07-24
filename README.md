@@ -52,13 +52,21 @@ contagem e a soma de `ValorTotal`. Cards com etapa nula/fora dos choices vão pa
 **"(sem etapa)"** — nada é escondido (o oposto do bug do Kanban do canvas). Com 1 proposta hoje, o
 board nasce com o card em "Ganho" e as demais colunas vazias.
 
+## Drag & drop (feito) — arrastar-e-salvar
+
+Arrastar um card para outra coluna faz `PATCH` no Graph em `Propostas/items/{id}/fields`
+(`Etapa_Pipeline` + `Data_Entrada_Etapa = agora`), atualiza o estado local e re-renderiza sem
+refetch. Requer `Sites.ReadWrite.All` (scope já atualizado no `CONFIG`). A coluna "(sem etapa)" não é
+alvo de drop. Em falha do PATCH, nada é alterado e o status mostra o erro.
+
+> ⚠️ **Validação pendente:** o caminho de escrita só roda no navegador (login delegado). Testar
+> arrastando um card e confirmando no SharePoint que `Etapa_Pipeline` mudou.
+
 ## Próximos passos
 
-- Massa de dados de teste para validar o visual com colunas povoadas.
-- Mover card entre etapas (drag-drop) → exige **escrita** via Graph (`PATCH` no item), o que precisa
-  de permissão delegada de escrita (`Sites.ReadWrite.All` ou `Sites.Selected` no app) — hoje o app só
-  tem `Sites.Read.All`. Decisão de escopo antes de implementar.
-- Abrir detalhe da proposta ao clicar no card.
+- Validar o drag-save no navegador (arrastar → conferir no SharePoint).
+- Feedback otimista vs. confirmar-antes (hoje: PATCH primeiro, re-render no sucesso).
+- Abrir a proposta para edição (não só leitura) — exigiria mais campos graváveis.
 
 ## Notas
 
