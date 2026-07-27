@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Ordens de Serviço</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela (não mexem em app.css, que é compartilhado) */
+    /* display:grid/flex sobrescreve a regra [hidden] do navegador — reforçamos aqui */
+    [hidden] { display: none !important; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
+    .kpi .k { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    .toolbar select { font-size: .86rem; padding: 6px 10px; border-radius: 6px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; }
+    .toolbar .hint { color: #8b949e; font-size: .8rem; margin-left: auto; }
+    td .badge { white-space: nowrap; margin-top: 0; }
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+    .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html" class="active">OS</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <main>
+    <div class="kpis" id="kpis" hidden>
+      <div class="kpi"><div class="k">Total de OS</div><div class="v" id="kTotal">0</div></div>
+      <div class="kpi"><div class="k">Em andamento</div><div class="v" id="kAnd" style="color:#F0883E">0</div></div>
+      <div class="kpi"><div class="k">Concluídas</div><div class="v" id="kConc" style="color:#22B573">0</div></div>
+      <div class="kpi"><div class="k">Soma de Valor OS</div><div class="v" id="kValor" style="color:#3fb950">R$ 0,00</div></div>
+    </div>
+
+    <div class="toolbar" id="toolbar" hidden>
+      <label for="fStatus">Status</label>
+      <select id="fStatus"><option value="">(Todos)</option></select>
+      <span class="ro">somente leitura</span>
+      <span class="hint" id="hint"></span>
+    </div>
+
+    <table id="tbl" hidden>
+      <thead><tr><th>Número</th><th>Cliente</th><th>Técnico</th><th>Status</th><th>Tipo</th><th>Abertura</th><th>Valor</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>Nenhuma OS.</div>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+
+    // Mapa de cores por Status da OS — local desta tela (pipeline.js é do CRM, não é usado aqui).
+    // Os rótulos precisam bater EXATAMENTE com os valores de Choice do SharePoint (com acento).
+    const STATUS_OS = ["Aberta", "Atribuída", "Em Andamento", "Aguardando aprovação", "Concluída", "Cancelada"];
+    const STATUS_COR = {
+      "Aberta": "#58A6FF",
+      "Atribuída": "#A371F7",
+      "Em Andamento": "#F0883E",
+      "Aguardando aprovação": "#D29922",
+      "Concluída": "#22B573",
+      "Cancelada": "#F85149"
+    };
+    const statusCor = (s) => STATUS_COR[s] || "#8b949e";
+
+    let itemMap = {}, todas = [], nomeCliente = {}, nomeTecnico = {};
+
+    const esc = (v) => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const num = (v) => (typeof v === "number" ? v : (v == null || v === "" ? 0 : Number(v) || 0));
+    const fmtDT = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d) ? s : d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }); };
+    const cliNome = (f) => f.ClienteLookupId != null ? (nomeCliente[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : "—";
+    const tecNome = (f) => f.TecnicoLookupId != null ? (nomeTecnico[f.TecnicoLookupId] || ("técnico #" + f.TecnicoLookupId)) : "—";
+
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // popula o filtro com os valores reais de Choice
+    STATUS_OS.forEach(s => { const o = document.createElement("option"); o.value = s; o.textContent = s; $("fStatus").appendChild(o); });
+    $("fStatus").onchange = aplicarFiltro;
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando ordens de serviço...");
+        // lookups voltam do Graph como ClienteLookupId / TecnicoLookupId — resolvemos o nome pelo join local
+        const [os, cli, tec] = await Promise.all([
+          EG.listItems("OrdensDeServico"),
+          EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
+          EG.listItems("TecnicosMEI", "expand=fields($select=Title)&$top=500")
+        ]);
+        nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
+        nomeTecnico = {}; tec.forEach(t => nomeTecnico[t.id] = t.fields && t.fields.Title);
+        itemMap = {}; os.forEach(o => itemMap[o.id] = o);
+        todas = os.slice().sort((a, b) => new Date(b.fields && b.fields.DataAbertura || 0) - new Date(a.fields && a.fields.DataAbertura || 0));
+        indicadores(todas);
+        $("kpis").hidden = false; $("toolbar").hidden = false;
+        aplicarFiltro();
+        setStatus("OK — " + todas.length + " OS carregada(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    function indicadores(list) {
+      const st = (o) => (o.fields || {}).Status;
+      $("kTotal").textContent = list.length;
+      $("kAnd").textContent = list.filter(o => st(o) === "Em Andamento").length;
+      $("kConc").textContent = list.filter(o => st(o) === "Concluída").length;
+      $("kValor").textContent = EG.BRL(list.reduce((s, o) => s + num((o.fields || {}).ValorOS), 0));
+    }
+
+    function aplicarFiltro() {
+      const f = $("fStatus").value;
+      const list = f ? todas.filter(o => (o.fields || {}).Status === f) : todas;
+      $("hint").textContent = f ? (list.length + " de " + todas.length + " OS (indicadores acima são do total)") : "";
+      render(list);
+    }
+
+    function render(list) {
+      if (!list.length) {
+        $("tbody").innerHTML = "";
+        $("tbl").hidden = true; $("empty").hidden = false;
+        $("empty").textContent = todas.length ? "Nenhuma OS com esse status." : "Nenhuma OS.";
+        return;
+      }
+      $("empty").hidden = true; $("tbl").hidden = false;
+      $("tbody").innerHTML = list.map(o => {
+        const f = o.fields || {};
+        const cor = statusCor(f.Status);
+        return `<tr data-id="${esc(o.id)}">
+          <td>${esc(f.Title ?? "—")}</td>
+          <td>${esc(cliNome(f))}</td>
+          <td>${esc(tecNome(f))}</td>
+          <td><span class="badge" style="border-color:${cor};color:${cor}">${esc(f.Status ?? "—")}</span></td>
+          <td>${esc(f.Tipo_OS ?? "—")}</td>
+          <td>${esc(EG.fmtDate(f.DataAbertura) ?? "—")}</td>
+          <td class="num">${EG.BRL(num(f.ValorOS))}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    // drawer
+    $("tbody").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && itemMap[tr.dataset.id]) openDrawer(itemMap[tr.dataset.id]); });
+    $("overlay").onclick = closeDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${esc(l)}</dt><dd>${esc(v)}</dd>`;
+    const rowM = (l, v) => v == null ? "" : `<dt>${esc(l)}</dt><dd>${esc(EG.BRL(num(v)))}</dd>`;
+
+    function openDrawer(o) {
+      const f = o.fields || {};
+      const cor = statusCor(f.Status);
+      const custoTotal = num(f.Custo_MO_Realizado) + num(f.Custo_EPI_OS) + num(f.Custo_Ferr_OS);
+      const temCusto = [f.Custo_MO_Previsto, f.Custo_MO_Realizado, f.Custo_EPI_OS, f.Custo_Ferr_OS].some(v => v != null);
+
+      const gerais = [
+        rowD("Cliente", cliNome(f)), rowD("Técnico", tecNome(f)),
+        rowD("Tipo", f.Tipo_OS), rowD("Tipo (completo)", f.Tipo_OS_Completo),
+        rowD("Status atual", f.Status_Atual), rowD("Status do dia", f.Status_OS_Dia),
+        rowD("Descrição", f.Descricao),
+        rowD("Abertura", EG.fmtDate(f.DataAbertura)), rowD("Prevista", EG.fmtDate(f.DataPrevista)),
+        rowD("Início", fmtDT(f.Hora_Inicio)), rowD("Conclusão", EG.fmtDate(f.Data_Conclusao)),
+        rowM("Valor da OS", f.ValorOS),
+        rowD("Alerta de esquecimento", f.Alerta_Esquecimento_Enviado == null ? null : (f.Alerta_Esquecimento_Enviado ? "Sim" : "Não"))
+      ].join("");
+
+      const custos = temCusto ? `<dl>
+        ${rowM("Mão de obra prevista", f.Custo_MO_Previsto)}
+        ${rowM("Mão de obra realizada", f.Custo_MO_Realizado)}
+        ${rowM("EPI", f.Custo_EPI_OS)}
+        ${rowM("Ferramentas", f.Custo_Ferr_OS)}
+        <dt class="tot">Custo total</dt><dd class="tot"><strong>${esc(EG.BRL(custoTotal))}</strong></dd>
+      </dl>` : "";
+
+      $("drawer").innerHTML = `
+        <div class="drawer-head">
+          <div class="t">${esc(f.Title ?? "(sem número)")}<br>
+            <span class="badge" style="border-color:${cor};color:${cor}">${esc(f.Status ?? "—")}</span>
+          </div>
+          <button class="x" id="dc">Fechar ✕</button>
+        </div>
+        <div class="drawer-body">
+          <dl>${gerais}</dl>
+          ${custos ? '<div class="k" style="color:#8b949e;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em">Custos (realizado + EPI + ferramentas)</div>' + custos : ""}
+          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
+          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
+        </div>`;
+      $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
