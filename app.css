@@ -52,3 +52,8 @@ td.num { color: #3fb950; font-weight: 600; white-space: nowrap; }
 .drawer-body dd { margin: 0; font-size: .88rem; word-break: break-word; }
 .drawer-body pre { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 300px; font-size: .78rem; }
 .raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; display: inline-block; margin-top: 10px; }
+
+/* aviso de divergência de rótulos de Choice (EG.renderAvisoChoices) */
+.choice-warn { margin: 8px 20px; padding: 10px 14px; border-radius: 8px; border: 1px solid #d2992255; background: #d2992218; color: #e3b341; font-size: .85rem; }
+.choice-warn code { background: #ffffff14; padding: 1px 5px; border-radius: 4px; }
+.choice-warn[hidden] { display: none !important; }

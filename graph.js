@@ -72,5 +72,70 @@ window.EG = (function () {
   const BRL = (n) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
   const fmtDate = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d) ? s : d.toLocaleDateString("pt-BR"); };
 
-  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, me, resolveSite, listItems, listColumns, patchItemFields, BRL, fmtDate };
+  // ---------------------------------------------------------------------------
+  // Validação de rótulos de Choice hard-coded (guarda contra falha SILENCIOSA).
+  //
+  // Telas hard-codeiam rótulos com acento/travessão ("Manutenção corretiva",
+  // "Execução de projeto — programada", "Atribuída"...). Se o rótulo real do
+  // SharePoint divergir por um caractere, nada quebra: o item cai no fallback
+  // (cinza / "Outros") e o NÚMERO FICA ERRADO EM SILÊNCIO. Foi essa classe de
+  // bug que travou o Kanban do canvas (colEtapasPipeline sem acento).
+  // Mesma ideia de validateEtapasConfig() do pipeline.js, agora genérica.
+  //
+  // Uso:  const v = await EG.validarChoices("OrdensDeServico", "Status", Object.keys(STATUS_COR));
+  //       EG.renderAvisoChoices(document.getElementById("choiceWarn"), v, "Status de OS");
+  // ---------------------------------------------------------------------------
+  // opts.apenasSemChoice = true  -> ignora a direção "existe no SP mas não no código".
+  //   Use quando o fallback é INTENCIONAL (ex.: dashboard agrupa o resto em "Outros"),
+  //   senão o aviso vira ruído. A direção "no código mas não existe no SP" continua ativa.
+  async function validarChoices(lista, campoInterno, chavesLocais, opts) {
+    try {
+      const cols = await listColumns(lista);
+      const col = (cols || []).find(c => c.name === campoInterno);
+      if (!col || !col.choice || !Array.isArray(col.choice.choices)) {
+        return { ok: true, indisponivel: true, motivo: "coluna '" + campoInterno + "' não é Choice ou não foi encontrada em " + lista, choices: [], semConfig: [], semChoice: [] };
+      }
+      const choices = col.choice.choices;
+      const locais = chavesLocais || [];
+      // no SharePoint mas sem entrada local -> cai no fallback (cor/bucket errado)
+      const semConfig = (opts && opts.apenasSemChoice) ? [] : choices.filter(c => !locais.includes(c));
+      // no código mas inexistente no SharePoint -> filtro/bucket nunca casa
+      const semChoice = locais.filter(k => !choices.includes(k));
+      return { ok: semConfig.length === 0 && semChoice.length === 0, indisponivel: false, choices, semConfig, semChoice };
+    } catch (e) {
+      return { ok: true, indisponivel: true, motivo: "falha ao ler choices de " + lista + "." + campoInterno + ": " + e.message, choices: [], semConfig: [], semChoice: [] };
+    }
+  }
+
+  // Renderiza (ou esconde) o aviso num elemento. `rotulo` identifica o campo p/ o usuário.
+  function renderAvisoChoices(el, v, rotulo) {
+    if (!el) return;
+    const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    if (!v || v.ok) { el.hidden = true; el.innerHTML = ""; return; }
+    const cod = (arr) => arr.map(x => "<code>" + esc(x) + "</code>").join(" ");
+    let html = "<strong>⚠️ Divergência de rótulos — " + esc(rotulo) + ":</strong><br>";
+    if (v.semChoice.length) html += "No código mas <em>não existe</em> no SharePoint (filtro/agrupamento nunca casa): " + cod(v.semChoice) + "<br>";
+    if (v.semConfig.length) html += "No SharePoint mas <em>sem</em> tratamento no código (cai no padrão, número pode ficar errado): " + cod(v.semConfig);
+    el.innerHTML = html; el.hidden = false;
+  }
+
+  // Versão plural: recebe [{v, rotulo}, ...] e junta tudo num aviso só.
+  function renderAvisosChoices(el, pares) {
+    if (!el) return;
+    const ruins = (pares || []).filter(p => p && p.v && !p.v.ok);
+    if (!ruins.length) { el.hidden = true; el.innerHTML = ""; return; }
+    const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    const cod = (arr) => arr.map(x => "<code>" + esc(x) + "</code>").join(" ");
+    let html = "<strong>⚠️ Divergência de rótulos de Choice</strong> (números podem ficar errados em silêncio):";
+    ruins.forEach(p => {
+      html += "<br><em>" + esc(p.rotulo) + "</em> — ";
+      const partes = [];
+      if (p.v.semChoice.length) partes.push("no código mas não existe no SharePoint: " + cod(p.v.semChoice));
+      if (p.v.semConfig.length) partes.push("no SharePoint mas sem tratamento: " + cod(p.v.semConfig));
+      html += partes.join(" · ");
+    });
+    el.innerHTML = html; el.hidden = false;
+  }
+
+  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, me, resolveSite, listItems, listColumns, patchItemFields, BRL, fmtDate, validarChoices, renderAvisoChoices, renderAvisosChoices };
 })();

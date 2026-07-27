@@ -39,6 +39,7 @@
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
   <main>
     <div class="kpis" id="kpis" hidden>
       <div class="kpi"><div class="k">Total de OS</div><div class="v" id="kTotal">0</div></div>
@@ -105,6 +106,10 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando ordens de serviço...");
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
+        EG.validarChoices("OrdensDeServico", "Status", STATUS_OS)
+          .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de OS"))
+          .catch(() => {});
         // lookups voltam do Graph como ClienteLookupId / TecnicoLookupId — resolvemos o nome pelo join local
         const [os, cli, tec] = await Promise.all([
           EG.listItems("OrdensDeServico"),

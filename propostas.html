@@ -23,6 +23,7 @@
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
   <main>
     <table id="tbl" hidden>
       <thead><tr><th>Número</th><th>Cliente</th><th>Etapa</th><th>Valor</th><th>Status</th><th>Validade</th></tr></thead>
@@ -51,6 +52,11 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando propostas...");
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
+        // Mesma checagem que o Kanban (index.html) já faz via validateEtapasConfig.
+        EG.validarChoices("Propostas", "Etapa_Pipeline", Object.keys(window.ETAPA_CONFIG || {}))
+          .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Etapa do Pipeline"))
+          .catch(() => {});
         const [props, cli] = await Promise.all([EG.listItems("Propostas"), EG.listItems("Clientes", "expand=fields($select=Title)&$top=500")]);
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields.Title);
         itemMap = {}; props.forEach(p => itemMap[p.id] = p);

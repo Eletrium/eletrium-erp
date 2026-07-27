@@ -49,6 +49,7 @@
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
 
   <main>
     <div class="tabs">
@@ -155,6 +156,10 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando suprimentos...");
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
+        EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", Object.keys(STATUS_CORES))
+          .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de Orçamento"))
+          .catch(() => {});
         const [orc, prd, its, cli, cols] = await Promise.all([
           soft(EG.listItems("Orcamentos_Venda"), "Orcamentos_Venda"),
           soft(EG.listItems("Produtos"), "Produtos"),

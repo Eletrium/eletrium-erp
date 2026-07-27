@@ -86,6 +86,7 @@
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
   <main>
     <div class="topbar" id="topbar" hidden>
       <span class="ro">somente leitura</span>
@@ -471,6 +472,13 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando ordens de serviço...");
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
+        // Tipo_OS_Completo usa apenasSemChoice: o bucket "Outros" é intencional.
+        Promise.all([
+          EG.validarChoices("OrdensDeServico", "Status", STATUS_OS).then(v => ({ v, rotulo: "Status (backlog)" })),
+          EG.validarChoices("OrdensDeServico", "Tipo_OS", TIPOS_OS).then(v => ({ v, rotulo: "Tipo de OS (backlog)" })),
+          EG.validarChoices("OrdensDeServico", "Tipo_OS_Completo", T_MANUTENCAO.concat(T_INSTALACAO), { apenasSemChoice: true }).then(v => ({ v, rotulo: "Tipo completo (mix / MTTR)" }))
+        ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
         const [os, cli] = await Promise.all([
           EG.listItems("OrdensDeServico"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500")
