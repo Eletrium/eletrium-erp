@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Dashboard Financeiro</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela — app.css e graph.js são compartilhados e não foram tocados */
+    [hidden] { display: none !important; }
+
+    .dgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; }
+    .dcard { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px 16px 16px; }
+    .dcard.wide { grid-column: 1 / -1; }
+    @media (min-width: 1100px) { .dcard.half2 { grid-column: span 2; } }
+    .dcard h2 { font-size: .78rem; margin: 0 0 10px; color: #8b949e; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+    .dcard .big { font-size: 1.7rem; font-weight: 600; line-height: 1.1; }
+    .dcard .sub { color: #8b949e; font-size: .8rem; margin-top: 3px; }
+    .dcard .nota { color: #8b949e; font-size: .76rem; margin-top: 10px; border-top: 1px solid #21262d; padding-top: 8px; line-height: 1.45; }
+    .vazio { color: #8b949e; font-size: .85rem; padding: 14px 0; font-style: italic; }
+
+    .delta { font-size: .84rem; font-weight: 600; }
+    .delta.up { color: #3FB950; } .delta.down { color: #F85149; } .delta.flat { color: #8b949e; }
+
+    /* mini barras (card 1) */
+    .bars { display: flex; align-items: stretch; gap: 8px; height: 106px; margin-top: 14px; }
+    .bars .col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; }
+    .bars .bwrap { width: 100%; display: flex; gap: 2px; align-items: flex-end; flex: 1; min-height: 0; }
+    .bars .b { flex: 1; border-radius: 3px 3px 0 0; min-height: 2px; }
+    .bars .b.rec { background: #0078D4; } .bars .b.cus { background: #7D8590; }
+    .bars .lb { color: #8b949e; font-size: .68rem; margin-top: 5px; white-space: nowrap; }
+
+    /* listas de barras horizontais (cards 2 e 4) */
+    .hlist { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+    .hrow .hhead { display: flex; justify-content: space-between; gap: 10px; font-size: .84rem; margin-bottom: 4px; }
+    .hrow .hhead .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hrow .hhead .vl { font-weight: 600; white-space: nowrap; }
+    .track { background: #21262d; border-radius: 4px; height: 8px; overflow: hidden; display: flex; }
+    .track > span { height: 100%; display: block; }
+
+    /* rosca (card 3) */
+    .donut-wrap { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+    .donut { width: 128px; height: 128px; border-radius: 50%; position: relative; flex: none; }
+    .donut::after { content: ""; position: absolute; inset: 26px; border-radius: 50%; background: #161b22; }
+    .donut .mid { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1; }
+    .donut .mid .t1 { font-size: .68rem; color: #8b949e; text-transform: uppercase; letter-spacing: .04em; }
+    .donut .mid .t2 { font-size: .82rem; font-weight: 600; }
+    .leg { display: flex; flex-direction: column; gap: 7px; font-size: .83rem; min-width: 170px; flex: 1; }
+    .leg .li { display: flex; align-items: center; gap: 8px; }
+    .leg .dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+    .leg .li .pv { margin-left: auto; color: #8b949e; white-space: nowrap; }
+
+    /* linha svg (card 6) */
+    .linechart { width: 100%; height: auto; display: block; }
+
+    /* backlog (card 7) */
+    .bk { display: flex; flex-direction: column; gap: 10px; }
+    .bk .row .hd { display: flex; justify-content: space-between; font-size: .84rem; margin-bottom: 4px; }
+    .bk .row .hd .c { color: #8b949e; }
+    .bk .stack { background: #21262d; border-radius: 4px; height: 14px; overflow: hidden; display: flex; }
+    .bk .stack > span { height: 100%; }
+    .bklegend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; font-size: .76rem; color: #8b949e; }
+    .bklegend .li { display: flex; align-items: center; gap: 6px; }
+    .bklegend .dot { width: 9px; height: 9px; border-radius: 3px; }
+
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+    .topbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .topbar .hint { color: #8b949e; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="dashboard.html" class="active">Dashboard</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <main>
+    <div class="topbar" id="topbar" hidden>
+      <span class="ro">somente leitura</span>
+      <span class="hint" id="hint"></span>
+    </div>
+
+    <div class="dgrid" id="dgrid" hidden>
+
+      <div class="dcard half2" id="c1">
+        <h2>Receita mensal vs custos</h2>
+        <div id="c1body"></div>
+      </div>
+
+      <div class="dcard" id="c2">
+        <h2>Lucratividade por cliente (top 5)</h2>
+        <div id="c2body"></div>
+      </div>
+
+      <div class="dcard" id="c3">
+        <h2>Mix de receita</h2>
+        <div id="c3body"></div>
+      </div>
+
+      <div class="dcard" id="c4">
+        <h2>Eficiência operacional — margem líquida</h2>
+        <div id="c4body"></div>
+      </div>
+
+      <div class="dcard" id="c5">
+        <h2>MTTR — tempo médio de reparo</h2>
+        <div id="c5body"></div>
+        <div class="nota">
+          <strong>MTBF não é calculado.</strong> O tempo médio entre falhas exige um cadastro de ativos
+          (equipamento/instalação identificável, com histórico de falhas por ativo e horas em operação),
+          que não existe no ERP hoje. Sem essa base, qualquer número seria inventado. Fica fora até haver
+          uma lista de Ativos ligada às OS corretivas.
+        </div>
+      </div>
+
+      <div class="dcard wide" id="c6">
+        <h2>Histórico de margem (12 meses)</h2>
+        <div id="c6body"></div>
+      </div>
+
+      <div class="dcard wide" id="c7">
+        <h2>Backlog de OS por tipo</h2>
+        <div id="c7body"></div>
+      </div>
+
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ========= valores reais de Choice (batem caractere a caractere com o SharePoint) ========= */
+    const STATUS_OS = ["Aberta", "Atribuída", "Em Andamento", "Aguardando aprovação", "Concluída", "Cancelada"];
+    const STATUS_COR = {
+      "Aberta": "#F85149",
+      "Atribuída": "#A371F7",
+      "Em Andamento": "#D29922",
+      "Aguardando aprovação": "#58A6FF",
+      "Concluída": "#3FB950",
+      "Cancelada": "#7D8590"
+    };
+    const TIPOS_OS = ["Escopo contratado", "Escopo adicional aprovado", "Extra-escopo (upsell)", "Corretiva emergencial", "Preventiva", "Visita técnica"];
+    const T_MANUTENCAO = ["Manutenção preventiva", "Manutenção corretiva"];
+    const T_INSTALACAO = ["Execução de projeto — programada"];
+    const T_CORRETIVA = "Manutenção corretiva";
+    const MESES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+
+    /* ========= helpers numéricos — tudo blindado contra null/NaN/divisão por zero ========= */
+    const num = (v) => { const n = (typeof v === "number") ? v : (v == null || v === "" ? 0 : Number(v)); return Number.isFinite(n) ? n : 0; };
+    const custoOS = (f) => num(f.Custo_MO_Realizado) + num(f.Custo_EPI_OS) + num(f.Custo_Ferr_OS);
+    const receitaOS = (f) => num(f.ValorOS);
+    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+    const mIdx = (d) => d.getFullYear() * 12 + d.getMonth();           // índice absoluto de mês
+    const mLabel = (i) => MESES[((i % 12) + 12) % 12] + "/" + String(Math.floor(i / 12) % 100).padStart(2, "0");
+    // margem% segura: retorna null quando a receita é 0 (nunca Infinity/NaN)
+    const margemPct = (rec, cus) => (rec > 0 ? ((rec - cus) / rec) * 100 : null);
+    const fmtPct = (v, dec) => (v == null || !Number.isFinite(v)) ? "—" : v.toFixed(dec == null ? 1 : dec).replace(".", ",") + "%";
+    const brl = (n) => EG.BRL(num(n));
+    const corMargem = (m) => (m == null ? "#7D8590" : (m >= 50 ? "#3FB950" : (m >= 30 ? "#D29922" : "#F85149")));
+    const classeTipo = (t) => T_MANUTENCAO.indexOf(t) >= 0 ? "manutencao" : (T_INSTALACAO.indexOf(t) >= 0 ? "instalacao" : "outros");
+
+    /* =========================================================================
+       AGREGAÇÃO — funções puras. Recebem os itens do Graph e devolvem o modelo.
+       Exposta em window.DASH para poder ser testada com dados falsos no console.
+       ========================================================================= */
+    function computeModel(items, nomeCliente, refDate) {
+      const list = Array.isArray(items) ? items : [];
+      const nomes = nomeCliente || {};
+      const hoje = refDate instanceof Date && !isNaN(refDate.getTime()) ? refDate : new Date();
+      const idxAtual = mIdx(hoje);
+
+      // ---- índice por mês de CONCLUSÃO (receita só é reconhecida na conclusão) ----
+      const porMes = {};                              // idx -> {rec, cus, n}
+      const bump = (i, rec, cus) => { const b = porMes[i] || (porMes[i] = { rec: 0, cus: 0, n: 0 }); b.rec += rec; b.cus += cus; b.n++; };
+
+      // ---- acumuladores dos demais cards ----
+      const porCliente = {};                          // lookupId -> {rec, cus, n}
+      const mix = { manutencao: { rec: 0, cus: 0, n: 0 }, instalacao: { rec: 0, cus: 0, n: 0 }, outros: { rec: 0, cus: 0, n: 0 } };
+      const backlog = {};                             // Tipo_OS -> {Status: contagem}
+      let mttrSoma = 0, mttrN = 0, mttrIgnoradas = 0, corretivasSemConclusao = 0;
+      let semConclusao = 0, semValor = 0;
+
+      list.forEach(it => {
+        const f = (it && it.fields) || {};
+        const rec = receitaOS(f), cus = custoOS(f);
+        const dConc = parseD(f.Data_Conclusao);
+        const dAbre = parseD(f.DataAbertura);
+
+        if (!dConc) semConclusao++;
+        if (!(rec > 0)) semValor++;
+
+        // 1 / 6 — séries mensais
+        if (dConc) bump(mIdx(dConc), rec, cus);
+
+        // 2 — por cliente (conta tudo, não só concluído: é rentabilidade da carteira)
+        const cid = (f.ClienteLookupId == null || f.ClienteLookupId === "") ? "__sem__" : String(f.ClienteLookupId);
+        const c = porCliente[cid] || (porCliente[cid] = { rec: 0, cus: 0, n: 0 });
+        c.rec += rec; c.cus += cus; c.n++;
+
+        // 3 / 4 — mix e eficiência por classe de Tipo_OS_Completo
+        const k = classeTipo(f.Tipo_OS_Completo);
+        mix[k].rec += rec; mix[k].cus += cus; mix[k].n++;
+
+        // 5 — MTTR (só corretiva com abertura E conclusão válidas)
+        if (f.Tipo_OS_Completo === T_CORRETIVA) {
+          if (dConc && dAbre) {
+            const h = (dConc.getTime() - dAbre.getTime()) / 3600000;
+            if (h >= 0) { mttrSoma += h; mttrN++; } else { mttrIgnoradas++; }   // conclusão antes da abertura = dado inconsistente
+          } else { corretivasSemConclusao++; }
+        }
+
+        // 7 — backlog por Tipo_OS x Status
+        const tipo = (f.Tipo_OS == null || f.Tipo_OS === "") ? "(sem tipo)" : String(f.Tipo_OS);
+        const st = (f.Status == null || f.Status === "") ? "(sem status)" : String(f.Status);
+        const bt = backlog[tipo] || (backlog[tipo] = {});
+        bt[st] = (bt[st] || 0) + 1;
+      });
+
+      const mesData = (i) => porMes[i] || { rec: 0, cus: 0, n: 0 };
+
+      // ---- card 1: mês atual x mês anterior + 6 meses ----
+      const atual = mesData(idxAtual), anterior = mesData(idxAtual - 1);
+      const deltaRec = anterior.rec > 0 ? ((atual.rec - anterior.rec) / anterior.rec) * 100 : null;  // mês anterior 0 => "—"
+      const serie6 = [];
+      for (let i = idxAtual - 5; i <= idxAtual; i++) { const d = mesData(i); serie6.push({ idx: i, label: mLabel(i), rec: d.rec, cus: d.cus, n: d.n }); }
+      const max6 = serie6.reduce((m, p) => Math.max(m, p.rec, p.cus), 0);
+
+      // ---- card 2: top 5 clientes por margem (ignora receita 0) ----
+      const clientes = Object.keys(porCliente).map(id => {
+        const v = porCliente[id];
+        return {
+          id: id,
+          nome: id === "__sem__" ? "(sem cliente)" : (nomes[id] || ("cliente #" + id)),
+          rec: v.rec, cus: v.cus, n: v.n, margem: margemPct(v.rec, v.cus)
+        };
+      }).filter(c => c.rec > 0 && c.margem != null)
+        .sort((a, b) => b.margem - a.margem)
+        .slice(0, 5);
+
+      // ---- card 3/4: mix e eficiência ----
+      const mixTotal = mix.manutencao.rec + mix.instalacao.rec + mix.outros.rec;
+      const fatias = [
+        { chave: "manutencao", nome: "Manutenção", cor: "#0078D4", rec: mix.manutencao.rec, cus: mix.manutencao.cus, n: mix.manutencao.n },
+        { chave: "instalacao", nome: "Instalação", cor: "#D29922", rec: mix.instalacao.rec, cus: mix.instalacao.cus, n: mix.instalacao.n },
+        { chave: "outros", nome: "Outros", cor: "#7D8590", rec: mix.outros.rec, cus: mix.outros.cus, n: mix.outros.n }
+      ].map(s => ({ ...s, part: mixTotal > 0 ? (s.rec / mixTotal) * 100 : null, margem: margemPct(s.rec, s.cus) }));
+
+      // ---- card 5: MTTR ----
+      const mttrHoras = mttrN > 0 ? mttrSoma / mttrN : null;
+
+      // ---- card 6: 12 meses de margem ----
+      const serie12 = [];
+      for (let i = idxAtual - 11; i <= idxAtual; i++) {
+        const d = mesData(i);
+        const m = margemPct(d.rec, d.cus);
+        serie12.push({ idx: i, label: mLabel(i), rec: d.rec, cus: d.cus, n: d.n, margem: m, valor: m == null ? 0 : m, semReceita: m == null });
+      }
+
+      // ---- card 7: backlog ordenado pelos tipos reais + eventuais extras ----
+      const tiposPresentes = Object.keys(backlog);
+      const ordemTipos = TIPOS_OS.filter(t => tiposPresentes.indexOf(t) >= 0)
+        .concat(tiposPresentes.filter(t => TIPOS_OS.indexOf(t) < 0).sort());
+      const backlogLinhas = ordemTipos.map(t => {
+        const cont = backlog[t] || {};
+        const statusPresentes = Object.keys(cont);
+        const ordemSt = STATUS_OS.filter(s => statusPresentes.indexOf(s) >= 0)
+          .concat(statusPresentes.filter(s => STATUS_OS.indexOf(s) < 0).sort());
+        const segs = ordemSt.map(s => ({ status: s, n: cont[s], cor: STATUS_COR[s] || "#7D8590" }));
+        return { tipo: t, total: segs.reduce((a, s) => a + s.n, 0), segs: segs };
+      });
+      const maxBacklog = backlogLinhas.reduce((m, l) => Math.max(m, l.total), 0);
+
+      return {
+        total: list.length,
+        semConclusao, semValor,
+        mesAtual: { idx: idxAtual, label: mLabel(idxAtual), rec: atual.rec, cus: atual.cus, n: atual.n, margem: margemPct(atual.rec, atual.cus) },
+        mesAnterior: { idx: idxAtual - 1, label: mLabel(idxAtual - 1), rec: anterior.rec, cus: anterior.cus, n: anterior.n },
+        deltaRec, serie6, max6,
+        clientes,
+        fatias, mixTotal,
+        mttr: { horas: mttrHoras, n: mttrN, ignoradas: mttrIgnoradas, semConclusao: corretivasSemConclusao },
+        serie12,
+        backlog: backlogLinhas, maxBacklog
+      };
+    }
+
+    /* =========================================================================
+       RENDER — cada card tem estado vazio próprio. Nada de NaN/Infinity na tela.
+       ========================================================================= */
+    const vazio = (msg) => `<div class="vazio">${esc(msg)}</div>`;
+
+    function renderC1(m) {
+      const d = m.deltaRec;
+      const cls = d == null ? "flat" : (d > 0 ? "up" : (d < 0 ? "down" : "flat"));
+      const sinal = d == null ? "" : (d > 0 ? "+" : "");
+      const deltaTxt = d == null
+        ? `<span class="delta flat">—</span> <span class="sub" style="display:inline">sem receita em ${esc(m.mesAnterior.label)} para comparar</span>`
+        : `<span class="delta ${cls}">${sinal}${fmtPct(d)}</span> <span class="sub" style="display:inline">vs ${esc(m.mesAnterior.label)} (${esc(brl(m.mesAnterior.rec))})</span>`;
+
+      const corpo = m.mesAtual.rec > 0 || m.mesAtual.cus > 0
+        ? `<div class="big" style="color:#3FB950">${esc(brl(m.mesAtual.rec))}</div>
+           <div class="sub">Custos do mês: <strong>${esc(brl(m.mesAtual.cus))}</strong> · Resultado: <strong>${esc(brl(m.mesAtual.rec - m.mesAtual.cus))}</strong> · Margem: <strong>${fmtPct(m.mesAtual.margem)}</strong></div>
+           <div style="margin-top:6px">${deltaTxt}</div>`
+        : vazio("Sem receita nem custo concluídos em " + m.mesAtual.label + ".");
+
+      let barras;
+      if (m.max6 > 0) {
+        barras = `<div class="bars">${m.serie6.map(p => {
+          const hr = Math.max(2, Math.round((p.rec / m.max6) * 100));
+          const hc = Math.max(2, Math.round((p.cus / m.max6) * 100));
+          const t = `${p.label} — receita ${brl(p.rec)} / custo ${brl(p.cus)}`;
+          return `<div class="col" title="${esc(t)}">
+              <div class="bwrap"><div class="b rec" style="height:${hr}%"></div><div class="b cus" style="height:${hc}%"></div></div>
+              <div class="lb">${esc(p.label)}</div>
+            </div>`;
+        }).join("")}</div>
+        <div class="bklegend"><span class="li"><span class="dot" style="background:#0078D4"></span>receita</span><span class="li"><span class="dot" style="background:#7D8590"></span>custo</span></div>`;
+      } else {
+        barras = vazio("Sem dados nos últimos 6 meses (nenhuma OS com Data de Conclusão no período).");
+      }
+      $("c1body").innerHTML = corpo + barras;
+    }
+
+    function renderC2(m) {
+      if (!m.clientes.length) { $("c2body").innerHTML = vazio("Nenhum cliente com receita lançada — margem não é calculável."); return; }
+      $("c2body").innerHTML = `<div class="hlist">${m.clientes.map(c => {
+        const cor = corMargem(c.margem);
+        const larg = Math.max(0, Math.min(100, c.margem));   // margem negativa não vira barra invertida
+        return `<div class="hrow" title="${esc(c.nome + " — receita " + brl(c.rec) + " / custo " + brl(c.cus) + " / " + c.n + " OS")}">
+            <div class="hhead"><span class="nm">${esc(c.nome)}</span><span class="vl" style="color:${cor}">${fmtPct(c.margem)}</span></div>
+            <div class="track"><span style="width:${larg}%;background:${cor}"></span></div>
+            <div class="sub">${esc(brl(c.rec))} receita · ${esc(brl(c.cus))} custo · ${c.n} OS</div>
+          </div>`;
+      }).join("")}</div>`;
+    }
+
+    function renderC3(m) {
+      if (!(m.mixTotal > 0)) {
+        $("c3body").innerHTML = vazio("Sem receita para distribuir — nenhuma OS com Valor da OS preenchido.");
+        return;
+      }
+      let ang = 0;
+      const stops = m.fatias.map(f => {
+        const de = ang; ang += (f.part / 100) * 360;
+        return `${f.cor} ${de.toFixed(3)}deg ${ang.toFixed(3)}deg`;
+      }).join(", ");
+      const maior = m.fatias.slice().sort((a, b) => b.rec - a.rec)[0];
+      $("c3body").innerHTML = `<div class="donut-wrap">
+        <div class="donut" style="background:conic-gradient(${stops})">
+          <div class="mid"><div class="t1">maior fatia</div><div class="t2" style="color:${maior.cor}">${esc(maior.nome)}</div><div class="t1">${fmtPct(maior.part, 0)}</div></div>
+        </div>
+        <div class="leg">${m.fatias.map(f => `<div class="li"><span class="dot" style="background:${f.cor}"></span><span>${esc(f.nome)}</span><span class="pv">${esc(brl(f.rec))} · ${fmtPct(f.part, 0)}</span></div>`).join("")}</div>
+      </div>
+      <div class="nota">"Outros" reúne os 9 valores de Tipo (completo) que não são manutenção preventiva/corretiva nem execução de projeto programada — visitas técnicas, emergências, entrega de material, inspeção, reunião técnica, extra-escopo e outro. Ficam visíveis de propósito: escondê-los distorceria a leitura do mix.</div>`;
+    }
+
+    function renderC4(m) {
+      const alvos = m.fatias.filter(f => f.chave !== "outros");
+      const comDados = alvos.filter(f => f.rec > 0);
+      if (!comDados.length) { $("c4body").innerHTML = vazio("Sem receita em manutenção ou instalação — margem líquida não é calculável."); return; }
+      $("c4body").innerHTML = `<div class="hlist">${alvos.map(f => {
+        if (!(f.rec > 0)) {
+          return `<div class="hrow"><div class="hhead"><span class="nm">${esc(f.nome)}</span><span class="vl" style="color:#7D8590">—</span></div>
+            <div class="track"></div><div class="sub">sem receita no período</div></div>`;
+        }
+        const cor = corMargem(f.margem);
+        const larg = Math.max(0, Math.min(100, f.margem));
+        return `<div class="hrow"><div class="hhead"><span class="nm">${esc(f.nome)}</span><span class="vl" style="color:${cor}">${fmtPct(f.margem)}</span></div>
+          <div class="track"><span style="width:${larg}%;background:${cor}"></span></div>
+          <div class="sub">${esc(brl(f.rec))} receita − ${esc(brl(f.cus))} custo = <strong>${esc(brl(f.rec - f.cus))}</strong> · ${f.n} OS</div></div>`;
+      }).join("")}</div>`;
+    }
+
+    function renderC5(m) {
+      const t = m.mttr;
+      let corpo;
+      if (t.n > 0) {
+        const dias = t.horas / 24;
+        corpo = `<div class="big">${esc(t.horas.toFixed(1).replace(".", ","))} h</div>
+          <div class="sub">${dias >= 1 ? "≈ " + esc(dias.toFixed(1).replace(".", ",")) + " dias · " : ""}base: ${t.n} OS de manutenção corretiva concluída(s)</div>`;
+      } else {
+        corpo = vazio("Sem OS de “Manutenção corretiva” concluída — MTTR não é calculável.");
+      }
+      const avisos = [];
+      if (t.semConclusao > 0) avisos.push(t.semConclusao + " corretiva(s) ainda sem Data de Conclusão (ou sem Data de Abertura) ficaram fora da média.");
+      if (t.ignoradas > 0) avisos.push(t.ignoradas + " corretiva(s) com conclusão anterior à abertura foram descartadas por inconsistência de data.");
+      $("c5body").innerHTML = corpo + (avisos.length ? `<div class="sub" style="margin-top:8px">${esc(avisos.join(" "))}</div>` : "");
+    }
+
+    function renderC6(m) {
+      const comDados = m.serie12.filter(p => p.rec > 0).length;
+      if (!comDados) { $("c6body").innerHTML = vazio("Sem receita nos últimos 12 meses — não há margem histórica para traçar."); return; }
+      const W = 720, H = 180, padL = 42, padR = 14, padT = 12, padB = 30;
+      const vals = m.serie12.map(p => p.valor);
+      const yMin = Math.min(0, Math.min.apply(null, vals));
+      const yMax = Math.max(100, Math.max.apply(null, vals));
+      const range = (yMax - yMin) || 100;                       // nunca 0 (yMax>=100, yMin<=0)
+      const x = (i) => padL + (i * (W - padL - padR)) / (m.serie12.length - 1 || 1);
+      const y = (v) => padT + (1 - (v - yMin) / range) * (H - padT - padB);
+      const pts = m.serie12.map((p, i) => x(i).toFixed(1) + "," + y(p.valor).toFixed(1)).join(" ");
+      const linhas = [0, 50, 100].filter(v => v >= yMin && v <= yMax)
+        .map(v => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" stroke="#21262d" stroke-width="1" />
+                   <text x="4" y="${(y(v) + 3.5).toFixed(1)}" fill="#8b949e" font-size="10">${v}%</text>`).join("");
+      const dots = m.serie12.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.valor).toFixed(1)}" r="3" fill="${p.semReceita ? "#7D8590" : "#0078D4"}"><title>${esc(p.label + " — " + (p.semReceita ? "sem receita" : "margem " + fmtPct(p.margem) + " · " + brl(p.rec) + " receita"))}</title></circle>`).join("");
+      const rotulos = m.serie12.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${H - 8}" fill="#8b949e" font-size="10" text-anchor="middle">${esc(p.label)}</text>`).join("");
+      $("c6body").innerHTML = `<svg class="linechart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Margem percentual por mês nos últimos 12 meses">
+          ${linhas}
+          <polyline points="${pts}" fill="none" stroke="#0078D4" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+          ${dots}
+          ${rotulos}
+        </svg>
+        <div class="nota">Margem = (receita − custo) ÷ receita, por mês de conclusão. Meses sem receita entram como 0% (ponto cinza), não como buraco na linha.</div>`;
+    }
+
+    function renderC7(m) {
+      if (!m.backlog.length || !(m.maxBacklog > 0)) { $("c7body").innerHTML = vazio("Nenhuma OS para distribuir por tipo."); return; }
+      const usados = {};
+      const corpo = m.backlog.map(l => {
+        const largTotal = (l.total / m.maxBacklog) * 100;       // maxBacklog > 0 garantido acima
+        const segs = l.segs.map(s => {
+          usados[s.status] = s.cor;
+          const w = l.total > 0 ? (s.n / l.total) * 100 : 0;
+          return `<span style="width:${w.toFixed(2)}%;background:${s.cor}" title="${esc(s.status + ": " + s.n)}"></span>`;
+        }).join("");
+        return `<div class="row">
+            <div class="hd"><span>${esc(l.tipo)}</span><span class="c">${l.total} OS</span></div>
+            <div class="stack" style="width:${largTotal.toFixed(2)}%;min-width:40px">${segs}</div>
+          </div>`;
+      }).join("");
+      const leg = Object.keys(usados).map(s => `<span class="li"><span class="dot" style="background:${usados[s]}"></span>${esc(s)}</span>`).join("");
+      $("c7body").innerHTML = `<div class="bk">${corpo}</div><div class="bklegend">${leg}</div>`;
+    }
+
+    function renderAll(m) {
+      renderC1(m); renderC2(m); renderC3(m); renderC4(m); renderC5(m); renderC6(m); renderC7(m);
+      const alertas = [];
+      if (m.semConclusao) alertas.push(m.semConclusao + " sem Data de Conclusão");
+      if (m.semValor) alertas.push(m.semValor + " sem Valor da OS");
+      $("hint").textContent = m.total
+        ? m.total + " OS carregada(s)" + (alertas.length ? " · " + alertas.join(" · ") + " — cards financeiros ficam parciais até esses campos serem preenchidos" : "")
+        : "Nenhuma OS na lista.";
+      $("dgrid").hidden = false; $("topbar").hidden = false;
+    }
+
+    /* ========= auth + carga (mesmo fluxo das outras telas) ========= */
+    let nomeCliente = {};
+
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando ordens de serviço...");
+        const [os, cli] = await Promise.all([
+          EG.listItems("OrdensDeServico"),
+          EG.listItems("Clientes", "expand=fields($select=Title)&$top=500")
+        ]);
+        nomeCliente = {}; cli.forEach(c => { nomeCliente[c.id] = (c.fields && c.fields.Title) || null; });
+        renderAll(computeModel(os, nomeCliente, new Date()));
+        setStatus("OK — " + os.length + " OS analisada(s). Dashboard somente leitura.");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // exposto para teste da agregação com dados falsos (sem login):
+    //   DASH.renderAll(DASH.computeModel(itensFalsos, {"1":"Cliente X"}, new Date()))
+    window.DASH = { computeModel, renderAll, num, custoOS, margemPct, classeTipo, mIdx, mLabel, corMargem };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
