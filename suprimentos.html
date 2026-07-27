@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Suprimentos</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais da tela de Suprimentos (escopo próprio, não mexem no app.css compartilhado) */
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid #30363d; margin-bottom: 14px; }
+    .tab { background: transparent; border: 1px solid transparent; border-bottom: none; color: #8b949e; padding: 8px 16px; border-radius: 8px 8px 0 0; font-size: .9rem; }
+    .tab:hover { color: #e6edf3; background: #ffffff0d; }
+    .tab.on { color: #e6edf3; background: #161b22; border-color: #30363d; }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 14px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
+    .kpi .k { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .03em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+    .kpi.warn .v { color: #f85149; }
+
+    .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .filters label { color: #8b949e; font-size: .82rem; display: flex; align-items: center; gap: 6px; }
+    .filters select, .filters input[type=text] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .85rem; font-family: inherit;
+    }
+    .filters .cnt { color: #8b949e; font-size: .82rem; margin-left: auto; }
+
+    td.neg { color: #f85149; font-weight: 600; }
+    tr.semestoque td:first-child { box-shadow: inset 3px 0 0 #f85149; }
+    .inativo { opacity: .55; }
+    .sub { color: #8b949e; font-size: .8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="suprimentos.html" class="active">Suprimentos</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+
+  <main>
+    <div class="tabs">
+      <button class="tab on" id="tabOrc" data-tab="orc">Orçamentos de Material</button>
+      <button class="tab" id="tabPrd" data-tab="prd">Produtos / Estoque</button>
+    </div>
+
+    <!-- ===== ORÇAMENTOS ===== -->
+    <section id="secOrc">
+      <div class="kpis">
+        <div class="kpi"><div class="k">Orçamentos</div><div class="v" id="kOrcTotal">—</div></div>
+        <div class="kpi"><div class="k">Valor somado</div><div class="v" id="kOrcValor">—</div></div>
+        <div class="kpi"><div class="k">Em rascunho</div><div class="v" id="kOrcRascunho">—</div></div>
+      </div>
+      <div class="filters">
+        <label>Status
+          <select id="fStatus"><option value="">Todos</option></select>
+        </label>
+        <span class="cnt" id="cntOrc"></span>
+      </div>
+      <table id="tblOrc" hidden>
+        <thead><tr>
+          <th>Número</th><th>Cliente</th><th>Status</th><th>Valor total</th><th>Margem %</th><th>Criado em</th>
+        </tr></thead>
+        <tbody id="tbOrc"></tbody>
+      </table>
+      <div class="empty" id="emptyOrc">Carregue os dados para ver os orçamentos.</div>
+    </section>
+
+    <!-- ===== PRODUTOS ===== -->
+    <section id="secPrd" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Produtos</div><div class="v" id="kPrdTotal">—</div></div>
+        <div class="kpi warn"><div class="k">Sem disponibilidade</div><div class="v" id="kPrdSem">—</div></div>
+        <div class="kpi"><div class="k">Custo total em estoque</div><div class="v" id="kPrdCusto">—</div></div>
+      </div>
+      <div class="filters">
+        <label>Buscar <input type="text" id="fBusca" placeholder="código ou descrição" /></label>
+        <label><input type="checkbox" id="fSemEstoque" /> só sem disponibilidade</label>
+        <label><input type="checkbox" id="fSoAtivos" /> só ativos</label>
+        <span class="cnt" id="cntPrd"></span>
+      </div>
+      <table id="tblPrd" hidden>
+        <thead><tr>
+          <th>Código</th><th>Descrição</th><th>Estoque atual</th><th>Reservado</th><th>Disponível</th>
+          <th>Custo médio</th><th>Preço sugerido</th>
+        </tr></thead>
+        <tbody id="tbPrd"></tbody>
+      </table>
+      <div class="empty" id="emptyPrd">Carregue os dados para ver os produtos.</div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    // Mapa de cores dos status de Orcamentos_Venda (local desta tela — o CRM usa pipeline.js).
+    const STATUS_CORES = {
+      "Rascunho": "#8B949E",
+      "Aguardando Estoque": "#D29922",
+      "Aprovado Internamente": "#A371F7",
+      "Enviado ao Cliente": "#58A6FF",
+      "Aceito - Aguardando Faturamento": "#1ABFBF",
+      "Faturado": "#22B573",
+      "Cancelado": "#F85149"
+    };
+    const statusCor = (s) => STATUS_CORES[s] || "#8B949E";
+
+    let orcamentos = [], produtos = [], itens = [];
+    let orcMap = {}, prdMap = {}, nomeCliente = {}, nomeProduto = {};
+    let itensCols = {}; // displayName -> internalName (resolvido em runtime)
+
+    const num = (v) => (v == null || v === "") ? null : Number(v);
+    const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+    const fmtPct = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
+    const brl = (v) => v == null ? "—" : EG.BRL(Number(v));
+
+    /* ---------- auth ---------- */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; }
+      catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    /* ---------- abas ---------- */
+    document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+      document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
+      const orc = b.dataset.tab === "orc";
+      $("secOrc").hidden = !orc; $("secPrd").hidden = orc;
+    });
+
+    /* ---------- carga (somente leitura) ---------- */
+    const soft = (p, rot) => p.catch(e => { console.warn(rot + ": " + e.message); return []; });
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando suprimentos...");
+        const [orc, prd, its, cli, cols] = await Promise.all([
+          soft(EG.listItems("Orcamentos_Venda"), "Orcamentos_Venda"),
+          soft(EG.listItems("Produtos"), "Produtos"),
+          soft(EG.listItems("Itens_Orcamento_Venda"), "Itens_Orcamento_Venda"),
+          soft(EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"), "Clientes"),
+          soft(EG.listColumns("Itens_Orcamento_Venda"), "colunas de Itens_Orcamento_Venda")
+        ]);
+        orcamentos = orc; produtos = prd; itens = its;
+
+        nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = (c.fields || {}).Title);
+        nomeProduto = {}; prd.forEach(p => nomeProduto[p.id] = (p.fields || {}).Title);
+        orcMap = {}; orc.forEach(o => orcMap[o.id] = o);
+        prdMap = {}; prd.forEach(p => prdMap[p.id] = p);
+        itensCols = {}; cols.forEach(c => { if (c && c.displayName) itensCols[c.displayName] = c.name; });
+
+        montaFiltroStatus();
+        renderOrc(); renderPrd();
+        setStatus("OK — " + orc.length + " orçamento(s), " + prd.length + " produto(s), " + its.length + " item(ns) de orçamento.");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    /* ---------- orçamentos ---------- */
+    const cliNome = (f) => nomeCliente[f.ClienteLookupId] || (f.ClienteLookupId ? "cliente #" + f.ClienteLookupId : "—");
+
+    function montaFiltroStatus() {
+      const vistos = new Set(orcamentos.map(o => (o.fields || {}).Status_Orcamento).filter(Boolean));
+      const lista = Object.keys(STATUS_CORES).concat([...vistos].filter(s => !(s in STATUS_CORES)));
+      $("fStatus").innerHTML = '<option value="">Todos</option>' +
+        lista.map(s => `<option value="${esc(s)}">${esc(s)}${vistos.has(s) ? "" : " (0)"}</option>`).join("");
+    }
+    $("fStatus").onchange = renderOrc;
+
+    function renderOrc() {
+      // indicadores sempre sobre o conjunto completo carregado
+      const valor = orcamentos.reduce((a, o) => a + (num((o.fields || {}).Valor_Total_Orcamento) || 0), 0);
+      const rasc = orcamentos.filter(o => (o.fields || {}).Status_Orcamento === "Rascunho").length;
+      $("kOrcTotal").textContent = orcamentos.length;
+      $("kOrcValor").textContent = EG.BRL(valor);
+      $("kOrcRascunho").textContent = rasc;
+
+      const filtro = $("fStatus").value;
+      const lista = filtro ? orcamentos.filter(o => (o.fields || {}).Status_Orcamento === filtro) : orcamentos;
+      $("cntOrc").textContent = lista.length + " de " + orcamentos.length + " exibido(s)";
+
+      if (!lista.length) {
+        $("tblOrc").hidden = true; $("emptyOrc").hidden = false;
+        $("emptyOrc").textContent = orcamentos.length
+          ? "Nenhum orçamento com o status selecionado."
+          : "Nenhum orçamento de material cadastrado.";
+        return;
+      }
+      $("emptyOrc").hidden = true; $("tblOrc").hidden = false;
+      $("tbOrc").innerHTML = lista.map(o => {
+        const f = o.fields || {}, cor = statusCor(f.Status_Orcamento);
+        return `<tr data-id="${esc(o.id)}">
+          <td>${esc(f.Title ?? "—")}</td>
+          <td>${esc(cliNome(f))}</td>
+          <td><span class="badge" style="border-color:${cor};color:${cor}">${esc(f.Status_Orcamento ?? "—")}</span></td>
+          <td class="num">${brl(num(f.Valor_Total_Orcamento))}</td>
+          <td>${fmtPct(num(f.Margem_Contribuicao_Pct))}</td>
+          <td>${esc(EG.fmtDate(f.Data_Criacao) ?? "—")}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    /* ---------- produtos ---------- */
+    const semDisp = (f) => (num(f.Estoque_Disponivel) ?? 0) <= 0;
+    ["fBusca", "fSemEstoque", "fSoAtivos"].forEach(id => {
+      $(id).addEventListener(id === "fBusca" ? "input" : "change", renderPrd);
+    });
+
+    function renderPrd() {
+      const semN = produtos.filter(p => semDisp(p.fields || {})).length;
+      const custo = produtos.reduce((a, p) => {
+        const f = p.fields || {};
+        return a + (num(f.Custo_Medio) || 0) * (num(f.Estoque_Atual) || 0);
+      }, 0);
+      $("kPrdTotal").textContent = produtos.length;
+      $("kPrdSem").textContent = semN;
+      $("kPrdCusto").textContent = EG.BRL(custo);
+
+      const q = $("fBusca").value.trim().toLowerCase();
+      const lista = produtos.filter(p => {
+        const f = p.fields || {};
+        if ($("fSemEstoque").checked && !semDisp(f)) return false;
+        if ($("fSoAtivos").checked && f.Ativo !== true) return false;
+        if (q && !((f.Title || "") + " " + (f.Codigo_Interno || "")).toLowerCase().includes(q)) return false;
+        return true;
+      });
+      $("cntPrd").textContent = lista.length + " de " + produtos.length + " exibido(s)";
+
+      if (!lista.length) {
+        $("tblPrd").hidden = true; $("emptyPrd").hidden = false;
+        $("emptyPrd").textContent = produtos.length
+          ? "Nenhum produto atende aos filtros."
+          : "Nenhum produto cadastrado.";
+        return;
+      }
+      $("emptyPrd").hidden = true; $("tblPrd").hidden = false;
+      $("tbPrd").innerHTML = lista.map(p => {
+        const f = p.fields || {}, sem = semDisp(f);
+        const cls = [sem ? "semestoque" : "", f.Ativo === false ? "inativo" : ""].filter(Boolean).join(" ");
+        return `<tr data-id="${esc(p.id)}" class="${cls}">
+          <td>${esc(f.Codigo_Interno ?? "—")}</td>
+          <td>${esc(f.Title ?? "—")}${f.Ativo === false ? ' <span class="sub">(inativo)</span>' : ""}</td>
+          <td>${fmtNum(num(f.Estoque_Atual))}</td>
+          <td>${fmtNum(num(f.Estoque_Reservado))}</td>
+          <td class="${sem ? "neg" : ""}">${fmtNum(num(f.Estoque_Disponivel))}</td>
+          <td>${brl(num(f.Custo_Medio))}</td>
+          <td class="num">${brl(num(f.Preco_Venda_Sugerido))}</td>
+        </tr>`;
+      }).join("");
+    }
+
+    /* ---------- drawer ---------- */
+    $("tbOrc").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && orcMap[tr.dataset.id]) drawerOrc(orcMap[tr.dataset.id]); });
+    $("tbPrd").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && prdMap[tr.dataset.id]) drawerPrd(prdMap[tr.dataset.id]); });
+    $("overlay").onclick = closeDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${esc(l)}</dt><dd>${esc(v)}</dd>`;
+
+    // valor de um item de orçamento: resolve o InternalName pelo displayName (varia conforme criação da coluna)
+    function campoItem(f, displayName) {
+      const n = itensCols[displayName];
+      return n && f[n] != null ? num(f[n]) : null;
+    }
+
+    function itensDoOrcamento(id) {
+      return itens.filter(i => String((i.fields || {}).OrcamentoLookupId) === String(id));
+    }
+
+    function drawerOrc(o) {
+      const f = o.fields || {};
+      const rows = [
+        rowD("Cliente", cliNome(f)),
+        rowD("Status", f.Status_Orcamento),
+        rowD("Prioridade", f.Prioridade),
+        rowD("Origem da demanda", f.Origem_Demanda),
+        rowD("Canal de venda", f.Canal_Venda),
+        rowD("Valor total", f.Valor_Total_Orcamento != null ? brl(num(f.Valor_Total_Orcamento)) : null),
+        rowD("Valor materiais", f.Valor_Total_Materiais != null ? brl(num(f.Valor_Total_Materiais)) : null),
+        rowD("Custo materiais", f.Custo_Total_Materiais != null ? brl(num(f.Custo_Total_Materiais)) : null),
+        rowD("Margem contribuição", f.Margem_Contribuicao_Materiais != null ? brl(num(f.Margem_Contribuicao_Materiais)) : null),
+        rowD("Margem %", f.Margem_Contribuicao_Pct != null ? fmtPct(num(f.Margem_Contribuicao_Pct)) : null),
+        rowD("Criado em", EG.fmtDate(f.Data_Criacao)),
+        rowD("Próximo passo", EG.fmtDate(f.Data_Proximo_Passo)),
+        rowD("Observações", f.Observacoes)
+      ].join("");
+
+      const its = itensDoOrcamento(o.id);
+      const tabelaItens = its.length ? `
+        <table style="margin-top:10px">
+          <thead><tr><th>Item</th><th>Produto</th><th>Qtd</th><th>Total</th></tr></thead>
+          <tbody>${its.map(i => {
+            const g = i.fields || {};
+            const tot = campoItem(g, "Valor Total do Item (R$)");
+            return `<tr><td>${esc(g.Title ?? "—")}</td>
+              <td>${esc(nomeProduto[g.ProdutoLookupId] || (g.ProdutoLookupId ? "produto #" + g.ProdutoLookupId : "—"))}</td>
+              <td>${fmtNum(num(g.Quantidade))}</td>
+              <td class="num">${tot != null ? brl(tot) : "—"}</td></tr>`;
+          }).join("")}</tbody>
+        </table>` : `<div class="sub" style="margin-top:10px">Nenhum item vinculado a este orçamento.</div>`;
+
+      abreDrawer(f.Title ?? "(sem número)", `<dl>${rows}</dl>
+        <div class="sub" style="margin-top:14px;font-weight:600;color:#e6edf3">Itens do orçamento</div>
+        ${tabelaItens}`, f);
+    }
+
+    function drawerPrd(p) {
+      const f = p.fields || {};
+      const disp = num(f.Estoque_Disponivel);
+      const rows = [
+        rowD("Código interno", f.Codigo_Interno),
+        rowD("Ativo", f.Ativo === true ? "Sim" : f.Ativo === false ? "Não" : null),
+        rowD("Estoque atual", f.Estoque_Atual != null ? fmtNum(num(f.Estoque_Atual)) : null),
+        rowD("Estoque reservado", f.Estoque_Reservado != null ? fmtNum(num(f.Estoque_Reservado)) : null),
+        rowD("Estoque disponível", disp != null ? fmtNum(disp) : null),
+        rowD("Custo médio", f.Custo_Medio != null ? brl(num(f.Custo_Medio)) : null),
+        rowD("Preço sugerido", f.Preco_Venda_Sugerido != null ? brl(num(f.Preco_Venda_Sugerido)) : null),
+        rowD("Markup padrão", f.Markup_Padrao_Pct != null ? fmtPct(num(f.Markup_Padrao_Pct)) : null)
+      ].join("");
+      const alerta = (disp ?? 0) <= 0 ? `<div class="sub" style="color:#f85149;margin-top:8px">⚠ Sem disponibilidade em estoque.</div>` : "";
+      abreDrawer(f.Title ?? "(sem descrição)", `<dl>${rows}</dl>${alerta}`, f);
+    }
+
+    function abreDrawer(titulo, corpo, f) {
+      $("drawer").innerHTML = `
+        <div class="drawer-head"><div class="t">${esc(titulo)}</div><button class="x" id="dc">Fechar ✕</button></div>
+        <div class="drawer-body">${corpo}
+          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
+          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
+        </div>`;
+      $("dc").onclick = closeDrawer;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+      $("drawer").setAttribute("aria-hidden", "false");
+    }
+    function closeDrawer() {
+      $("drawer").classList.remove("open"); $("overlay").classList.remove("open");
+      $("drawer").setAttribute("aria-hidden", "true");
+    }
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
