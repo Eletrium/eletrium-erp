@@ -187,7 +187,7 @@
         rowD("Status atual", f.Status_Atual), rowD("Status do dia", f.Status_OS_Dia),
         rowD("Descrição", f.Descricao),
         rowD("Abertura", EG.fmtDate(f.DataAbertura)), rowD("Prevista", EG.fmtDate(f.DataPrevista)),
-        rowD("Início", fmtDT(f.Hora_Inicio)), rowD("Conclusão", EG.fmtDate(f.Data_Conclusao)),
+        rowD("Início", fmtDT(f.Hora_Inicio)), rowD("Conclusão", EG.fmtDate(f.DataConclusao ?? f.Data_Conclusao)),
         rowM("Valor da OS", f.ValorOS),
         rowD("Alerta de esquecimento", f.Alerta_Esquecimento_Enviado == null ? null : (f.Alerta_Esquecimento_Enviado ? "Sim" : "Não"))
       ].join("");

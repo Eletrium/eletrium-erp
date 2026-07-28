@@ -200,7 +200,10 @@
       list.forEach(it => {
         const f = (it && it.fields) || {};
         const rec = receitaOS(f), cus = custoOS(f);
-        const dConc = parseD(f.Data_Conclusao);
+        // O campo de registro e DataConclusao (camelCase, igual a DataAbertura/DataPrevista).
+        // Data_Conclusao e uma coluna duplicada orfa: ninguem escreve nela. Lemos as duas
+        // por tolerancia, mas a primeira e a que o canvas app realmente grava.
+        const dConc = parseD(f.DataConclusao ?? f.Data_Conclusao);
         const dAbre = parseD(f.DataAbertura);
 
         if (!dConc) semConclusao++;
