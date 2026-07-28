@@ -1,0 +1,812 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Fechamentos Técnicos</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
+    .kpi .k { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+    .kpi .sub { color: #8b949e; font-size: .74rem; margin-top: 2px; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    select, input[type=text], input[type=date] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit;
+    }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .toolbar .hint.right { margin-left: auto; }
+
+    /* abas das 3 seções */
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+    .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
+    .tab:hover { color: #e6edf3; }
+    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+
+    .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+
+    .pill { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: .74rem; font-weight: 600; color: #0d1117; white-space: nowrap; }
+    td .badge { white-space: nowrap; margin-top: 0; }
+    td.n { text-align: right; white-space: nowrap; }
+    td.dim { color: #8b949e; }
+    a.lnk { color: #58a6ff; font-size: .8rem; text-decoration: none; white-space: nowrap; }
+    a.lnk:hover { text-decoration: underline; }
+
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+
+    /* aviso de "somente leitura" da seção Veículos (o Power Apps antigo gravava aqui) */
+    .aviso-ro { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
+                border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
+    .aviso-ro strong { color: #e6edf3; }
+
+    /* bloco de destaque dos veículos pendentes (era a função da tela do Power Apps) */
+    .pend { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 8px; }
+    .pend-card { background: #161b22; border: 1px solid #f0883e55; border-left: 3px solid #f0883e; border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+    .pend-card:hover { border-color: #f0883e; }
+    .pend-card .t { font-weight: 600; font-size: .95rem; }
+    .pend-card .s { color: #8b949e; font-size: .82rem; margin-top: 3px; }
+
+    .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="fechamentos.html" class="active">Fechamentos</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="tabs" id="tabs" hidden>
+      <button class="tab active" data-sec="fech" id="tabFech">Fechamento mensal</button>
+      <button class="tab" data-sec="diar" id="tabDiar">Diárias</button>
+      <button class="tab" data-sec="veic" id="tabVeic">Veículos</button>
+      <span class="hint right" style="align-self:center"><span class="ro">somente leitura</span></span>
+    </div>
+
+    <!-- ======================= 1. FECHAMENTO MENSAL ======================= -->
+    <section id="sec_fech" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Fechamentos</div><div class="v" id="fK_qtd">0</div><div class="sub" id="fK_qtdSub">no filtro</div></div>
+        <div class="kpi"><div class="k">Valor total</div><div class="v" id="fK_total" style="color:#3fb950">R$ 0,00</div><div class="sub">soma de Valor_Total_Pagar</div></div>
+        <div class="kpi"><div class="k">Em aberto (não pago)</div><div class="v" id="fK_aberto" style="color:#F0883E">R$ 0,00</div><div class="sub">tudo que não está “Pago”</div></div>
+        <div class="kpi"><div class="k">Aguardando fechamento</div><div class="v" id="fK_agu" style="color:#D29922">0</div></div>
+        <div class="kpi"><div class="k">Pagos</div><div class="v" id="fK_pago" style="color:#22B573">0</div></div>
+      </div>
+
+      <div class="toolbar">
+        <label for="fAno">Ano</label>
+        <select id="fAno"><option value="">(Todos)</option></select>
+        <label for="fMes">Mês</label>
+        <select id="fMes"><option value="">(Todos)</option></select>
+        <label for="fStatusPg">Pagamento</label>
+        <select id="fStatusPg"><option value="">(Todos)</option></select>
+        <button class="sec" id="fLimpar">Limpar</button>
+        <span class="hint right" id="fContador"></span>
+      </div>
+
+      <table id="fTbl" hidden>
+        <thead><tr>
+          <th>Técnico</th><th>Período</th><th>Dias</th><th>Meia / Compl.</th>
+          <th>Horas</th><th>H. extras</th><th>KM</th><th>Valor a pagar</th><th>Pagamento</th><th>Relatório</th>
+        </tr></thead>
+        <tbody id="fTbody"></tbody>
+      </table>
+      <div class="empty" id="fEmpty" hidden></div>
+    </section>
+
+    <!-- ============================ 2. DIÁRIAS ============================ -->
+    <section id="sec_diar" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Diárias</div><div class="v" id="dK_qtd">0</div><div class="sub">no filtro</div></div>
+        <div class="kpi"><div class="k">Valor somado</div><div class="v" id="dK_valor" style="color:#3fb950">R$ 0,00</div><div class="sub">soma de Valor_Total_Dia</div></div>
+        <div class="kpi"><div class="k">Média por diária</div><div class="v" id="dK_media">—</div></div>
+        <div class="kpi"><div class="k">Horas produtivas</div><div class="v" id="dK_horas">0</div></div>
+        <div class="kpi"><div class="k">KM rodado</div><div class="v" id="dK_km">0</div></div>
+      </div>
+
+      <div class="toolbar">
+        <label for="dTecnico">Técnico</label>
+        <select id="dTecnico"><option value="">(Todos)</option></select>
+        <label for="dDe">De</label>
+        <input type="date" id="dDe" />
+        <label for="dAte">Até</label>
+        <input type="date" id="dAte" />
+        <label for="dStatus">Status do dia</label>
+        <select id="dStatus"><option value="">(Todos)</option></select>
+        <button class="sec" id="dLimpar">Limpar</button>
+        <span class="hint right" id="dContador"></span>
+      </div>
+
+      <table id="dTbl" hidden>
+        <thead><tr>
+          <th>Data</th><th>Técnico</th><th>Status do dia</th><th>Classificação</th>
+          <th>H. produtivas</th><th>Total h.</th><th>KM</th><th>Valor do dia</th>
+        </tr></thead>
+        <tbody id="dTbody"></tbody>
+      </table>
+      <div class="empty" id="dEmpty" hidden></div>
+    </section>
+
+    <!-- ============================ 3. VEÍCULOS =========================== -->
+    <section id="sec_veic" hidden>
+      <div class="aviso-ro">
+        <strong>Somente leitura.</strong> A tela antiga do Power Apps (<em>Scr_Fechamentos_Tecnicos</em>) existia só para
+        <em>Aprovar</em> / <em>Rejeitar</em> veículo. Aqui os pendentes e o motivo de rejeição são <strong>exibidos</strong>,
+        mas a gravação não foi portada — aprovar/rejeitar continua pelo Power Apps ou pelo SharePoint até que a escrita seja liberada.
+      </div>
+
+      <div class="kpis">
+        <div class="kpi"><div class="k">Pendentes de aprovação</div><div class="v" id="vK_pend" style="color:#F0883E">0</div></div>
+        <div class="kpi"><div class="k">Aprovados</div><div class="v" id="vK_apr" style="color:#22B573">0</div></div>
+        <div class="kpi"><div class="k">Rejeitados</div><div class="v" id="vK_rej" style="color:#F85149">0</div></div>
+        <div class="kpi"><div class="k">Com alteração pendente</div><div class="v" id="vK_alt" style="color:#D29922">0</div></div>
+        <div class="kpi"><div class="k">Ativos e elegíveis a reembolso</div><div class="v" id="vK_eleg">0</div></div>
+      </div>
+
+      <div class="toolbar">
+        <label for="vTecnico">Técnico</label>
+        <select id="vTecnico"><option value="">(Todos)</option></select>
+        <label for="vStatus">Aprovação</label>
+        <select id="vStatus"><option value="">(Todos)</option></select>
+        <button class="sec" id="vLimpar">Limpar</button>
+        <span class="hint right" id="vContador"></span>
+      </div>
+
+      <div class="secao" id="vSecPend" hidden>Pendentes de aprovação <span>— o que a tela do Power Apps mostrava</span></div>
+      <div class="pend" id="vPend"></div>
+
+      <div class="secao">Todos os veículos</div>
+      <table id="vTbl" hidden>
+        <thead><tr>
+          <th>Placa</th><th>Modelo</th><th>Técnico</th><th>Tipo</th><th>R$ / km</th>
+          <th>Elegível</th><th>Ativo</th><th>Aprovação</th><th>Motivo da rejeição</th>
+        </tr></thead>
+        <tbody id="vTbody"></tbody>
+      </table>
+      <div class="empty" id="vEmpty" hidden></div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ===================================================================
+       Valores reais de Choice — batem CARACTERE A CARACTERE com o SharePoint.
+       "Marco" é sem cedilha na lista (é assim mesmo); os status de dia usam
+       travessão U+2014. Qualquer divergência é denunciada por EG.validarChoices,
+       senão o item cairia no fallback e o número ficaria errado em silêncio.
+       =================================================================== */
+    const MESES = ["Janeiro", "Fevereiro", "Marco", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+    // rótulo bonito só para exibição — o valor gravado continua sendo o da lista
+    const MES_LABEL = { "Marco": "Março" };
+    const mesLabel = (m) => (m == null || m === "") ? null : (MES_LABEL[m] || m);
+    const mesIdx = (m) => MESES.indexOf(m); // -1 quando desconhecido -> vai pro fim da ordenação
+
+    const STATUS_PAGAMENTO = ["Aguardando Fechamento", "Fechado - Aguardando Pagamento", "Pago"];
+    const COR_PAGAMENTO = {
+      "Aguardando Fechamento": "#D29922",
+      "Fechado - Aguardando Pagamento": "#58A6FF",
+      "Pago": "#22B573"
+    };
+
+    const STATUS_DIA = ["Em campo", "Encerrado — normal", "Encerrado — antecipado", "Ausente — justificado", "Ausente — não justificado", "Sobreaviso"];
+    const COR_DIA = {
+      "Em campo": "#58A6FF",
+      "Encerrado — normal": "#22B573",
+      "Encerrado — antecipado": "#D29922",
+      "Ausente — justificado": "#8B949E",
+      "Ausente — não justificado": "#F85149",
+      "Sobreaviso": "#A371F7"
+    };
+
+    const CLASSIFICACAO = ["Meia Diaria (1-4h)", "Diaria Completa (5-8h)", "Diaria Completa + Horas Extras (+8h)", "Sem trabalho registrado"];
+
+    const STATUS_APROVACAO = ["Pendente", "Aprovado", "Rejeitado"];
+    const COR_APROVACAO = { "Pendente": "#F0883E", "Aprovado": "#22B573", "Rejeitado": "#F85149" };
+
+    const cor = (mapa, v) => mapa[v] || "#8b949e";
+
+    /* ===================== helpers numéricos / de data =====================
+       Tudo blindado: nada de NaN/Infinity na tela. num() sempre devolve número
+       finito; media() devolve null quando não há denominador. */
+    const num = (v) => {
+      if (typeof v === "number") return isFinite(v) ? v : 0;
+      if (v == null || v === "") return 0;
+      const n = Number(v);
+      return isFinite(n) ? n : 0;
+    };
+    const temValor = (v) => v != null && v !== "";
+    // preenchido E realmente numérico. Um valor preenchido mas não-numérico (ou Infinity)
+    // NÃO pode virar "0" na tela: zero é um número afirmativo e mentiria sobre o dado.
+    const ehNum = (v) => temValor(v) && isFinite(Number(v));
+    const fmtN = (v, casas) => num(v).toLocaleString("pt-BR", { minimumFractionDigits: casas || 0, maximumFractionDigits: casas || 0 });
+    // célula numérica: "—" quando vazio ou não-numérico (0 preenchido continua sendo 0)
+    const cel = (v, casas) => ehNum(v) ? fmtN(v, casas) : "—";
+    const media = (soma, n) => (n > 0 && isFinite(soma)) ? soma / n : null;
+    const brl = (v) => EG.BRL(num(v));
+    // célula de dinheiro: "—" quando o campo não veio, em vez de fingir "R$ 0,00"
+    const celBRL = (v) => ehNum(v) ? brl(v) : "—";
+    const simNao = (v) => v == null ? null : (v === true ? "Sim" : (v === false ? "Não" : String(v)));
+
+    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+    // chave AAAA-MM-DD derivada da data LOCAL, para o filtro casar com o que é exibido
+    const dKey = (s) => {
+      const d = parseD(s); if (!d) return null;
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    const fmtDT = (s) => { const d = parseD(s); return d ? d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : (s || null); };
+    const fmtHora = (s) => { const d = parseD(s); return d ? d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : (s || null); };
+
+    /* Campo Hyperlink do SharePoint volta do Graph ora como string, ora como
+       {Url, Description}. E só deixamos passar http/https (nada de javascript:). */
+    const urlSeguro = (v) => {
+      if (!v) return null;
+      const bruto = (typeof v === "object") ? (v.Url || v.url || null) : v;
+      if (!bruto) return null;
+      const s = String(bruto).trim();
+      return /^https?:\/\//i.test(s) ? s : null;
+    };
+    const link = (v, rotulo) => {
+      const u = urlSeguro(v);
+      return u ? "<a class='lnk' href='" + esc(u) + "' target='_blank' rel='noopener'>" + esc(rotulo) + " ↗</a>" : "";
+    };
+
+    /* ============================== estado ============================== */
+    let fechamentos = [], diarias = [], veiculos = [], tecnicos = [];
+    let nomeTecnico = {}, veicRotulo = {};
+    let mapFech = {}, mapDiar = {}, mapVeic = {};
+    let carregado = false;
+
+    const tecNome = (lookupId) => lookupId == null ? "—" : (nomeTecnico[lookupId] || ("técnico #" + lookupId));
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // uma lista que falha não derruba as outras seções
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    /* ============================== abas ============================== */
+    let secAtual = "fech";
+    document.querySelectorAll(".tab").forEach(b => {
+      b.onclick = () => mostrarSec(b.dataset.sec);
+    });
+    function mostrarSec(id) {
+      secAtual = id;
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.sec === id));
+      ["fech", "diar", "veic"].forEach(s => { $("sec_" + s).hidden = !carregado || (s !== id); });
+    }
+
+    /* ============================== carga ============================== */
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando fechamentos técnicos...");
+
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
+        // Mes entra aqui porque a ORDENAÇÃO por período depende do rótulo bater.
+        Promise.all([
+          EG.validarChoices("Fechamento_Mensal_Tecnico", "Status_Pagamento", STATUS_PAGAMENTO).then(v => ({ v, rotulo: "Status de Pagamento (Fechamento_Mensal_Tecnico)" })),
+          EG.validarChoices("Fechamento_Mensal_Tecnico", "Mes", MESES).then(v => ({ v, rotulo: "Mês (Fechamento_Mensal_Tecnico)" })),
+          EG.validarChoices("Diaria_Tecnico", "Status_Dia", STATUS_DIA).then(v => ({ v, rotulo: "Status do Dia (Diaria_Tecnico)" })),
+          EG.validarChoices("Diaria_Tecnico", "Classificacao_Jornada", CLASSIFICACAO).then(v => ({ v, rotulo: "Classificação da Jornada (Diaria_Tecnico)" })),
+          EG.validarChoices("Veiculos_Tecnicos", "Status_Aprovacao", STATUS_APROVACAO).then(v => ({ v, rotulo: "Status de Aprovação (Veiculos_Tecnicos)" }))
+        ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
+
+        const [fe, di, ve, te] = await Promise.all([
+          soft(EG.listItems("Fechamento_Mensal_Tecnico"), "Fechamento_Mensal_Tecnico"),
+          soft(EG.listItems("Diaria_Tecnico"), "Diaria_Tecnico"),
+          soft(EG.listItems("Veiculos_Tecnicos"), "Veiculos_Tecnicos"),
+          soft(EG.listItems("TecnicosMEI"), "TecnicosMEI")
+        ]);
+        setDados(fe, di, ve, te);
+        carregado = true;
+        $("tabs").hidden = false;
+        montarFiltros();
+        renderTudo();
+        mostrarSec(secAtual);
+        setStatus("OK — " + fechamentos.length + " fechamento(s), " + diarias.length + " diária(s), " +
+                  veiculos.length + " veículo(s), " + tecnicos.length + " técnico(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // separado da carga para poder ser exercitado com dados falsos (window.FEC.setDados)
+    function setDados(fe, di, ve, te) {
+      fechamentos = fe || []; diarias = di || []; veiculos = ve || []; tecnicos = te || [];
+      nomeTecnico = {}; tecnicos.forEach(t => { nomeTecnico[t.id] = (t.fields || {}).Title; });
+      veicRotulo = {};
+      veiculos.forEach(v => {
+        const f = v.fields || {};
+        veicRotulo[v.id] = [f.Placa, f.Modelo].filter(Boolean).join(" — ") || f.Title || ("veículo #" + v.id);
+      });
+      mapFech = {}; fechamentos.forEach(i => { mapFech[i.id] = i; });
+      mapDiar = {}; diarias.forEach(i => { mapDiar[i.id] = i; });
+      mapVeic = {}; veiculos.forEach(i => { mapVeic[i.id] = i; });
+    }
+
+    function montarFiltros() {
+      // anos realmente presentes nos fechamentos, do mais recente pro mais antigo
+      const anos = [...new Set(fechamentos.map(o => (o.fields || {}).Ano).filter(temValor).map(a => String(a)))]
+        .sort((a, b) => num(b) - num(a));
+      $("fAno").innerHTML = '<option value="">(Todos)</option>' + anos.map(a => '<option value="' + esc(a) + '">' + esc(a) + "</option>").join("");
+      $("fMes").innerHTML = '<option value="">(Todos)</option>' + MESES.map(m => '<option value="' + esc(m) + '">' + esc(mesLabel(m)) + "</option>").join("");
+      $("fStatusPg").innerHTML = '<option value="">(Todos)</option>' + STATUS_PAGAMENTO.map(s => '<option value="' + esc(s) + '">' + esc(s) + "</option>").join("");
+
+      const optTec = tecnicos.map(t => '<option value="' + esc(t.id) + '">' + esc((t.fields || {}).Title || ("técnico #" + t.id)) + "</option>").join("");
+      $("dTecnico").innerHTML = '<option value="">(Todos)</option>' + optTec;
+      $("vTecnico").innerHTML = '<option value="">(Todos)</option>' + optTec;
+      $("dStatus").innerHTML = '<option value="">(Todos)</option>' + STATUS_DIA.map(s => '<option value="' + esc(s) + '">' + esc(s) + "</option>").join("");
+      $("vStatus").innerHTML = '<option value="">(Todos)</option>' + STATUS_APROVACAO.map(s => '<option value="' + esc(s) + '">' + esc(s) + "</option>").join("");
+    }
+
+    function renderTudo() { renderFech(); renderDiar(); renderVeic(); atualizarAbas(); }
+    function atualizarAbas() {
+      $("tabFech").textContent = "Fechamento mensal (" + fechamentos.length + ")";
+      $("tabDiar").textContent = "Diárias (" + diarias.length + ")";
+      $("tabVeic").textContent = "Veículos (" + veiculos.length + ")";
+    }
+
+    /* ==================================================================
+       1. FECHAMENTO MENSAL
+       ================================================================== */
+    function filtrarFech() {
+      const fa = $("fAno").value, fm = $("fMes").value, fs = $("fStatusPg").value;
+      return fechamentos.filter(o => {
+        const f = o.fields || {};
+        if (fa && String(f.Ano ?? "") !== String(fa)) return false;
+        if (fm && f.Mes !== fm) return false;
+        if (fs && f.Status_Pagamento !== fs) return false;
+        return true;
+      });
+    }
+    function ordenarFech(lista) {
+      // período mais recente primeiro; mês desconhecido (mesIdx -1) vai pro fim do ano
+      return lista.slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        const d = num(fb.Ano) - num(fa.Ano);
+        if (d !== 0) return d;
+        const dm = mesIdx(fb.Mes) - mesIdx(fa.Mes);
+        if (dm !== 0) return dm;
+        return String(fa.Tecnico_Nome || "").localeCompare(String(fb.Tecnico_Nome || ""), "pt-BR");
+      });
+    }
+    function kpisFech(lista) {
+      const total = lista.reduce((s, o) => s + num((o.fields || {}).Valor_Total_Pagar), 0);
+      // qualquer coisa diferente de "Pago" (inclusive nulo) conta como em aberto — direção segura
+      const aberto = lista.reduce((s, o) => (o.fields || {}).Status_Pagamento === "Pago" ? s : s + num((o.fields || {}).Valor_Total_Pagar), 0);
+      return {
+        qtd: lista.length,
+        total, aberto,
+        aguardando: lista.filter(o => (o.fields || {}).Status_Pagamento === "Aguardando Fechamento").length,
+        pagos: lista.filter(o => (o.fields || {}).Status_Pagamento === "Pago").length
+      };
+    }
+    function renderFech() {
+      const lista = ordenarFech(filtrarFech());
+      const k = kpisFech(lista);
+      $("fK_qtd").textContent = k.qtd;
+      $("fK_qtdSub").textContent = "de " + fechamentos.length + " no total";
+      $("fK_total").textContent = brl(k.total);
+      $("fK_aberto").textContent = brl(k.aberto);
+      $("fK_agu").textContent = k.aguardando;
+      $("fK_pago").textContent = k.pagos;
+      $("fContador").textContent = lista.length + " de " + fechamentos.length + " fechamento(s)";
+
+      if (!lista.length) {
+        $("fTbody").innerHTML = ""; $("fTbl").hidden = true; $("fEmpty").hidden = false;
+        $("fEmpty").textContent = fechamentos.length
+          ? "Nenhum fechamento corresponde aos filtros."
+          : "Nenhum fechamento mensal registrado. A lista Fechamento_Mensal_Tecnico está vazia — ela nunca teve interface e passa a ser alimentada pelo processo de fechamento.";
+        return;
+      }
+      $("fEmpty").hidden = true; $("fTbl").hidden = false;
+      $("fTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const c = cor(COR_PAGAMENTO, f.Status_Pagamento);
+        const periodo = (mesLabel(f.Mes) || "—") + " / " + (temValor(f.Ano) ? esc(f.Ano) : "—");
+        const rel = [link(f.Link_Relatorio_PDF, "PDF"), link(f.Link_Relatorio_Editavel, "Editável")].filter(Boolean).join(" ");
+        return "<tr data-tipo='fech' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Tecnico_Nome || f.Title || "—") + "</td>" +
+          "<td>" + periodo + "</td>" +
+          "<td class='n'>" + cel(f.Qtd_Dias_Trabalhados) + "</td>" +
+          "<td class='n'>" + cel(f.Qtd_Meia_Diaria) + " / " + cel(f.Qtd_Diaria_Completa) + "</td>" +
+          "<td class='n'>" + cel(f.Total_Horas_Trabalhadas, 1) + "</td>" +
+          "<td class='n'>" + cel(f.Total_Horas_Extras, 1) + "</td>" +
+          "<td class='n'>" + cel(f.Total_KM_Rodado, 1) + "</td>" +
+          "<td class='num'>" + esc(celBRL(f.Valor_Total_Pagar)) + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Status_Pagamento || "—") + "</span></td>" +
+          "<td>" + (rel || "<span class='dim'>—</span>") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+    ["fAno", "fMes", "fStatusPg"].forEach(id => $(id).addEventListener("change", renderFech));
+    $("fLimpar").onclick = () => { $("fAno").value = ""; $("fMes").value = ""; $("fStatusPg").value = ""; renderFech(); };
+
+    /* ==================================================================
+       2. DIÁRIAS
+       ================================================================== */
+    function filtrarDiar() {
+      const ft = $("dTecnico").value, de = $("dDe").value, ate = $("dAte").value, fs = $("dStatus").value;
+      return diarias.filter(o => {
+        const f = o.fields || {};
+        if (ft && String(f.TecnicoLookupId ?? "") !== String(ft)) return false;
+        if (fs && f.Status_Dia !== fs) return false;
+        if (de || ate) {
+          const k = dKey(f.Data_Dia);
+          if (!k) return false;              // sem data não pode estar dentro de um período
+          if (de && k < de) return false;
+          if (ate && k > ate) return false;
+        }
+        return true;
+      });
+    }
+    function kpisDiar(lista) {
+      const valor = lista.reduce((s, o) => s + num((o.fields || {}).Valor_Total_Dia), 0);
+      return {
+        qtd: lista.length,
+        valor,
+        media: media(valor, lista.length),   // null quando não há diárias -> exibe "—"
+        horas: lista.reduce((s, o) => s + num((o.fields || {}).Horas_Produtivas), 0),
+        km: lista.reduce((s, o) => s + num((o.fields || {}).KM_Rodado), 0)
+      };
+    }
+    function renderDiar() {
+      const lista = filtrarDiar().slice().sort((a, b) => {
+        const ka = dKey((a.fields || {}).Data_Dia), kb = dKey((b.fields || {}).Data_Dia);
+        if (!ka && !kb) return 0; if (!ka) return 1; if (!kb) return -1;   // sem data vai pro fim
+        return kb < ka ? -1 : (kb > ka ? 1 : 0);
+      });
+      const k = kpisDiar(lista);
+      $("dK_qtd").textContent = k.qtd;
+      $("dK_valor").textContent = brl(k.valor);
+      $("dK_media").textContent = k.media == null ? "—" : brl(k.media);
+      $("dK_horas").textContent = fmtN(k.horas, 1) + " h";
+      $("dK_km").textContent = fmtN(k.km, 1) + " km";
+      $("dContador").textContent = lista.length + " de " + diarias.length + " diária(s)";
+
+      if (!lista.length) {
+        $("dTbody").innerHTML = ""; $("dTbl").hidden = true; $("dEmpty").hidden = false;
+        $("dEmpty").textContent = diarias.length
+          ? "Nenhuma diária corresponde aos filtros (técnico / período / status)."
+          : "Nenhuma diária registrada em Diaria_Tecnico.";
+        return;
+      }
+      $("dEmpty").hidden = true; $("dTbl").hidden = false;
+      $("dTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const c = cor(COR_DIA, f.Status_Dia);
+        return "<tr data-tipo='diar' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Dia) || "—") + "</td>" +
+          "<td>" + esc(tecNome(f.TecnicoLookupId)) + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Status_Dia || "—") + "</span></td>" +
+          "<td class='dim'>" + esc(f.Classificacao_Jornada || "—") + "</td>" +
+          "<td class='n'>" + cel(f.Horas_Produtivas, 1) + "</td>" +
+          "<td class='n'>" + cel(f.Total_Horas_Dia, 1) + "</td>" +
+          "<td class='n'>" + cel(f.KM_Rodado, 1) + "</td>" +
+          "<td class='num'>" + esc(celBRL(f.Valor_Total_Dia)) + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+    ["dTecnico", "dStatus", "dDe", "dAte"].forEach(id => $(id).addEventListener("change", renderDiar));
+    $("dLimpar").onclick = () => { ["dTecnico", "dStatus", "dDe", "dAte"].forEach(id => $(id).value = ""); renderDiar(); };
+
+    /* ==================================================================
+       3. VEÍCULOS  (porta a tela do Power Apps — SEM as ações de gravação)
+       ================================================================== */
+    function filtrarVeic() {
+      const ft = $("vTecnico").value, fs = $("vStatus").value;
+      return veiculos.filter(o => {
+        const f = o.fields || {};
+        if (ft && String(f.TecnicoLookupId ?? "") !== String(ft)) return false;
+        if (fs && f.Status_Aprovacao !== fs) return false;
+        return true;
+      });
+    }
+    function kpisVeic(lista) {
+      const cnt = (s) => lista.filter(o => (o.fields || {}).Status_Aprovacao === s).length;
+      return {
+        pendentes: cnt("Pendente"), aprovados: cnt("Aprovado"), rejeitados: cnt("Rejeitado"),
+        alteracao: lista.filter(o => (o.fields || {}).Alteracao_Pendente === true).length,
+        elegiveis: lista.filter(o => { const f = o.fields || {}; return f.Ativo === true && f.Elegivel_Reembolso === true; }).length
+      };
+    }
+    function renderVeic() {
+      const lista = filtrarVeic();
+      const k = kpisVeic(lista);
+      $("vK_pend").textContent = k.pendentes;
+      $("vK_apr").textContent = k.aprovados;
+      $("vK_rej").textContent = k.rejeitados;
+      $("vK_alt").textContent = k.alteracao;
+      $("vK_eleg").textContent = k.elegiveis;
+      $("vContador").textContent = lista.length + " de " + veiculos.length + " veículo(s)";
+
+      // destaque dos pendentes — exatamente o Filter(Veiculos_Tecnicos, Status_Aprovacao = "Pendente") do canvas
+      const pend = lista.filter(o => (o.fields || {}).Status_Aprovacao === "Pendente");
+      $("vSecPend").hidden = pend.length === 0;
+      $("vPend").innerHTML = pend.map(o => {
+        const f = o.fields || {};
+        const sub = [f.Tipo_Veiculo, f.Placa].filter(Boolean).join(" — ") || "sem tipo/placa";
+        const extra = [
+          f.Modelo ? "Modelo: " + f.Modelo : null,
+          ehNum(f.Valor_Por_KM) ? "R$/km: " + brl(f.Valor_Por_KM) : null,
+          f.Cadastrado_Por ? "Cadastrado por: " + f.Cadastrado_Por : null,
+          f.Data_Ultima_Alteracao ? "Alterado em: " + EG.fmtDate(f.Data_Ultima_Alteracao) : null
+        ].filter(Boolean).join(" · ");
+        return "<div class='pend-card' data-tipo='veic' data-id='" + esc(o.id) + "'>" +
+          "<div class='t'>" + esc(tecNome(f.TecnicoLookupId)) + "</div>" +
+          "<div class='s'>" + esc(sub) + "</div>" +
+          (extra ? "<div class='s'>" + esc(extra) + "</div>" : "") +
+          (f.Alteracao_Pendente === true ? "<div class='s' style='color:#D29922'>alteração pendente de revisão</div>" : "") +
+          "</div>";
+      }).join("");
+
+      if (!lista.length) {
+        $("vTbody").innerHTML = ""; $("vTbl").hidden = true; $("vEmpty").hidden = false;
+        $("vEmpty").textContent = veiculos.length
+          ? "Nenhum veículo corresponde aos filtros."
+          : "Nenhum veículo cadastrado em Veiculos_Tecnicos.";
+        return;
+      }
+      $("vEmpty").hidden = true; $("vTbl").hidden = false;
+      // pendentes primeiro na tabela também
+      const ord = lista.slice().sort((a, b) => {
+        const pa = (a.fields || {}).Status_Aprovacao === "Pendente" ? 0 : 1;
+        const pb = (b.fields || {}).Status_Aprovacao === "Pendente" ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+        return String((a.fields || {}).Placa || "").localeCompare(String((b.fields || {}).Placa || ""), "pt-BR");
+      });
+      $("vTbody").innerHTML = ord.map(o => {
+        const f = o.fields || {};
+        const c = cor(COR_APROVACAO, f.Status_Aprovacao);
+        return "<tr data-tipo='veic' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Placa || "—") + "</td>" +
+          "<td>" + esc(f.Modelo || f.Title || "—") + "</td>" +
+          "<td>" + esc(tecNome(f.TecnicoLookupId)) + "</td>" +
+          "<td class='dim'>" + esc(f.Tipo_Veiculo || "—") + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Valor_Por_KM)) + "</td>" +
+          "<td class='dim'>" + esc(simNao(f.Elegivel_Reembolso) || "—") + "</td>" +
+          "<td class='dim'>" + esc(simNao(f.Ativo) || "—") + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Status_Aprovacao || "—") + "</span>" +
+            (f.Alteracao_Pendente === true ? " <span class='badge' style='border-color:#D29922;color:#D29922'>alteração</span>" : "") + "</td>" +
+          "<td class='dim'>" + esc(f.Motivo_Rejeicao || "—") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+    ["vTecnico", "vStatus"].forEach(id => $(id).addEventListener("change", renderVeic));
+    $("vLimpar").onclick = () => { $("vTecnico").value = ""; $("vStatus").value = ""; renderVeic(); };
+
+    /* ==================================================================
+       4. DRAWER DE DETALHE (serve às 3 seções)
+       ================================================================== */
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+    const linhaM = (l, v) => !ehNum(v) ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(brl(v)) + "</dd>";
+    const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
+
+    // confere se as parcelas batem com o total gravado (tolerância de 1 centavo)
+    function conferir(rotulo, parcelas, total) {
+      if (!ehNum(total)) return "";
+      const soma = parcelas.reduce((s, v) => s + num(v), 0);
+      if (Math.abs(soma - num(total)) <= 0.01) return "";
+      return "<div class='diverge'>⚠️ " + esc(rotulo) + ": a soma das parcelas (" + esc(brl(soma)) +
+             ") não bate com o total gravado (" + esc(brl(total)) + ").</div>";
+    }
+
+    function abrirFechDrawer(o) {
+      const f = o.fields || {};
+      const c = cor(COR_PAGAMENTO, f.Status_Pagamento);
+      const periodo = (mesLabel(f.Mes) || "—") + " / " + (temValor(f.Ano) ? f.Ano : "—");
+      const corpo =
+        "<dl>" +
+          linha("Técnico", f.Tecnico_Nome) +
+          linha("Período", periodo) +
+          linha("Título", f.Title) +
+        "</dl>" +
+        grupo("Produção do mês") +
+        "<dl>" +
+          linha("Dias trabalhados", cel(f.Qtd_Dias_Trabalhados)) +
+          linha("Meias diárias", cel(f.Qtd_Meia_Diaria)) +
+          linha("Diárias completas", cel(f.Qtd_Diaria_Completa)) +
+          linha("Horas trabalhadas", ehNum(f.Total_Horas_Trabalhadas) ? fmtN(f.Total_Horas_Trabalhadas, 1) + " h" : null) +
+          linha("Horas extras", ehNum(f.Total_Horas_Extras) ? fmtN(f.Total_Horas_Extras, 1) + " h" : null) +
+          linha("KM rodado", ehNum(f.Total_KM_Rodado) ? fmtN(f.Total_KM_Rodado, 1) + " km" : null) +
+          linha("Locais trabalhados", f.Locais_Trabalhados) +
+        "</dl>" +
+        grupo("Composição do valor") +
+        "<dl>" +
+          linhaM("Diárias", f.Valor_Total_Diarias) +
+          linhaM("Horas extras", f.Valor_Total_Extras) +
+          linhaM("Adicional fim de semana", f.Valor_Total_FDS) +
+          linhaM("Reembolso de KM", f.Valor_Total_KM) +
+          "<dt class='tot'>Total a pagar</dt><dd class='tot'><strong>" + esc(brl(f.Valor_Total_Pagar)) + "</strong></dd>" +
+        "</dl>" +
+        conferir("Fechamento", [f.Valor_Total_Diarias, f.Valor_Total_Extras, f.Valor_Total_FDS, f.Valor_Total_KM], f.Valor_Total_Pagar) +
+        grupo("Pagamento e relatórios") +
+        "<dl>" +
+          linha("Status", f.Status_Pagamento) +
+          linha("Data do pagamento", EG.fmtDate(f.Data_Pagamento)) +
+          linha("Última edição do relatório", fmtDT(f.Data_Ultima_Edicao_Relatorio)) +
+        "</dl>" +
+        [link(f.Link_Relatorio_PDF, "Relatório PDF"), link(f.Link_Relatorio_Editavel, "Relatório editável")].filter(Boolean).join(" &nbsp; ");
+      mostrarDrawer(f.Tecnico_Nome || f.Title || "(sem técnico)", periodo, f.Status_Pagamento, c, corpo, f);
+    }
+
+    function abrirDiarDrawer(o) {
+      const f = o.fields || {};
+      const c = cor(COR_DIA, f.Status_Dia);
+      const veic = f.Veiculo_UsadoLookupId != null ? (veicRotulo[f.Veiculo_UsadoLookupId] || ("veículo #" + f.Veiculo_UsadoLookupId)) : null;
+      // KM_Rodado deveria ser Final - Inicial; só confere quando os três existem
+      let avisoKm = "";
+      if (ehNum(f.KM_Inicial) && ehNum(f.KM_Final) && ehNum(f.KM_Rodado)) {
+        const calc = num(f.KM_Final) - num(f.KM_Inicial);
+        if (Math.abs(calc - num(f.KM_Rodado)) > 0.01) {
+          avisoKm = "<div class='diverge'>⚠️ KM: final − inicial = " + esc(fmtN(calc, 1)) +
+                    " km, mas KM_Rodado gravado é " + esc(fmtN(f.KM_Rodado, 1)) + " km.</div>";
+        }
+      }
+      const corpo =
+        "<dl>" +
+          linha("Técnico", f.TecnicoLookupId != null ? tecNome(f.TecnicoLookupId) : null) +
+          linha("Data", EG.fmtDate(f.Data_Dia)) +
+          linha("Tipo de dia", f.Tipo_Dia) +
+          linha("Classificação", f.Classificacao_Jornada) +
+          linha("Título", f.Title) +
+        "</dl>" +
+        grupo("Jornada") +
+        "<dl>" +
+          linha("Entrada", fmtHora(f.Hora_Entrada)) +
+          linha("Saída", fmtHora(f.Hora_Saida)) +
+          linha("Horas produtivas", ehNum(f.Horas_Produtivas) ? fmtN(f.Horas_Produtivas, 1) + " h" : null) +
+          linha("Horas de deslocamento", ehNum(f.Horas_Deslocamento) ? fmtN(f.Horas_Deslocamento, 1) + " h" : null) +
+          linha("Horas de intervalo", ehNum(f.Horas_Intervalo) ? fmtN(f.Horas_Intervalo, 1) + " h" : null) +
+          linha("Total de horas do dia", ehNum(f.Total_Horas_Dia) ? fmtN(f.Total_Horas_Dia, 1) + " h" : null) +
+          linha("Horas extras", ehNum(f.Horas_Extras) ? fmtN(f.Horas_Extras, 1) + " h" : null) +
+          linha("OS no dia", cel(f.Qtd_OS_Dia)) +
+          linha("Interrupções", cel(f.Qtd_Interrupcoes)) +
+          linha("OS (lista)", f.OS_Lista) +
+          linha("Clientes atendidos", f.Clientes_Atendidos) +
+          linha("Ocorrências", f.Ocorrencias) +
+        "</dl>" +
+        grupo("Deslocamento e veículo") +
+        "<dl>" +
+          linha("Usa veículo hoje", simNao(f.Usa_Veiculo_Hoje)) +
+          linha("Veículo usado", veic) +
+          linha("KM inicial", cel(f.KM_Inicial, 1)) +
+          linha("KM final", cel(f.KM_Final, 1)) +
+          linha("KM rodado", ehNum(f.KM_Rodado) ? fmtN(f.KM_Rodado, 1) + " km" : null) +
+          linha("Reembolso aprovado", simNao(f.Reembolso_Aprovado)) +
+          linha("Reembolso aprovado por", f.Reembolso_Aprovado_Por) +
+        "</dl>" +
+        avisoKm +
+        grupo("Valores do dia") +
+        "<dl>" +
+          linhaM("Base do dia", f.Valor_Base_Dia) +
+          linhaM("Horas extras", f.Valor_Horas_Extras) +
+          linhaM("Adicional fim de semana", f.Valor_Adicional_FDS) +
+          linhaM("Reembolso de KM", f.Valor_Reembolso_KM) +
+          linha("% adicional aplicado", ehNum(f.Pct_Adicional_Aplicado) ? fmtN(f.Pct_Adicional_Aplicado, 2) + " %" : null) +
+          linhaM("Custo de mão de obra", f.Custo_MO_Total) +
+          "<dt class='tot'>Total do dia</dt><dd class='tot'><strong>" + esc(brl(f.Valor_Total_Dia)) + "</strong></dd>" +
+        "</dl>" +
+        conferir("Diária", [f.Valor_Base_Dia, f.Valor_Horas_Extras, f.Valor_Adicional_FDS, f.Valor_Reembolso_KM], f.Valor_Total_Dia) +
+        [link(f.Assinatura_URL, "Assinatura"), link(f.Foto_Odometro_Inicial, "Odômetro inicial"), link(f.Foto_Odometro_Final, "Odômetro final")].filter(Boolean).join(" &nbsp; ");
+      const sub = (EG.fmtDate(f.Data_Dia) || "sem data") + " · " + (f.TecnicoLookupId != null ? tecNome(f.TecnicoLookupId) : "sem técnico");
+      mostrarDrawer(f.Title || "Diária", sub, f.Status_Dia, c, corpo, f);
+    }
+
+    function abrirVeicDrawer(o) {
+      const f = o.fields || {};
+      const c = cor(COR_APROVACAO, f.Status_Aprovacao);
+      const corpo =
+        "<dl>" +
+          linha("Técnico", f.TecnicoLookupId != null ? tecNome(f.TecnicoLookupId) : null) +
+          linha("Placa", f.Placa) +
+          linha("Modelo", f.Modelo) +
+          linha("Tipo", f.Tipo_Veiculo) +
+          linha("Título", f.Title) +
+        "</dl>" +
+        grupo("Reembolso") +
+        "<dl>" +
+          linha("Elegível a reembolso", simNao(f.Elegivel_Reembolso)) +
+          linhaM("Valor por km", f.Valor_Por_KM) +
+          linha("Ativo", simNao(f.Ativo)) +
+        "</dl>" +
+        grupo("Aprovação") +
+        "<dl>" +
+          linha("Status", f.Status_Aprovacao) +
+          linha("Cadastrado por", f.Cadastrado_Por) +
+          linha("Aprovado por", f.Aprovado_Por) +
+          linha("Data da aprovação", fmtDT(f.Data_Aprovacao)) +
+          linha("Motivo da rejeição", f.Motivo_Rejeicao) +
+          linha("Alteração pendente", simNao(f.Alteracao_Pendente)) +
+          linha("Última alteração", fmtDT(f.Data_Ultima_Alteracao)) +
+          linha("Observações", f.Observacoes) +
+        "</dl>" +
+        (f.Status_Aprovacao === "Pendente"
+          ? "<div class='diverge'>Este veículo aguarda aprovação. Esta tela é somente leitura — aprove ou rejeite pelo Power Apps / SharePoint.</div>"
+          : "");
+      const sub = [f.Placa, f.Modelo].filter(Boolean).join(" — ") || "sem placa/modelo";
+      mostrarDrawer(f.Title || f.Placa || "Veículo", sub, f.Status_Aprovacao, c, corpo, f);
+    }
+
+    function mostrarDrawer(titulo, sub, badge, corBadge, corpoHtml, fields) {
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(titulo) +
+          (sub ? "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(sub) + "</div>" : "") +
+          (badge ? "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" : "") +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpoHtml +
+          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
+          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
+        "</div>";
+      $("dc").onclick = fechar;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    // um só handler para as 3 tabelas + os cards de pendentes
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;                       // clique em link não abre o drawer
+      const el = e.target.closest("[data-tipo][data-id]");
+      if (!el) return;
+      const tipo = el.dataset.tipo, id = el.dataset.id;
+      if (tipo === "fech" && mapFech[id]) abrirFechDrawer(mapFech[id]);
+      else if (tipo === "diar" && mapDiar[id]) abrirDiarDrawer(mapDiar[id]);
+      else if (tipo === "veic" && mapVeic[id]) abrirVeicDrawer(mapVeic[id]);
+    });
+    $("overlay").onclick = fechar;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+
+    /* Exposto para testar a lógica de agregação/filtro sem login (dados falsos):
+       FEC.setDados([...], [...], [...], [...]); FEC.montarFiltros(); FEC.renderTudo(); */
+    window.FEC = {
+      setDados, montarFiltros, renderTudo, mostrarSec,
+      kpisFech, kpisDiar, kpisVeic,
+      filtrarFech, filtrarDiar, filtrarVeic,
+      abrirFechDrawer, abrirDiarDrawer, abrirVeicDrawer,
+      mesIdx, dKey, num, media, urlSeguro, fmtN, cel,
+      forcarCarregado: (v) => { carregado = v !== false; }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
