@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Habilitações &amp; Certificações</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    [hidden] { display: none !important; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px 16px; }
+    .kpi .k { color: #8b949e; font-size: .78rem; }
+    .kpi .v { font-size: 1.7rem; font-weight: 700; line-height: 1.3; }
+    .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+    select, input[type=text] { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: .88rem; font-family: inherit; }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .secao { margin: 26px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+    td.venc { white-space: nowrap; }
+    .pill { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: .74rem; font-weight: 600; color: #0d1117; }
+    .barra { display: inline-block; width: 4px; height: 1.1em; border-radius: 2px; vertical-align: -2px; margin-right: 8px; }
+    /* cobertura */
+    .cob { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+    .cob-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px 16px; }
+    .cob-card h3 { margin: 0 0 2px; font-size: .98rem; }
+    .cob-card .niv { color: #8b949e; font-size: .8rem; margin-bottom: 10px; }
+    .cob-lin { display: flex; align-items: center; gap: 8px; padding: 4px 0; border-top: 1px solid #21262d; font-size: .85rem; }
+    .cob-lin:first-of-type { border-top: 0; }
+    .cob-lin .nome { flex: 1; }
+    .cob-ic { width: 1.2em; text-align: center; font-weight: 700; }
+    .obrig { font-size: .72rem; color: #f0883e; border: 1px solid #f0883e55; border-radius: 4px; padding: 0 5px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html" class="active">Habilitações</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="kpis" id="kpis" hidden>
+      <div class="kpi"><div class="k">Certificações vencidas</div><div class="v" id="kVenc" style="color:#F85149">—</div></div>
+      <div class="kpi"><div class="k">Vencem em 30 dias</div><div class="v" id="k30" style="color:#F0883E">—</div></div>
+      <div class="kpi"><div class="k">Válidas</div><div class="v" id="kOk" style="color:#22B573">—</div></div>
+      <div class="kpi"><div class="k">Técnicos bloqueados p/ OS</div><div class="v" id="kBloq" style="color:#F85149">—</div></div>
+    </div>
+
+    <div class="toolbar" id="toolbar" hidden>
+      <select id="fTecnico"><option value="">(Todos os técnicos)</option></select>
+      <select id="fStatus">
+        <option value="">(Todas as situações)</option>
+        <option value="vencido">Vencidas</option>
+        <option value="atencao">Vencem em 30 dias</option>
+        <option value="valido">Válidas</option>
+        <option value="sem">Sem data de vencimento</option>
+      </select>
+      <input type="text" id="fBusca" placeholder="Buscar certificação..." />
+      <button class="sec" id="btnLimpar">Limpar</button>
+      <span class="hint" id="contador"></span>
+    </div>
+
+    <div class="secao" id="secQualif" hidden>Certificações <span>— situação calculada pela data de vencimento</span></div>
+    <table id="tbl" hidden>
+      <thead><tr><th>Certificação</th><th>Técnico</th><th>Tipo</th><th>Emissão</th><th>Vencimento</th><th>Situação</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden></div>
+
+    <div class="secao" id="secCob" hidden>Cobertura por técnico <span>— exigências do nível vs. o que o técnico tem</span></div>
+    <div class="cob" id="cob"></div>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+    /* ===== valores reais de Choice (batem caractere a caractere com o SharePoint) ===== */
+    const STATUS_VALIDADE = ["Válido", "Atenção — vence em 30 dias", "Vencido"];
+    const NIVEIS = ["Ajudante de Eletricista", "Auxiliar Técnico", "Eletricista Predial", "Eletricista Industrial", "Eletrotécnico"];
+
+    /* Cores por situação. A situação é derivada da DATA (imune a divergência de rótulo)
+       e não do campo Status_Validade — que só existe depois que o flow diário roda. */
+    const COR = { vencido: "#F85149", atencao: "#F0883E", valido: "#22B573", sem: "#8B949E" };
+    const ROTULO = { vencido: "Vencida", atencao: "Vence em 30 dias", valido: "Válida", sem: "Sem vencimento" };
+
+    let quals = [], tecnicos = [], exigencias = [], nomeTecnico = {}, qualMap = {};
+
+    /* ===== helpers de data — blindados contra nulo/inválido ===== */
+    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+    const hoje0 = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+    // Normaliza AS DUAS pontas para meia-noite: senão a contagem varia com a hora do dia
+    // e uma certificação que vence "em 30 dias" cairia ora em atenção, ora em válida.
+    const diasAte = (s) => {
+      const d = parseD(s); if (!d) return null;
+      d.setHours(0, 0, 0, 0);
+      return Math.round((d - hoje0()) / 86400000);
+    };
+    const situacao = (f) => {
+      const dias = diasAte(f.Data_Vencimento);
+      if (dias === null) return "sem";
+      if (dias < 0) return "vencido";
+      if (dias <= 30) return "atencao";
+      return "valido";
+    };
+
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // uma lista que falha não derruba a tela inteira
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando habilitações...");
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
+        Promise.all([
+          EG.validarChoices("Tecnico_Qualificacoes", "Status_Validade", STATUS_VALIDADE).then(v => ({ v, rotulo: "Status de Validade" })),
+          EG.validarChoices("Nivel_Qualificacoes_Exigidas", "Nivel_Tecnico", NIVEIS).then(v => ({ v, rotulo: "Nível Técnico (exigências)" }))
+        ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
+
+        const [q, t, x] = await Promise.all([
+          soft(EG.listItems("Tecnico_Qualificacoes"), "Tecnico_Qualificacoes"),
+          soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
+          soft(EG.listItems("Nivel_Qualificacoes_Exigidas"), "Nivel_Qualificacoes_Exigidas")
+        ]);
+        quals = q; tecnicos = t; exigencias = x;
+        nomeTecnico = {}; tecnicos.forEach(i => { nomeTecnico[i.id] = (i.fields || {}).Title; });
+        qualMap = {}; quals.forEach(i => { qualMap[i.id] = i; });
+
+        montarFiltroTecnicos();
+        renderKpis();
+        aplicar();
+        renderCobertura();
+        ["kpis", "toolbar", "secQualif", "secCob"].forEach(id => $(id).hidden = false);
+        setStatus("OK — " + quals.length + " certificação(ões), " + tecnicos.length + " técnico(s), " + exigencias.length + " regra(s) de exigência.");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    function montarFiltroTecnicos() {
+      const sel = $("fTecnico");
+      sel.innerHTML = '<option value="">(Todos os técnicos)</option>' +
+        tecnicos.map(t => '<option value="' + esc(t.id) + '">' + esc((t.fields || {}).Title) + "</option>").join("");
+    }
+
+    function renderKpis() {
+      let venc = 0, at = 0, ok = 0;
+      quals.forEach(q => { const s = situacao(q.fields || {}); if (s === "vencido") venc++; else if (s === "atencao") at++; else if (s === "valido") ok++; });
+      $("kVenc").textContent = venc; $("k30").textContent = at; $("kOk").textContent = ok;
+      $("kBloq").textContent = tecnicos.filter(t => (t.fields || {}).Bloqueado_OS === true).length;
+    }
+
+    function filtradas() {
+      const ft = $("fTecnico").value, fs = $("fStatus").value, fb = ($("fBusca").value || "").toLowerCase();
+      return quals.filter(q => {
+        const f = q.fields || {};
+        if (ft && String(f.TecnicoLookupId) !== String(ft)) return false;
+        if (fs && situacao(f) !== fs) return false;
+        if (fb && !String(f.Title || "").toLowerCase().includes(fb)) return false;
+        return true;
+      });
+    }
+
+    function aplicar() {
+      const lista = filtradas();
+      $("contador").textContent = lista.length + " de " + quals.length + " certificação(ões)";
+      const tb = $("tbody");
+      tb.innerHTML = "";
+      if (!lista.length) {
+        $("tbl").hidden = true; $("empty").hidden = false;
+        $("empty").textContent = quals.length === 0
+          ? "Nenhuma certificação cadastrada em Tecnico_Qualificacoes."
+          : "Nenhuma certificação corresponde aos filtros.";
+        return;
+      }
+      $("empty").hidden = true; $("tbl").hidden = false;
+      // ordena por vencimento mais próximo primeiro; sem data vai pro fim
+      const ord = lista.slice().sort((a, b) => {
+        const da = diasAte((a.fields || {}).Data_Vencimento), db = diasAte((b.fields || {}).Data_Vencimento);
+        if (da === null) return 1; if (db === null) return -1; return da - db;
+      });
+      tb.innerHTML = ord.map(q => {
+        const f = q.fields || {}, s = situacao(f), dias = diasAte(f.Data_Vencimento);
+        const tec = nomeTecnico[f.TecnicoLookupId] || (f.TecnicoLookupId ? "técnico #" + f.TecnicoLookupId : "—");
+        const sufixo = dias === null ? "" : (dias < 0 ? " (há " + Math.abs(dias) + "d)" : " (em " + dias + "d)");
+        return '<tr data-id="' + esc(q.id) + '">' +
+          "<td><span class='barra' style='background:" + COR[s] + "'></span>" + esc(f.Title || "(sem nome)") + "</td>" +
+          "<td>" + esc(tec) + "</td>" +
+          "<td>" + esc(f.Tipo_Qualificacao || "—") + "</td>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Emissao) || "—") + "</td>" +
+          "<td class='venc'>" + esc(EG.fmtDate(f.Data_Vencimento) || "—") + esc(sufixo) + "</td>" +
+          "<td><span class='pill' style='background:" + COR[s] + "'>" + ROTULO[s] + "</span></td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    ["fTecnico", "fStatus"].forEach(id => $(id).addEventListener("change", aplicar));
+    $("fBusca").addEventListener("input", aplicar);
+    $("btnLimpar").onclick = () => { $("fTecnico").value = ""; $("fStatus").value = ""; $("fBusca").value = ""; aplicar(); };
+
+    /* ===== Cobertura: para cada técnico, o que o nível dele exige vs. o que ele tem =====
+       É aqui que as 50 regras de Nivel_Qualificacoes_Exigidas ganham uso: mostram a LACUNA.
+       Funciona mesmo com zero certificações cadastradas (tudo aparece como faltando). */
+    function renderCobertura() {
+      if (!tecnicos.length) { $("cob").innerHTML = "<div class='empty'>Nenhum técnico cadastrado.</div>"; return; }
+      $("cob").innerHTML = tecnicos.map(t => {
+        const tf = t.fields || {};
+        const nivel = tf.Nivel_Tecnico || null;
+        const regras = exigencias.filter(e => (e.fields || {}).Nivel_Tecnico === nivel);
+        const minhas = quals.filter(q => String((q.fields || {}).TecnicoLookupId) === String(t.id));
+        let linhas;
+        if (!nivel) {
+          linhas = "<div class='cob-lin'><span class='nome' style='color:#8b949e'>Técnico sem nível definido — não dá para avaliar exigências.</span></div>";
+        } else if (!regras.length) {
+          linhas = "<div class='cob-lin'><span class='nome' style='color:#8b949e'>Nenhuma regra cadastrada para este nível.</span></div>";
+        } else {
+          linhas = regras.map(r => {
+            const rf = r.fields || {};
+            const tipo = rf.Tipo_Qualificacao;
+            // melhor situação entre as certificações do técnico daquele tipo
+            const doTipo = minhas.filter(q => (q.fields || {}).Tipo_Qualificacao === tipo);
+            let s = "faltando";
+            if (doTipo.length) {
+              const sits = doTipo.map(q => situacao(q.fields || {}));
+              s = sits.includes("valido") ? "valido" : (sits.includes("atencao") ? "atencao" : (sits.includes("vencido") ? "vencido" : "sem"));
+            }
+            const ic = s === "valido" ? "✓" : (s === "atencao" ? "!" : "✗");
+            const cor = s === "valido" ? COR.valido : (s === "atencao" ? COR.atencao : COR.vencido);
+            const nota = s === "faltando" ? " <span class='hint'>(não cadastrada)</span>" : (s === "vencido" ? " <span class='hint'>(vencida)</span>" : "");
+            return "<div class='cob-lin'>" +
+              "<span class='cob-ic' style='color:" + cor + "'>" + ic + "</span>" +
+              "<span class='nome'>" + esc(tipo || "—") + nota + "</span>" +
+              (rf.Obrigatoria ? "<span class='obrig'>obrigatória</span>" : "") +
+              (rf.Bloqueia_OS ? "<span class='obrig' style='color:#F85149;border-color:#F8514955'>bloqueia OS</span>" : "") +
+              "</div>";
+          }).join("");
+        }
+        const bloq = tf.Bloqueado_OS === true
+          ? "<span class='pill' style='background:#F85149'>bloqueado p/ OS</span>"
+          : "";
+        return "<div class='cob-card'><h3>" + esc(tf.Title || "(sem nome)") + " " + bloq + "</h3>" +
+          "<div class='niv'>" + esc(nivel || "sem nível") + " · " + minhas.length + " certificação(ões) cadastrada(s)</div>" +
+          linhas + "</div>";
+      }).join("");
+    }
+
+    /* ===== drawer ===== */
+    $("tbody").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && qualMap[tr.dataset.id]) abrir(qualMap[tr.dataset.id]); });
+    $("overlay").onclick = fechar;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+
+    function abrir(q) {
+      const f = q.fields || {}, s = situacao(f), dias = diasAte(f.Data_Vencimento);
+      const tec = nomeTecnico[f.TecnicoLookupId] || (f.TecnicoLookupId ? "técnico #" + f.TecnicoLookupId : null);
+      const rows = [
+        linha("Técnico", tec), linha("Tipo", f.Tipo_Qualificacao), linha("Nível / modalidade", f.Nivel_Curso),
+        linha("Obrigatoriedade", f.Obrigatoriedade), linha("Entidade emissora", f.Entidade_Emissora),
+        linha("Nº do certificado", f.Numero_Certificado), linha("Carga horária", f.Carga_Horaria != null ? f.Carga_Horaria + " h" : null),
+        linha("Emissão", EG.fmtDate(f.Data_Emissao)), linha("Vencimento", EG.fmtDate(f.Data_Vencimento)),
+        linha("Dias até vencer (calculado)", dias === null ? null : dias),
+        linha("Dias_Para_Vencer (gravado pelo flow)", f.Dias_Para_Vencer),
+        linha("Status_Validade (gravado pelo flow)", f.Status_Validade),
+        linha("Validade padrão", f.Validade_Anos != null ? f.Validade_Anos + " ano(s)" : null),
+        linha("Notif. 30 dias", f.Notif_30d_Enviada ? "enviada" : "pendente"),
+        linha("Notif. vencimento", f.Notif_Venc_Enviada ? "enviada" : "pendente"),
+        linha("Observações", f.Observacoes)
+      ].join("");
+      const url = f.Arquivo_URL;
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(f.Title || "(sem nome)") +
+        "<div style='margin-top:6px'><span class='pill' style='background:" + COR[s] + "'>" + ROTULO[s] + "</span></div></div>" +
+        "<button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'><dl>" + rows + "</dl>" +
+        (url ? "<a href='" + esc(url) + "' target='_blank' rel='noopener' style='color:#58a6ff;font-size:.85rem'>Abrir certificado ↗</a><br>" : "") +
+        "<span class='raw-toggle' id='rt'>ver campos crus (Graph)</span>" +
+        "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre></div>";
+      $("dc").onclick = fechar;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    // exposto p/ teste da lógica sem login
+    window.HAB = { situacao, diasAte, filtradas: () => filtradas(), set: (q, t, x) => { quals = q; tecnicos = t; exigencias = x; nomeTecnico = {}; t.forEach(i => nomeTecnico[i.id] = (i.fields || {}).Title); } };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
