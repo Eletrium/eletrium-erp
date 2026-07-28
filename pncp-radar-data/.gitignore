@@ -1,0 +1,5 @@
+# Saída gerada por pncp-radar.js — dados, não código. Não versionar.
+# (gitignore local ao diretório, para não mexer no .gitignore da raiz,
+#  que é compartilhado com as outras frentes.)
+*
+!.gitignore
