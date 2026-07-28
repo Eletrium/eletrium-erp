@@ -316,28 +316,53 @@
       return true;
     }
 
-    /** CNPJ: 14 dígitos, não pode ser sequência repetida, 2 DVs módulo 11 com pesos 2..9. */
+    /** Limpa máscara preservando letras — necessário para o CNPJ alfanumérico. */
+    const soAlnum = (s) => String(s == null ? "" : s).toUpperCase().replace(/[^0-9A-Z]+/g, "");
+
+    /* ------------------------------------------------------------------
+       CNPJ — suporta o formato ALFANUMÉRICO (Receita Federal, vigente 2026)
+       e continua aceitando os CNPJs numéricos já existentes.
+
+       Regra oficial: os 12 primeiros caracteres são alfanuméricos (0-9, A-Z)
+       e os 2 dígitos verificadores são SEMPRE numéricos. Para o módulo 11,
+       cada caractere vale (ASCII - 48): '0'-'9' => 0-9 e 'A'-'Z' => 17-42.
+       Pesos iguais aos do CNPJ clássico, aplicados da esquerda para a direita.
+       Resto < 2 => DV 0; senão DV = 11 - resto.
+
+       Retrocompatível por construção: como um dígito vale o próprio número,
+       um CNPJ numérico válido continua válido por este mesmo cálculo.
+       ------------------------------------------------------------------ */
+    const CNPJ_P1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const CNPJ_P2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const valorCharCNPJ = (c) => c.charCodeAt(0) - 48;
+
+    /** Calcula os 2 DVs a partir dos 12 primeiros caracteres. Devolve string de 2 dígitos. */
+    function calcDVCNPJ(base12) {
+      const ch = base12.split("");
+      let s1 = 0;
+      for (let i = 0; i < 12; i++) s1 += valorCharCNPJ(ch[i]) * CNPJ_P1[i];
+      const r1 = s1 % 11;
+      const dv1 = r1 < 2 ? 0 : 11 - r1;
+      const comDv1 = ch.concat([String(dv1)]);
+      let s2 = 0;
+      for (let i = 0; i < 13; i++) s2 += valorCharCNPJ(comDv1[i]) * CNPJ_P2[i];
+      const r2 = s2 % 11;
+      const dv2 = r2 < 2 ? 0 : 11 - r2;
+      return String(dv1) + String(dv2);
+    }
+
     function validarCNPJ(valor) {
-      const cnpj = soDigitos(valor);
+      const cnpj = soAlnum(valor);
       if (cnpj.length !== 14) return false;
-      if (/^(\d)\1{13}$/.test(cnpj)) return false;     // 00000000000000, 11111111111111, etc.
-      const calcDV = (base) => {
-        let peso = 2, soma = 0;
-        for (let i = base.length - 1; i >= 0; i--) {
-          soma += parseInt(base[i], 10) * peso;
-          peso = peso === 9 ? 2 : peso + 1;
-        }
-        const resto = soma % 11;
-        return resto < 2 ? 0 : 11 - resto;
-      };
-      const dv1 = calcDV(cnpj.slice(0, 12));
-      if (dv1 !== parseInt(cnpj[12], 10)) return false;
-      const dv2 = calcDV(cnpj.slice(0, 13));
-      return dv2 === parseInt(cnpj[13], 10);
+      // 12 alfanuméricos + 2 DVs numéricos
+      if (!/^[0-9A-Z]{12}[0-9]{2}$/.test(cnpj)) return false;
+      // sequência repetida (00000000000000, AAAAAAAAAAAAAA, ...)
+      if (/^(.)\1{13}$/.test(cnpj)) return false;
+      return calcDVCNPJ(cnpj.slice(0, 12)) === cnpj.slice(12);
     }
 
     // exposto para teste manual no console (window.EletriumInbound.validarCNPJ("...") etc.)
-    window.EletriumInbound = { validarCPF: validarCPF, validarCNPJ: validarCNPJ, soDigitos: soDigitos };
+    window.EletriumInbound = { validarCPF: validarCPF, validarCNPJ: validarCNPJ, soDigitos: soDigitos, soAlnum: soAlnum, calcDVCNPJ: calcDVCNPJ };
 
     /* ==================================================================
        MÁSCARAS
@@ -352,8 +377,11 @@
       return out;
     }
 
+    // Preserva letras: o CNPJ alfanumérico tem 12 caracteres alfanuméricos + 2 DVs numéricos.
     function mascaraCNPJ(v) {
-      const d = soDigitos(v).slice(0, 14);
+      const bruto = soAlnum(v).slice(0, 14);
+      // os 2 últimos são sempre numéricos — descarta letra digitada na posição de DV
+      const d = bruto.length > 12 ? bruto.slice(0, 12) + bruto.slice(12).replace(/[^0-9]/g, "") : bruto;
       let out = d.slice(0, 2);
       if (d.length > 2) out += "." + d.slice(2, 5);
       if (d.length > 5) out += "." + d.slice(5, 8);
@@ -493,14 +521,17 @@
       if (!tipo) falha("fldTipo", "errTipo", "Escolha Pessoa Jurídica ou Pessoa Física.", null, "tipoPJ");
 
       const docBruto = $("documento").value.trim();
+      // PJ usa alfanumérico (CNPJ 2026); PF continua só dígitos
+      const docPJ = soAlnum(docBruto);
       const docDig = soDigitos(docBruto);
       if (!tipo) {
         /* já sinalizado acima; sem tipo não dá para saber qual documento validar */
-      } else if (!docDig) {
+      } else if (tipo === "PJ" ? !docPJ : !docDig) {
         falha("fldDoc", "errDoc", tipo === "PJ" ? "Informe o CNPJ." : "Informe o CPF.", "documento");
       } else if (tipo === "PJ") {
-        if (docDig.length !== 14) falha("fldDoc", "errDoc", "CNPJ deve ter 14 dígitos — você digitou " + docDig.length + ".", "documento");
-        else if (!validarCNPJ(docDig)) falha("fldDoc", "errDoc", "CNPJ inválido: os dígitos verificadores não conferem. Confira o número.", "documento");
+        if (docPJ.length !== 14) falha("fldDoc", "errDoc", "CNPJ deve ter 14 caracteres — você digitou " + docPJ.length + ".", "documento");
+        else if (!/^[0-9A-Z]{12}[0-9]{2}$/.test(docPJ)) falha("fldDoc", "errDoc", "Formato inválido: os 12 primeiros caracteres podem ser letras ou números, e os 2 últimos (dígitos verificadores) devem ser números.", "documento");
+        else if (!validarCNPJ(docPJ)) falha("fldDoc", "errDoc", "CNPJ inválido: os dígitos verificadores não conferem. Confira o número.", "documento");
       } else {
         if (docDig.length !== 11) falha("fldDoc", "errDoc", "CPF deve ter 11 dígitos — você digitou " + docDig.length + ".", "documento");
         else if (!validarCPF(docDig)) falha("fldDoc", "errDoc", "CPF inválido: os dígitos verificadores não conferem. Confira o número.", "documento");
@@ -540,7 +571,8 @@
 
     function montarPayload() {
       const tipo = tipoSelecionado();
-      const docDig = soDigitos($("documento").value);
+      // PJ preserva letras (CNPJ alfanumérico); PF continua só dígitos
+      const docDig = tipo === "PF" ? soDigitos($("documento").value) : soAlnum($("documento").value);
       const docFmt = tipo === "PF" ? mascaraCPF(docDig) : mascaraCNPJ(docDig);
       const telDig = soDigitos($("telefone").value);
       const agora = new Date().toISOString();
