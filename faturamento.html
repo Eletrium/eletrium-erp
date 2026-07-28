@@ -1,0 +1,695 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Faturamento &amp; Pipeline de Vendas</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela — app.css é compartilhado e não foi tocado */
+    [hidden] { display: none !important; }
+
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid #30363d; margin-bottom: 14px; flex-wrap: wrap; }
+    .tab { background: transparent; border: 1px solid transparent; border-bottom: none; color: #8b949e; padding: 8px 16px; border-radius: 8px 8px 0 0; font-size: .9rem; }
+    .tab:hover { color: #e6edf3; background: #ffffff0d; }
+    .tab.on { color: #e6edf3; background: #161b22; border-color: #30363d; }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
+    .kpi .k { color: #8b949e; font-size: .74rem; text-transform: uppercase; letter-spacing: .04em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+    .kpi .sub { color: #8b949e; font-size: .78rem; margin-top: 2px; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; display: flex; align-items: center; gap: 6px; }
+    .toolbar select, .toolbar input[type=text] { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: .85rem; font-family: inherit; }
+    .toolbar .hint { color: #8b949e; font-size: .8rem; margin-left: auto; }
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+
+    /* --- Kanban (leitura: sem drag-and-drop) --- */
+    .board { display: flex; gap: 12px; overflow-x: auto; padding: 2px 0 18px; align-items: flex-start; }
+    .col { flex: 0 0 236px; max-width: 236px; background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 300px); }
+    .col.extra { border-style: dashed; }
+    .col-head { padding: 11px 13px 9px; border-top: 3px solid #6e7681; border-radius: 10px 10px 0 0; }
+    .col-title { font-weight: 600; font-size: .86rem; display: flex; align-items: center; gap: 8px; line-height: 1.25; }
+    .col-count { background: #ffffff14; border-radius: 999px; padding: 0 8px; font-size: .74rem; color: #8b949e; flex: 0 0 auto; }
+    .col-sum { color: #3fb950; font-size: .8rem; margin-top: 4px; }
+    .col-body { padding: 0 9px 9px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
+    .kcard { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 11px; cursor: pointer; }
+    .kcard:hover { border-color: #58a6ff; }
+    .kcard .num { font-weight: 600; font-size: .9rem; }
+    .kcard .cli { color: #8b949e; font-size: .8rem; margin: 3px 0; }
+    .kcard .val { color: #3fb950; font-weight: 600; font-size: .84rem; margin-top: 4px; }
+    .kcard .st { color: #f0883e; font-size: .74rem; margin-top: 4px; }
+    .col-empty { color: #484f58; font-size: .78rem; text-align: center; padding: 14px 0; }
+    .board-sep { margin: 6px 0 8px; color: #8b949e; font-size: .82rem; }
+
+    /* --- Funil --- */
+    .funil { display: flex; flex-direction: column; gap: 6px; margin-bottom: 18px; }
+    .fl { display: grid; grid-template-columns: 230px 1fr 92px 130px 64px; gap: 10px; align-items: center; font-size: .86rem; }
+    .fl .nm { display: flex; align-items: center; gap: 8px; }
+    .fl .dot { width: 9px; height: 9px; border-radius: 3px; flex: 0 0 auto; }
+    .fl .bar { background: #161b22; border-radius: 5px; height: 15px; overflow: hidden; }
+    .fl .bar i { display: block; height: 100%; border-radius: 5px; min-width: 2px; }
+    .fl .q, .fl .p { color: #8b949e; text-align: right; }
+    .fl .v { color: #3fb950; text-align: right; white-space: nowrap; }
+    .fl.head { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .fl.head .q, .fl.head .v, .fl.head .p { color: #8b949e; }
+    .nota { color: #8b949e; font-size: .8rem; margin: 4px 0 18px; }
+
+    .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+
+    /* --- NFs --- */
+    tr.nf-erro td:first-child { box-shadow: inset 3px 0 0 #F85149; }
+    tr.nf-diverg td:first-child { box-shadow: inset 3px 0 0 #D29922; }
+    .pill { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: .74rem; font-weight: 600; color: #0d1117; white-space: nowrap; }
+    .sub { color: #8b949e; font-size: .8rem; }
+    .errmsg { color: #f85149; font-size: .8rem; margin-top: 8px; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="faturamento.html" class="active">Faturamento</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="tabs">
+      <button class="tab on" data-tab="kan">Kanban de Vendas</button>
+      <button class="tab" data-tab="fun">Funil / Conversão</button>
+      <button class="tab" data-tab="nfe">Notas Fiscais de Entrada</button>
+    </div>
+
+    <!-- ===================== KANBAN ===================== -->
+    <section id="secKan">
+      <div class="kpis">
+        <div class="kpi"><div class="k">Orçamentos</div><div class="v" id="kOrcTot">—</div><div class="sub" id="kOrcSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Valor no pipeline</div><div class="v" id="kPipeVal" style="color:#3fb950">—</div><div class="sub">exclui cancelados e fora do fluxo</div></div>
+        <div class="kpi"><div class="k">A faturar (aceito)</div><div class="v" id="kAFaturar" style="color:#1ABFBF">—</div><div class="sub" id="kAFaturarSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Faturado</div><div class="v" id="kFaturado" style="color:#22B573">—</div><div class="sub" id="kFaturadoSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Cancelados</div><div class="v" id="kCancel" style="color:#F85149">—</div><div class="sub" id="kCancelSub">&nbsp;</div></div>
+      </div>
+
+      <div class="toolbar">
+        <label>Cliente
+          <select id="fCliente"><option value="">(Todos)</option></select>
+        </label>
+        <label>Busca <input type="text" id="fBusca" placeholder="número do orçamento" /></label>
+        <label><input type="checkbox" id="fForaFluxo" checked /> mostrar colunas fora do fluxo</label>
+        <span class="ro">somente leitura</span>
+        <span class="hint" id="hintKan"></span>
+      </div>
+
+      <div class="board" id="board"></div>
+      <div id="boardExtraWrap" hidden>
+        <div class="board-sep">Fora das 6 etapas do fluxo — não entram no funil de conversão:</div>
+        <div class="board" id="boardExtra"></div>
+      </div>
+      <div class="empty" id="emptyKan">Carregue os dados para ver o pipeline de vendas.</div>
+    </section>
+
+    <!-- ===================== FUNIL ===================== -->
+    <section id="secFun" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Conversão até Faturado</div><div class="v" id="kConvQtd">—</div><div class="sub" id="kConvQtdSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Conversão em valor</div><div class="v" id="kConvVal">—</div><div class="sub" id="kConvValSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Ticket médio (faturado)</div><div class="v" id="kTicket">—</div><div class="sub" id="kTicketSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Margem média %</div><div class="v" id="kMargem">—</div><div class="sub" id="kMargemSub">&nbsp;</div></div>
+      </div>
+
+      <div class="secao">Etapas do fluxo <span>— quantidade e valor parados em cada etapa</span></div>
+      <div class="funil" id="funil"></div>
+      <div class="nota" id="funilNota"></div>
+
+      <div class="secao">Base do cálculo <span>— o que entra e o que fica de fora</span></div>
+      <div class="funil" id="funilBase"></div>
+    </section>
+
+    <!-- ===================== NOTAS FISCAIS ===================== -->
+    <section id="secNfe" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Notas importadas</div><div class="v" id="kNfTot">—</div></div>
+        <div class="kpi"><div class="k">Valor total importado</div><div class="v" id="kNfVal" style="color:#3fb950">—</div></div>
+        <div class="kpi"><div class="k">Com erro de leitura</div><div class="v" id="kNfErro" style="color:#F85149">—</div></div>
+        <div class="kpi"><div class="k">Com divergência</div><div class="v" id="kNfDiv" style="color:#D29922">—</div></div>
+        <div class="kpi"><div class="k">Impostos (ICMS+ST+IPI)</div><div class="v" id="kNfImp">—</div></div>
+      </div>
+
+      <div class="toolbar">
+        <label>Situação
+          <select id="fNfStatus"><option value="">(Todas)</option></select>
+        </label>
+        <label>Busca <input type="text" id="fNfBusca" placeholder="número, série ou fornecedor" /></label>
+        <span class="ro">somente leitura</span>
+        <span class="hint" id="hintNf"></span>
+      </div>
+
+      <table id="tblNf" hidden>
+        <thead><tr>
+          <th>Número / Série</th><th>Fornecedor</th><th>Emissão</th><th>Importação</th><th>Valor total</th><th>Situação</th>
+        </tr></thead>
+        <tbody id="tbNf"></tbody>
+      </table>
+      <div class="empty" id="emptyNf">Carregue os dados para ver as notas fiscais de entrada.</div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+
+    /* ============ LOGICA PURA (testável sem DOM) — INICIO ============ */
+    // Valores EXATOS de Choice do SharePoint. Um caractere fora e o item cai
+    // em "(fora do fluxo)" — visível — em vez de sumir em silêncio.
+    const ETAPAS = [
+      "Rascunho",
+      "Aguardando Estoque",
+      "Aprovado Internamente",
+      "Enviado ao Cliente",
+      "Aceito - Aguardando Faturamento",
+      "Faturado"
+    ];
+    const CANCELADO = "Cancelado";
+    // Cancelado NÃO é etapa do fluxo: entra na validação de Choice (existe no SP)
+    // mas fica fora das 6 colunas e fora do denominador do funil.
+    const STATUS_CONHECIDOS = ETAPAS.concat([CANCELADO]);
+    const ETAPA_COR = {
+      "Rascunho": "#8B949E",
+      "Aguardando Estoque": "#D29922",
+      "Aprovado Internamente": "#A371F7",
+      "Enviado ao Cliente": "#58A6FF",
+      "Aceito - Aguardando Faturamento": "#1ABFBF",
+      "Faturado": "#22B573",
+      "Cancelado": "#F85149"
+    };
+    const COR_FORA = "#F0883E";
+    const etapaCor = (s) => ETAPA_COR[s] || COR_FORA;
+
+    const STATUS_NF = [
+      "Importado - Processando",
+      "Processado com Sucesso",
+      "Processado com Divergencia",
+      "Erro na Leitura do XML"
+    ];
+    const NF_COR = {
+      "Importado - Processando": "#58A6FF",
+      "Processado com Sucesso": "#22B573",
+      "Processado com Divergencia": "#D29922",
+      "Erro na Leitura do XML": "#F85149"
+    };
+    const nfCor = (s) => NF_COR[s] || COR_FORA;
+
+    // Number() de campo do Graph: "" e null viram 0 (nunca NaN em soma).
+    const num = (v) => { if (v == null || v === "") return 0; const n = Number(v); return isNaN(n) ? 0 : n; };
+    // Versão que preserva "não informado" (para exibir "—" em vez de 0).
+    const numN = (v) => { if (v == null || v === "") return null; const n = Number(v); return isNaN(n) ? null : n; };
+    // Divisão blindada: denominador 0/ausente => null (renderiza "—", nunca NaN/Infinity).
+    const pct = (parte, total) => (!total || total <= 0) ? null : (parte / total) * 100;
+
+    // Agrupa orçamentos nas 6 etapas + baldes explícitos para tudo que não é etapa.
+    // Nada some: cada item cai em exatamente um balde.
+    function agruparEtapas(orcamentos) {
+      const porEtapa = {}; ETAPAS.forEach(e => porEtapa[e] = []);
+      const cancelados = [], fora = [], semStatus = [];
+      (orcamentos || []).forEach(o => {
+        const s = (o && o.fields ? o.fields.Status_Orcamento : null);
+        if (s == null || s === "") semStatus.push(o);
+        else if (porEtapa[s]) porEtapa[s].push(o);
+        else if (s === CANCELADO) cancelados.push(o);
+        else fora.push(o);
+      });
+      return { porEtapa: porEtapa, cancelados: cancelados, fora: fora, semStatus: semStatus };
+    }
+
+    const valorOrc = (o) => num(o && o.fields ? o.fields.Valor_Total_Orcamento : 0);
+    const somaValor = (lista) => (lista || []).reduce((a, o) => a + valorOrc(o), 0);
+
+    // Resumo do funil. Denominador = apenas os itens NAS 6 ETAPAS.
+    // Cancelado e "fora do fluxo" ficam de fora e são reportados à parte,
+    // senão a conversão mentiria conforme o lixo entra na base.
+    function resumoFunil(orcamentos) {
+      const g = agruparEtapas(orcamentos);
+      const etapas = ETAPAS.map(e => ({
+        etapa: e,
+        cor: etapaCor(e),
+        qtd: g.porEtapa[e].length,
+        valor: somaValor(g.porEtapa[e])
+      }));
+      const totalQtd = etapas.reduce((a, x) => a + x.qtd, 0);
+      const totalValor = etapas.reduce((a, x) => a + x.valor, 0);
+      etapas.forEach(x => { x.pctQtd = pct(x.qtd, totalQtd); x.pctValor = pct(x.valor, totalValor); });
+      const fat = etapas[etapas.length - 1]; // "Faturado"
+      const aceito = etapas[4];              // "Aceito - Aguardando Faturamento"
+      return {
+        etapas: etapas,
+        totalQtd: totalQtd,
+        totalValor: totalValor,
+        faturadoQtd: fat.qtd,
+        faturadoValor: fat.valor,
+        aceitoQtd: aceito.qtd,
+        aceitoValor: aceito.valor,
+        convQtd: pct(fat.qtd, totalQtd),      // null quando não há base
+        convValor: pct(fat.valor, totalValor),
+        ticketFaturado: fat.qtd > 0 ? fat.valor / fat.qtd : null,
+        canceladosQtd: g.cancelados.length,
+        canceladosValor: somaValor(g.cancelados),
+        foraQtd: g.fora.length + g.semStatus.length,
+        foraValor: somaValor(g.fora) + somaValor(g.semStatus),
+        grupos: g
+      };
+    }
+
+    // Média de margem só sobre quem TEM margem informada (não conta ausência como 0).
+    function margemMedia(orcamentos) {
+      const vals = (orcamentos || [])
+        .map(o => numN(o && o.fields ? o.fields.Margem_Contribuicao_Pct : null))
+        .filter(v => v != null);
+      if (!vals.length) return null;
+      return vals.reduce((a, b) => a + b, 0) / vals.length;
+    }
+
+    // Resumo das notas fiscais de entrada.
+    function resumoNFs(nfs) {
+      const total = (nfs || []).length;
+      const valor = (nfs || []).reduce((a, n) => a + num(n && n.fields ? n.fields.Valor_Total_NF : 0), 0);
+      const impostos = (nfs || []).reduce((a, n) => {
+        const f = (n && n.fields) || {};
+        return a + num(f.Valor_ICMS_Total) + num(f.Valor_ICMS_ST_Total) + num(f.Valor_IPI_Total);
+      }, 0);
+      const conta = (st) => (nfs || []).filter(n => ((n && n.fields) || {}).Status_Processamento === st).length;
+      const desconhecidos = (nfs || []).filter(n => {
+        const s = ((n && n.fields) || {}).Status_Processamento;
+        return s != null && s !== "" && STATUS_NF.indexOf(s) === -1;
+      }).length;
+      const semStatus = (nfs || []).filter(n => {
+        const s = ((n && n.fields) || {}).Status_Processamento;
+        return s == null || s === "";
+      }).length;
+      return {
+        total: total, valor: valor, impostos: impostos,
+        erro: conta("Erro na Leitura do XML"),
+        divergencia: conta("Processado com Divergencia"),
+        sucesso: conta("Processado com Sucesso"),
+        processando: conta("Importado - Processando"),
+        desconhecidos: desconhecidos, semStatus: semStatus,
+        pctErro: pct(conta("Erro na Leitura do XML"), total)
+      };
+    }
+    /* ============ LOGICA PURA — FIM ============ */
+
+    const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const brl = (v) => EG.BRL(num(v));
+    const brlN = (v) => v == null ? "—" : EG.BRL(Number(v));
+    const fmtPct = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
+    const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
+
+    let orcamentos = [], nfs = [];
+    let orcMap = {}, nfMap = {}, nomeCliente = {}, nomeFornecedor = {};
+    let carregado = false;
+
+    const cliNome = (f) => f.ClienteLookupId != null ? (nomeCliente[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : "—";
+    const fornNome = (f) => f.FornecedorLookupId != null ? (nomeFornecedor[f.FornecedorLookupId] || ("fornecedor #" + f.FornecedorLookupId)) : "—";
+
+    /* ---------- auth ---------- */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; }
+      catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    /* ---------- abas ---------- */
+    document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
+      document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
+      const t = b.dataset.tab;
+      $("secKan").hidden = t !== "kan";
+      $("secFun").hidden = t !== "fun";
+      $("secNfe").hidden = t !== "nfe";
+    });
+
+    /* ---------- carga (SOMENTE LEITURA) ---------- */
+    // uma lista que falha não derruba a tela inteira
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ": " + e.message); return []; });
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando faturamento e pipeline de vendas...");
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
+        Promise.all([
+          EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", STATUS_CONHECIDOS).then(v => ({ v: v, rotulo: "Status de Orçamento (Orcamentos_Venda)" })),
+          EG.validarChoices("Notas_Fiscais_Entrada", "Status_Processamento", STATUS_NF).then(v => ({ v: v, rotulo: "Status de Processamento (Notas_Fiscais_Entrada)" }))
+        ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
+
+        const [orc, nf, cli, forn] = await Promise.all([
+          soft(EG.listItems("Orcamentos_Venda"), "Orcamentos_Venda"),
+          soft(EG.listItems("Notas_Fiscais_Entrada"), "Notas_Fiscais_Entrada"),
+          soft(EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"), "Clientes"),
+          soft(EG.listItems("Fornecedores", "expand=fields($select=Title)&$top=500"), "Fornecedores")
+        ]);
+        aplicarDados(orc, nf, cli, forn);
+        setStatus("OK — " + orcamentos.length + " orçamento(s) de venda, " + nfs.length + " nota(s) fiscal(is) de entrada.");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // separado do botão para permitir injeção de dados de teste (window.FAT.injetar)
+    function aplicarDados(orc, nf, cli, forn) {
+      orcamentos = orc || []; nfs = nf || [];
+      nomeCliente = {}; (cli || []).forEach(c => { nomeCliente[c.id] = (c.fields || {}).Title; });
+      nomeFornecedor = {}; (forn || []).forEach(f => { nomeFornecedor[f.id] = (f.fields || {}).Title; });
+      orcMap = {}; orcamentos.forEach(o => { orcMap[o.id] = o; });
+      nfMap = {}; nfs.forEach(n => { nfMap[n.id] = n; });
+      carregado = true;
+      montarFiltros();
+      renderKanban(); renderFunil(); renderNfs();
+    }
+
+    function montarFiltros() {
+      const ids = [];
+      orcamentos.forEach(o => {
+        const id = (o.fields || {}).ClienteLookupId;
+        if (id != null && ids.indexOf(String(id)) === -1) ids.push(String(id));
+      });
+      ids.sort((a, b) => String(nomeCliente[a] || a).localeCompare(String(nomeCliente[b] || b), "pt-BR"));
+      $("fCliente").innerHTML = '<option value="">(Todos)</option>' +
+        ids.map(id => '<option value="' + esc(id) + '">' + esc(nomeCliente[id] || ("cliente #" + id)) + "</option>").join("");
+
+      // situações de NF: as 4 oficiais + qualquer valor inesperado que apareça nos dados
+      const vistos = [];
+      nfs.forEach(n => {
+        const s = (n.fields || {}).Status_Processamento;
+        if (s && STATUS_NF.indexOf(s) === -1 && vistos.indexOf(s) === -1) vistos.push(s);
+      });
+      $("fNfStatus").innerHTML = '<option value="">(Todas)</option>' +
+        STATUS_NF.concat(vistos).map(s => '<option value="' + esc(s) + '">' + esc(s) + "</option>").join("");
+    }
+
+    /* ---------- filtro do kanban ---------- */
+    function orcFiltrados() {
+      const c = $("fCliente").value;
+      const q = ($("fBusca").value || "").trim().toLowerCase();
+      return orcamentos.filter(o => {
+        const f = o.fields || {};
+        if (c && String(f.ClienteLookupId) !== String(c)) return false;
+        if (q && !String(f.Title || "").toLowerCase().includes(q)) return false;
+        return true;
+      });
+    }
+    ["fCliente"].forEach(id => $(id).addEventListener("change", renderKanban));
+    $("fBusca").addEventListener("input", renderKanban);
+    $("fForaFluxo").addEventListener("change", renderKanban);
+
+    /* ---------- SEÇÃO 1: Kanban ---------- */
+    function cardHtml(o, mostraStatus) {
+      const f = o.fields || {};
+      return '<div class="kcard" data-id="' + esc(o.id) + '">' +
+        '<div class="num">' + esc(f.Title || "(sem número)") + "</div>" +
+        '<div class="cli">' + esc(cliNome(f)) + "</div>" +
+        '<div class="val">' + esc(brl(f.Valor_Total_Orcamento)) + "</div>" +
+        (mostraStatus ? '<div class="st">' + esc(f.Status_Orcamento || "(sem status)") + "</div>" : "") +
+        "</div>";
+    }
+
+    function colHtml(nome, cor, items, mostraStatus, extra) {
+      const sum = somaValor(items);
+      const body = items.length ? items.map(o => cardHtml(o, mostraStatus)).join("") : "<div class='col-empty'>vazia</div>";
+      return '<div class="col' + (extra ? " extra" : "") + '">' +
+        '<div class="col-head" style="border-top-color:' + cor + '">' +
+          '<div class="col-title" style="color:' + cor + '">' + esc(nome) + ' <span class="col-count">' + items.length + "</span></div>" +
+          '<div class="col-sum">' + esc(EG.BRL(sum)) + "</div>" +
+        "</div>" +
+        '<div class="col-body">' + body + "</div></div>";
+    }
+
+    function renderKanban() {
+      if (!carregado) return;
+      // KPIs sempre sobre o conjunto COMPLETO carregado (não sobre o filtro)
+      const r = resumoFunil(orcamentos);
+      $("kOrcTot").textContent = orcamentos.length;
+      $("kOrcSub").textContent = r.totalQtd + " no fluxo · " + r.canceladosQtd + " cancelado(s) · " + r.foraQtd + " fora do fluxo";
+      $("kPipeVal").textContent = EG.BRL(r.totalValor);
+      $("kAFaturar").textContent = EG.BRL(r.aceitoValor);
+      $("kAFaturarSub").textContent = r.aceitoQtd + " orçamento(s) aceito(s)";
+      $("kFaturado").textContent = EG.BRL(r.faturadoValor);
+      $("kFaturadoSub").textContent = r.faturadoQtd + " orçamento(s) · " + fmtPct(r.convQtd) + " do fluxo";
+      $("kCancel").textContent = r.canceladosQtd;
+      $("kCancelSub").textContent = EG.BRL(r.canceladosValor) + " cancelado(s)";
+
+      const lista = orcFiltrados();
+      const g = agruparEtapas(lista);
+      $("hintKan").textContent = lista.length === orcamentos.length
+        ? ""
+        : lista.length + " de " + orcamentos.length + " orçamento(s) exibido(s) (KPIs acima são do total)";
+
+      if (!orcamentos.length) {
+        $("board").innerHTML = ""; $("boardExtraWrap").hidden = true;
+        $("emptyKan").hidden = false;
+        $("emptyKan").textContent = "Nenhum orçamento de venda cadastrado em Orcamentos_Venda — o pipeline nasce vazio.";
+        return;
+      }
+      $("emptyKan").hidden = lista.length > 0;
+      if (!lista.length) $("emptyKan").textContent = "Nenhum orçamento atende aos filtros.";
+
+      $("board").innerHTML = ETAPAS.map(e => colHtml(e, etapaCor(e), g.porEtapa[e], false, false)).join("");
+
+      // Colunas fora do fluxo: cancelados, status desconhecido e sem status.
+      // Só some da tela se o usuário desmarcar explicitamente a caixa.
+      const extras = [];
+      if (g.cancelados.length) extras.push(colHtml(CANCELADO, etapaCor(CANCELADO), g.cancelados, false, true));
+      if (g.fora.length) extras.push(colHtml("(fora do fluxo)", COR_FORA, g.fora, true, true));
+      if (g.semStatus.length) extras.push(colHtml("(sem status)", COR_FORA, g.semStatus, false, true));
+      const mostrar = $("fForaFluxo").checked && extras.length > 0;
+      $("boardExtraWrap").hidden = !mostrar;
+      $("boardExtra").innerHTML = mostrar ? extras.join("") : "";
+    }
+
+    /* ---------- SEÇÃO 2: Funil / conversão ---------- */
+    function linhaFunil(nome, cor, qtd, valor, p, maxQtd) {
+      const larg = (!maxQtd || maxQtd <= 0) ? 0 : Math.round((qtd / maxQtd) * 100);
+      return '<div class="fl">' +
+        '<div class="nm"><span class="dot" style="background:' + cor + '"></span>' + esc(nome) + "</div>" +
+        '<div class="bar"><i style="width:' + larg + '%;background:' + cor + '"></i></div>' +
+        '<div class="q">' + qtd + "</div>" +
+        '<div class="v">' + esc(EG.BRL(valor)) + "</div>" +
+        '<div class="p">' + esc(fmtPct(p)) + "</div>" +
+        "</div>";
+    }
+
+    function renderFunil() {
+      if (!carregado) return;
+      const r = resumoFunil(orcamentos);
+
+      $("kConvQtd").textContent = fmtPct(r.convQtd);
+      $("kConvQtdSub").textContent = r.totalQtd > 0
+        ? r.faturadoQtd + " faturado(s) de " + r.totalQtd + " no fluxo"
+        : "sem orçamentos no fluxo — nada a converter";
+      $("kConvVal").textContent = fmtPct(r.convValor);
+      $("kConvValSub").textContent = r.totalValor > 0
+        ? EG.BRL(r.faturadoValor) + " de " + EG.BRL(r.totalValor)
+        : "valor total do fluxo é zero";
+      $("kTicket").textContent = brlN(r.ticketFaturado);
+      $("kTicketSub").textContent = r.faturadoQtd > 0 ? "média de " + r.faturadoQtd + " orçamento(s)" : "nenhum orçamento faturado";
+      const mm = margemMedia(orcamentos);
+      $("kMargem").textContent = fmtPct(mm);
+      const comMargem = orcamentos.filter(o => numN((o.fields || {}).Margem_Contribuicao_Pct) != null).length;
+      $("kMargemSub").textContent = comMargem > 0
+        ? "média de " + comMargem + " orçamento(s) com margem informada"
+        : "nenhum orçamento com margem informada";
+
+      const cab = '<div class="fl head"><div class="nm">Etapa</div><div></div><div class="q">Qtd</div><div class="v">Valor</div><div class="p">%</div></div>';
+      const maxQtd = r.etapas.reduce((m, x) => Math.max(m, x.qtd), 0);
+      $("funil").innerHTML = cab + r.etapas.map(x => linhaFunil(x.etapa, x.cor, x.qtd, x.valor, x.pctQtd, maxQtd)).join("");
+      $("funilNota").textContent = r.totalQtd > 0
+        ? "% = participação da etapa na quantidade total do fluxo (" + r.totalQtd + " orçamento(s))."
+        : "Nenhum orçamento nas 6 etapas do fluxo: percentuais ficam indefinidos (—) em vez de zero forçado.";
+
+      const maxBase = Math.max(r.totalQtd, r.canceladosQtd, r.foraQtd, orcamentos.length);
+      $("funilBase").innerHTML =
+        '<div class="fl head"><div class="nm">Base</div><div></div><div class="q">Qtd</div><div class="v">Valor</div><div class="p">% do total</div></div>' +
+        linhaFunil("Nas 6 etapas (denominador)", "#58A6FF", r.totalQtd, r.totalValor, pct(r.totalQtd, orcamentos.length), maxBase) +
+        linhaFunil("Cancelados (excluídos)", etapaCor(CANCELADO), r.canceladosQtd, r.canceladosValor, pct(r.canceladosQtd, orcamentos.length), maxBase) +
+        linhaFunil("Fora do fluxo / sem status", COR_FORA, r.foraQtd, r.foraValor, pct(r.foraQtd, orcamentos.length), maxBase) +
+        linhaFunil("Total carregado", "#8B949E", orcamentos.length, r.totalValor + r.canceladosValor + r.foraValor, pct(orcamentos.length, orcamentos.length), maxBase);
+    }
+
+    /* ---------- SEÇÃO 3: Notas fiscais de entrada ---------- */
+    ["fNfStatus"].forEach(id => $(id).addEventListener("change", renderNfs));
+    $("fNfBusca").addEventListener("input", renderNfs);
+
+    function nfFiltradas() {
+      const st = $("fNfStatus").value;
+      const q = ($("fNfBusca").value || "").trim().toLowerCase();
+      return nfs.filter(n => {
+        const f = n.fields || {};
+        if (st && f.Status_Processamento !== st) return false;
+        if (q) {
+          const alvo = [f.Numero_NF, f.Serie_NF, f.Title, fornNome(f)].map(x => String(x == null ? "" : x)).join(" ").toLowerCase();
+          if (!alvo.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
+    function renderNfs() {
+      if (!carregado) return;
+      const r = resumoNFs(nfs);
+      $("kNfTot").textContent = r.total;
+      $("kNfVal").textContent = EG.BRL(r.valor);
+      $("kNfErro").textContent = r.erro;
+      $("kNfDiv").textContent = r.divergencia;
+      $("kNfImp").textContent = EG.BRL(r.impostos);
+
+      const lista = nfFiltradas();
+      const avisos = [];
+      if (r.desconhecidos) avisos.push(r.desconhecidos + " com situação não prevista");
+      if (r.semStatus) avisos.push(r.semStatus + " sem situação");
+      $("hintNf").textContent = [
+        lista.length === nfs.length ? "" : lista.length + " de " + nfs.length + " exibida(s)",
+        avisos.join(" · ")
+      ].filter(Boolean).join(" — ");
+
+      if (!lista.length) {
+        $("tblNf").hidden = true; $("emptyNf").hidden = false;
+        $("emptyNf").textContent = nfs.length
+          ? "Nenhuma nota fiscal atende aos filtros."
+          : "Nenhuma nota fiscal de entrada importada em Notas_Fiscais_Entrada.";
+        return;
+      }
+      $("emptyNf").hidden = true; $("tblNf").hidden = false;
+      // mais recentes primeiro; sem data de emissão vai para o fim
+      const ord = lista.slice().sort((a, b) => {
+        const da = Date.parse(((a.fields || {}).Data_Emissao) || "");
+        const db = Date.parse(((b.fields || {}).Data_Emissao) || "");
+        if (isNaN(da) && isNaN(db)) return 0;
+        if (isNaN(da)) return 1;
+        if (isNaN(db)) return -1;
+        return db - da;
+      });
+      $("tbNf").innerHTML = ord.map(n => {
+        const f = n.fields || {}, s = f.Status_Processamento;
+        const cls = s === "Erro na Leitura do XML" ? "nf-erro" : (s === "Processado com Divergencia" ? "nf-diverg" : "");
+        const numero = (f.Numero_NF || f.Title || "—") + (f.Serie_NF ? " / " + f.Serie_NF : "");
+        return '<tr data-id="' + esc(n.id) + '" class="' + cls + '">' +
+          "<td>" + esc(numero) + "</td>" +
+          "<td>" + esc(fornNome(f)) + "</td>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Emissao) || "—") + "</td>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Importacao) || "—") + "</td>" +
+          '<td class="num">' + esc(brl(f.Valor_Total_NF)) + "</td>" +
+          '<td><span class="pill" style="background:' + nfCor(s) + '">' + esc(s || "(sem situação)") + "</span></td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ---------- SEÇÃO 4: drawer de detalhe ---------- */
+    $("board").addEventListener("click", (e) => { const c = e.target.closest(".kcard"); if (c && orcMap[c.dataset.id]) drawerOrc(orcMap[c.dataset.id]); });
+    $("boardExtra").addEventListener("click", (e) => { const c = e.target.closest(".kcard"); if (c && orcMap[c.dataset.id]) drawerOrc(orcMap[c.dataset.id]); });
+    $("tbNf").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && nfMap[tr.dataset.id]) drawerNf(nfMap[tr.dataset.id]); });
+    $("overlay").onclick = fechar;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+
+    function drawerOrc(o) {
+      const f = o.fields || {}, s = f.Status_Orcamento;
+      const naoEtapa = ETAPAS.indexOf(s) === -1;
+      const rows = [
+        linha("Cliente", cliNome(f)),
+        linha("Status", s || "(sem status)"),
+        linha("Prioridade", f.Prioridade),
+        linha("Origem da demanda", f.Origem_Demanda),
+        linha("Canal de venda", f.Canal_Venda),
+        linha("Valor total", numN(f.Valor_Total_Orcamento) != null ? brl(f.Valor_Total_Orcamento) : null),
+        linha("Valor materiais", numN(f.Valor_Total_Materiais) != null ? brl(f.Valor_Total_Materiais) : null),
+        linha("Custo materiais", numN(f.Custo_Total_Materiais) != null ? brl(f.Custo_Total_Materiais) : null),
+        linha("Margem contribuição", numN(f.Margem_Contribuicao_Materiais) != null ? brl(f.Margem_Contribuicao_Materiais) : null),
+        linha("Margem %", fmtPct(numN(f.Margem_Contribuicao_Pct)) === "—" ? null : fmtPct(numN(f.Margem_Contribuicao_Pct))),
+        linha("Proposta de origem", f.Proposta_OrigemLookupId != null ? "#" + f.Proposta_OrigemLookupId : null),
+        linha("Criado em", EG.fmtDate(f.Data_Criacao)),
+        linha("Próximo passo", EG.fmtDate(f.Data_Proximo_Passo)),
+        linha("Observações", f.Observacoes)
+      ].join("");
+      const alerta = naoEtapa
+        ? '<div class="errmsg">Este orçamento está fora das 6 etapas do fluxo' + (s ? ' (status "' + esc(s) + '")' : " (sem status)") + " — não entra no funil de conversão.</div>"
+        : "";
+      abrir(f.Title || "(sem número)",
+        '<span class="pill" style="background:' + etapaCor(s) + '">' + esc(s || "(sem status)") + "</span>",
+        "<dl>" + rows + "</dl>" + alerta, f);
+    }
+
+    function drawerNf(n) {
+      const f = n.fields || {}, s = f.Status_Processamento;
+      const rows = [
+        linha("Número da NF", f.Numero_NF),
+        linha("Série", f.Serie_NF),
+        linha("Fornecedor", fornNome(f)),
+        linha("Emissão", EG.fmtDate(f.Data_Emissao)),
+        linha("Importação", EG.fmtDate(f.Data_Importacao)),
+        linha("Valor total", numN(f.Valor_Total_NF) != null ? brl(f.Valor_Total_NF) : null),
+        linha("Frete", numN(f.Valor_Frete) != null ? brl(f.Valor_Frete) : null),
+        linha("Desconto", numN(f.Valor_Desconto) != null ? brl(f.Valor_Desconto) : null),
+        linha("ICMS", numN(f.Valor_ICMS_Total) != null ? brl(f.Valor_ICMS_Total) : null),
+        linha("ICMS ST", numN(f.Valor_ICMS_ST_Total) != null ? brl(f.Valor_ICMS_ST_Total) : null),
+        linha("IPI", numN(f.Valor_IPI_Total) != null ? brl(f.Valor_IPI_Total) : null),
+        linha("Recebimento gerado", f.Recebimento_GeradoLookupId != null ? "#" + f.Recebimento_GeradoLookupId : null)
+      ].join("");
+      const xml = f.Link_XML_Original && f.Link_XML_Original.Url ? f.Link_XML_Original.Url : (typeof f.Link_XML_Original === "string" ? f.Link_XML_Original : null);
+      const erro = f.Erro_Processamento ? '<div class="errmsg">' + esc(f.Erro_Processamento) + "</div>" : "";
+      const link = xml ? "<a href='" + esc(xml) + "' target='_blank' rel='noopener' style='color:#58a6ff;font-size:.85rem'>Abrir XML original ↗</a><br>" : "";
+      abrir((f.Numero_NF || f.Title || "(sem número)") + (f.Serie_NF ? " / " + f.Serie_NF : ""),
+        '<span class="pill" style="background:' + nfCor(s) + '">' + esc(s || "(sem situação)") + "</span>",
+        "<dl>" + rows + "</dl>" + erro + link, f);
+    }
+
+    function abrir(titulo, pill, corpo, f) {
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(titulo) +
+        "<div style='margin-top:6px'>" + pill + "</div></div>" +
+        "<button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpo +
+        "<span class='raw-toggle' id='rt'>ver campos crus (Graph)</span>" +
+        "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre></div>";
+      $("dc").onclick = fechar;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+      $("drawer").setAttribute("aria-hidden", "false");
+    }
+    function fechar() {
+      $("drawer").classList.remove("open"); $("overlay").classList.remove("open");
+      $("drawer").setAttribute("aria-hidden", "true");
+    }
+
+    // exposto para teste da lógica sem login (injeta dados falsos direto no render)
+    window.FAT = {
+      ETAPAS: ETAPAS, STATUS_NF: STATUS_NF,
+      agruparEtapas: agruparEtapas, resumoFunil: resumoFunil, resumoNFs: resumoNFs,
+      margemMedia: margemMedia, pct: pct, num: num,
+      injetar: (orc, nf, cli, forn) => aplicarDados(orc || [], nf || [], cli || [], forn || [])
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
