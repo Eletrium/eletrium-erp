@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Solicite um orçamento de instalação elétrica industrial, SPDA, laudo NR-10 ou adequação NR-12 com a Eletrium." />
+  <meta name="robots" content="index,follow" />
+  <title>Eletrium — Solicite seu orçamento</title>
+  <link rel="stylesheet" href="app.css" />
+  <!--
+    ============================================================================
+    inbound.html — LANDING PAGE PÚBLICA DE CAPTAÇÃO DE LEADS
+    ============================================================================
+
+    ARQUITETURA (difere das demais telas do ERP — leia antes de alterar):
+      * Página PÚBLICA, para prospect SEM conta na empresa.
+      * NÃO usa MSAL, NÃO usa graph.js, NÃO usa auth delegada, NÃO chama o
+        Microsoft Graph e NÃO lê/escreve no SharePoint diretamente.
+      * NUNCA colocar credencial, client secret, API key ou token aqui: o
+        código-fonte é servido publicamente e qualquer segredo vazaria.
+        O webhook do Make é justamente o padrão correto — as credenciais
+        (SharePoint, e-mail, CRM) ficam do lado do Make, não do navegador.
+      * ÚNICO destino de dados: um POST JSON para o webhook do Make.com.
+      * Herda o tema de app.css, mas com layout próprio (o header/nav das telas
+        internas não faz sentido para um visitante). Estilos locais no <style>
+        abaixo — app.css e graph.js são COMPARTILHADOS e não devem ser editados.
+
+    CLASSIFICAÇÃO DO LEAD:
+      A pontuação (Score_PJPF, trilha Industrial/SPDA vs. Residencial/PF) é
+      calculada NO CENÁRIO DO MAKE, não aqui. Esta página apenas COLETA e ENVIA
+      os dados brutos que o Make precisa para pontuar e alimentar a fila
+      Fila_Auditoria_Leads (RazaoSocial_Nome, Dados_Brutos, Origem_Lead="Inbound").
+
+    >>> BLOQUEADOR CONHECIDO — WEBHOOK AINDA NÃO CONFIGURADO <<<
+      A constante WEBHOOK_URL abaixo ainda contém o placeholder porque o dono
+      não forneceu a URL do webhook do Make. Enquanto o placeholder estiver lá,
+      um GUARD impede o POST: o formulário valida e dá feedback normalmente, mas
+      o envio exibe "Configuração pendente: webhook do Make não definido" em vez
+      de estourar um erro de rede. Para ativar: substitua APENAS o valor da
+      constante WEBHOOK_URL pela URL https://hook.<região>.make.com/<token>.
+    ============================================================================
+  -->
+  <style>
+    /* ---- layout próprio da landing (sem header/nav do ERP) ---- */
+    body { background: #0d1117; }
+    .lp-wrap { max-width: 780px; margin: 0 auto; padding: 32px 20px 64px; }
+
+    .lp-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
+    .lp-brand .mark { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #0078D4, #58a6ff); display: grid; place-items: center; font-size: 1rem; }
+    .lp-brand .name { font-weight: 700; letter-spacing: .02em; }
+    .lp-brand .tag { color: #8b949e; font-size: .8rem; border-left: 1px solid #30363d; padding-left: 10px; }
+
+    .lp-hero h1 { font-size: 1.7rem; line-height: 1.25; margin: 0 0 10px; }
+    .lp-hero p { color: #8b949e; font-size: .96rem; line-height: 1.55; margin: 0 0 18px; max-width: 60ch; }
+    .lp-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; }
+    .lp-chips span { font-size: .76rem; color: #8b949e; border: 1px solid #30363d; border-radius: 999px; padding: 4px 11px; }
+
+    .lp-card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; padding: 22px 22px 24px; }
+    .lp-card > h2 { font-size: 1.05rem; margin: 0 0 4px; }
+    .lp-card > .sub { color: #8b949e; font-size: .85rem; margin: 0 0 20px; }
+
+    fieldset { border: 0; margin: 0; padding: 0; }
+    legend { padding: 0; font-size: .85rem; font-weight: 600; margin-bottom: 8px; }
+
+    .fld { margin-bottom: 16px; }
+    .fld > label, .fld > .lbl { display: block; font-size: .85rem; font-weight: 600; margin-bottom: 6px; }
+    .req { color: #f85149; margin-left: 2px; }
+    .hint { color: #8b949e; font-weight: 400; font-size: .78rem; margin-left: 6px; }
+
+    input[type="text"], input[type="email"], input[type="tel"], select, textarea {
+      width: 100%; font-family: inherit; font-size: .92rem; color: #e6edf3;
+      background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 9px 11px;
+    }
+    textarea { resize: vertical; min-height: 92px; }
+    select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, #8b949e 50%), linear-gradient(135deg, #8b949e 50%, transparent 50%); background-position: calc(100% - 17px) 55%, calc(100% - 12px) 55%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 34px; }
+    input::placeholder, textarea::placeholder { color: #556; }
+
+    /* foco visível em todos os controles (acessibilidade) */
+    input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible {
+      outline: 2px solid #58a6ff; outline-offset: 2px; border-color: #58a6ff;
+    }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+    @media (max-width: 560px) { .row { grid-template-columns: 1fr; } .lp-hero h1 { font-size: 1.4rem; } }
+
+    /* radios tipo de pessoa */
+    .radios { display: flex; gap: 10px; flex-wrap: wrap; }
+    .radios label { flex: 1 1 180px; display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
+      border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; background: #0d1117; font-size: .88rem; }
+    .radios label:hover { border-color: #58a6ff; }
+    .radios input { margin: 2px 0 0; accent-color: #0078D4; }
+    .radios label.on { border-color: #58a6ff; background: #1f6feb1a; }
+    .radios .d { display: block; color: #8b949e; font-size: .76rem; margin-top: 2px; }
+
+    /* consentimento */
+    .consent { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #0d1117; }
+    .consent input { margin: 2px 0 0; accent-color: #0078D4; flex: none; }
+    .consent label { font-size: .82rem; color: #8b949e; line-height: 1.5; font-weight: 400; margin: 0; }
+
+    /* erro por campo */
+    .err-msg { display: none; color: #f85149; font-size: .78rem; margin-top: 5px; }
+    .fld.bad .err-msg { display: block; }
+    .fld.bad input, .fld.bad select, .fld.bad textarea,
+    .fld.bad .consent, .fld.bad .radios label { border-color: #f85149; }
+
+    .actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-top: 22px; }
+    #btnEnviar { font-size: .95rem; padding: 10px 22px; font-weight: 600; }
+
+    /* área de mensagem global (aria-live) */
+    #formMsg { font-size: .88rem; line-height: 1.55; border-radius: 8px; padding: 12px 14px; margin-top: 18px; border: 1px solid transparent; }
+    #formMsg:empty { display: none; }
+    #formMsg.ok   { color: #3fb950; border-color: #3fb95055; background: #3fb9501a; }
+    #formMsg.err  { color: #f85149; border-color: #f8514955; background: #f851491a; }
+    #formMsg.warn { color: #e3b341; border-color: #d2992255; background: #d2992218; }
+    #formMsg.info { color: #8b949e; border-color: #30363d; background: #ffffff08; }
+
+    .lp-foot { color: #8b949e; font-size: .78rem; margin-top: 26px; line-height: 1.6; }
+    .lp-foot a { color: #58a6ff; }
+
+    /* honeypot anti-spam — escondido de gente, visível a bots burros */
+    .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
+
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+  </style>
+</head>
+<body>
+  <main class="lp-wrap">
+
+    <div class="lp-brand">
+      <span class="mark" aria-hidden="true">⚡</span>
+      <span class="name">Eletrium</span>
+      <span class="tag">Engenharia elétrica &amp; conformidade</span>
+    </div>
+
+    <section class="lp-hero">
+      <h1>Precisa de um orçamento de instalação elétrica, SPDA ou laudo de conformidade?</h1>
+      <p>
+        Conte o que você precisa. Nossa equipe técnica analisa a solicitação e retorna com
+        o próximo passo — visita técnica, escopo ou proposta comercial.
+      </p>
+      <div class="lp-chips">
+        <span>Instalações industriais</span>
+        <span>SPDA / Para-raios</span>
+        <span>Laudos NR-10</span>
+        <span>Adequação NR-12</span>
+        <span>Manutenção elétrica</span>
+      </div>
+    </section>
+
+    <div class="lp-card">
+      <h2>Solicitar contato</h2>
+      <p class="sub">Campos marcados com <span class="req" aria-hidden="true">*</span> são obrigatórios.</p>
+
+      <form id="formLead" novalidate autocomplete="on">
+
+        <!-- Tipo de pessoa: dirige a máscara do documento e é sinal forte p/ Score_PJPF (calculado no Make) -->
+        <div class="fld" id="fldTipo">
+          <fieldset>
+            <legend>Você está solicitando como<span class="req" aria-hidden="true">*</span><span class="sr-only">(obrigatório)</span></legend>
+            <div class="radios" role="radiogroup" aria-describedby="errTipo">
+              <label id="lblPJ">
+                <input type="radio" name="tipo_pessoa" value="PJ" id="tipoPJ" />
+                <span>Pessoa Jurídica<span class="d">Empresa, indústria, condomínio (CNPJ)</span></span>
+              </label>
+              <label id="lblPF">
+                <input type="radio" name="tipo_pessoa" value="PF" id="tipoPF" />
+                <span>Pessoa Física<span class="d">Residência, obra particular (CPF)</span></span>
+              </label>
+            </div>
+          </fieldset>
+          <p class="err-msg" id="errTipo"></p>
+        </div>
+
+        <div class="fld" id="fldDoc">
+          <label for="documento">
+            <span id="docLabel">CNPJ / CPF</span><span class="req" aria-hidden="true">*</span>
+            <span class="hint" id="docHint">selecione o tipo acima</span>
+          </label>
+          <input type="text" id="documento" name="documento" inputmode="numeric"
+                 autocomplete="off" maxlength="18" placeholder="Selecione o tipo acima"
+                 aria-describedby="errDoc" />
+          <p class="err-msg" id="errDoc"></p>
+        </div>
+
+        <div class="fld" id="fldRazao">
+          <label for="razao_social_nome"><span id="razaoLabel">Razão social / Nome</span><span class="req" aria-hidden="true">*</span></label>
+          <input type="text" id="razao_social_nome" name="razao_social_nome" maxlength="150"
+                 autocomplete="organization" placeholder="Como consta no documento" aria-describedby="errRazao" />
+          <p class="err-msg" id="errRazao"></p>
+        </div>
+
+        <div class="row">
+          <div class="fld" id="fldContato">
+            <label for="contato_nome">Nome do contato<span class="req" aria-hidden="true">*</span></label>
+            <input type="text" id="contato_nome" name="contato_nome" maxlength="120"
+                   autocomplete="name" placeholder="Com quem falamos?" aria-describedby="errContato" />
+            <p class="err-msg" id="errContato"></p>
+          </div>
+
+          <div class="fld" id="fldEmail">
+            <label for="email">E-mail<span class="req" aria-hidden="true">*</span></label>
+            <input type="email" id="email" name="email" maxlength="150"
+                   autocomplete="email" placeholder="nome@empresa.com.br" aria-describedby="errEmail" />
+            <p class="err-msg" id="errEmail"></p>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="fld" id="fldTel">
+            <label for="telefone">Telefone / WhatsApp<span class="req" aria-hidden="true">*</span></label>
+            <input type="tel" id="telefone" name="telefone" inputmode="tel" maxlength="15"
+                   autocomplete="tel" placeholder="(11) 98888-7777" aria-describedby="errTel" />
+            <p class="err-msg" id="errTel"></p>
+          </div>
+
+          <div class="fld" id="fldNec">
+            <label for="necessidade">Tipo de necessidade<span class="req" aria-hidden="true">*</span></label>
+            <select id="necessidade" name="necessidade" aria-describedby="errNec">
+              <option value="">Selecione...</option>
+              <option>Instalação elétrica industrial</option>
+              <option>SPDA / Para-raios</option>
+              <option>Laudo NR-10</option>
+              <option>Adequação NR-12</option>
+              <option>Manutenção elétrica</option>
+              <option>Instalação residencial</option>
+              <option>Outro</option>
+            </select>
+            <p class="err-msg" id="errNec"></p>
+          </div>
+        </div>
+
+        <div class="fld" id="fldMsg">
+          <label for="mensagem">Mensagem <span class="hint">opcional</span></label>
+          <textarea id="mensagem" name="mensagem" maxlength="2000"
+                    placeholder="Descreva o local, o porte da instalação, prazo desejado, etc." aria-describedby="errMsg"></textarea>
+          <p class="err-msg" id="errMsg"></p>
+        </div>
+
+        <!-- Consentimento afirmativo e NÃO pré-marcado (coleta de dado pessoal — LGPD) -->
+        <div class="fld" id="fldConsent">
+          <div class="consent">
+            <input type="checkbox" id="consentimento" name="consentimento" aria-describedby="errConsent" />
+            <label for="consentimento">
+              Autorizo a Eletrium a usar os dados acima para entrar em contato sobre esta solicitação.
+              Os dados não são usados para outra finalidade e podem ser removidos a pedido.<span class="req" aria-hidden="true">*</span>
+            </label>
+          </div>
+          <p class="err-msg" id="errConsent"></p>
+        </div>
+
+        <!-- honeypot: humanos não veem, não preenchem -->
+        <div class="hp" aria-hidden="true">
+          <label for="site_web">Não preencha este campo</label>
+          <input type="text" id="site_web" name="site_web" tabindex="-1" autocomplete="off" />
+        </div>
+
+        <div class="actions">
+          <button type="submit" id="btnEnviar">Enviar solicitação</button>
+          <span class="hint" id="reqNote">Retornamos em até 1 dia útil.</span>
+        </div>
+
+        <div id="formMsg" role="status" aria-live="polite" aria-atomic="true"></div>
+      </form>
+    </div>
+
+    <p class="lp-foot">
+      Ao enviar, seus dados vão apenas para a equipe comercial da Eletrium.
+      Não compartilhamos com terceiros e não enviamos comunicação promocional sem sua autorização.
+    </p>
+
+  </main>
+
+  <script>
+  (function () {
+    "use strict";
+
+    /* ======================================================================
+       >>> CONFIGURAÇÃO — ÚNICO PONTO A EDITAR PARA ATIVAR O ENVIO <<<
+       Cole aqui a URL do webhook do Make.com (ex.: https://hook.us2.make.com/abc123...).
+       Enquanto for o placeholder, o GUARD abaixo bloqueia o POST e exibe
+       "Configuração pendente" em vez de falhar com erro de rede.
+       NUNCA acrescente token/API key/secret nesta página — ela é pública.
+       ====================================================================== */
+    const WEBHOOK_URL = "COLE_AQUI_A_URL_DO_WEBHOOK_MAKE";
+
+    const WEBHOOK_PLACEHOLDER = "COLE_AQUI_A_URL_DO_WEBHOOK_MAKE";
+    const webhookConfigurado = () =>
+      typeof WEBHOOK_URL === "string" &&
+      WEBHOOK_URL.trim() !== "" &&
+      WEBHOOK_URL.trim() !== WEBHOOK_PLACEHOLDER &&
+      /^https:\/\//i.test(WEBHOOK_URL.trim());
+
+    const ORIGEM_LEAD = "Inbound";   // alimenta Origem_Lead na Fila_Auditoria_Leads
+    const TIMEOUT_MS = 20000;
+
+    const $ = (id) => document.getElementById(id);
+
+    /* ==================================================================
+       VALIDAÇÃO DE DOCUMENTO — dígito verificador real (não é só formato)
+       ================================================================== */
+
+    const soDigitos = (s) => String(s == null ? "" : s).replace(/\D+/g, "");
+
+    /** CPF: 11 dígitos, não pode ser sequência repetida, 2 DVs módulo 11. */
+    function validarCPF(valor) {
+      const cpf = soDigitos(valor);
+      if (cpf.length !== 11) return false;
+      if (/^(\d)\1{10}$/.test(cpf)) return false;      // 000...0, 111...1, etc.
+      for (let t = 9; t < 11; t++) {
+        let soma = 0;
+        for (let i = 0; i < t; i++) soma += parseInt(cpf[i], 10) * ((t + 1) - i);
+        let dv = (soma * 10) % 11;
+        if (dv === 10) dv = 0;
+        if (dv !== parseInt(cpf[t], 10)) return false;
+      }
+      return true;
+    }
+
+    /** CNPJ: 14 dígitos, não pode ser sequência repetida, 2 DVs módulo 11 com pesos 2..9. */
+    function validarCNPJ(valor) {
+      const cnpj = soDigitos(valor);
+      if (cnpj.length !== 14) return false;
+      if (/^(\d)\1{13}$/.test(cnpj)) return false;     // 00000000000000, 11111111111111, etc.
+      const calcDV = (base) => {
+        let peso = 2, soma = 0;
+        for (let i = base.length - 1; i >= 0; i--) {
+          soma += parseInt(base[i], 10) * peso;
+          peso = peso === 9 ? 2 : peso + 1;
+        }
+        const resto = soma % 11;
+        return resto < 2 ? 0 : 11 - resto;
+      };
+      const dv1 = calcDV(cnpj.slice(0, 12));
+      if (dv1 !== parseInt(cnpj[12], 10)) return false;
+      const dv2 = calcDV(cnpj.slice(0, 13));
+      return dv2 === parseInt(cnpj[13], 10);
+    }
+
+    // exposto para teste manual no console (window.EletriumInbound.validarCNPJ("...") etc.)
+    window.EletriumInbound = { validarCPF: validarCPF, validarCNPJ: validarCNPJ, soDigitos: soDigitos };
+
+    /* ==================================================================
+       MÁSCARAS
+       ================================================================== */
+
+    function mascaraCPF(v) {
+      const d = soDigitos(v).slice(0, 11);
+      let out = d.slice(0, 3);
+      if (d.length > 3) out += "." + d.slice(3, 6);
+      if (d.length > 6) out += "." + d.slice(6, 9);
+      if (d.length > 9) out += "-" + d.slice(9, 11);
+      return out;
+    }
+
+    function mascaraCNPJ(v) {
+      const d = soDigitos(v).slice(0, 14);
+      let out = d.slice(0, 2);
+      if (d.length > 2) out += "." + d.slice(2, 5);
+      if (d.length > 5) out += "." + d.slice(5, 8);
+      if (d.length > 8) out += "/" + d.slice(8, 12);
+      if (d.length > 12) out += "-" + d.slice(12, 14);
+      return out;
+    }
+
+    function mascaraTelefone(v) {
+      const d = soDigitos(v).slice(0, 11);
+      if (!d) return "";
+      if (d.length <= 2) return "(" + d;
+      const corte = d.length > 10 ? 7 : 6;               // celular 9 dígitos vs fixo 8
+      let out = "(" + d.slice(0, 2) + ") " + d.slice(2, corte);
+      if (d.length > corte) out += "-" + d.slice(corte);
+      return out;
+    }
+
+    /* ==================================================================
+       FEEDBACK POR CAMPO
+       ================================================================== */
+
+    function marcarErro(fldId, errId, msg, inputId) {
+      $(fldId).classList.add("bad");
+      $(errId).textContent = msg;
+      if (inputId && $(inputId)) $(inputId).setAttribute("aria-invalid", "true");
+    }
+
+    function limparErro(fldId, errId, inputId) {
+      $(fldId).classList.remove("bad");
+      $(errId).textContent = "";
+      if (inputId && $(inputId)) $(inputId).removeAttribute("aria-invalid");
+    }
+
+    function limparTodosErros() {
+      [["fldTipo","errTipo",null],["fldDoc","errDoc","documento"],["fldRazao","errRazao","razao_social_nome"],
+       ["fldContato","errContato","contato_nome"],["fldEmail","errEmail","email"],["fldTel","errTel","telefone"],
+       ["fldNec","errNec","necessidade"],["fldMsg","errMsg","mensagem"],["fldConsent","errConsent","consentimento"]]
+        .forEach(function (t) { limparErro(t[0], t[1], t[2]); });
+    }
+
+    function setMensagem(texto, classe) {
+      const el = $("formMsg");
+      el.textContent = texto || "";
+      el.className = texto ? (classe || "info") : "";
+    }
+
+    /* ==================================================================
+       TIPO DE PESSOA -> máscara, rótulo e placeholder do documento
+       ================================================================== */
+
+    function tipoSelecionado() {
+      const r = document.querySelector('input[name="tipo_pessoa"]:checked');
+      return r ? r.value : "";
+    }
+
+    function aplicarTipo() {
+      const tipo = tipoSelecionado();
+      const inp = $("documento");
+      $("lblPJ").classList.toggle("on", tipo === "PJ");
+      $("lblPF").classList.toggle("on", tipo === "PF");
+
+      if (tipo === "PJ") {
+        $("docLabel").textContent = "CNPJ";
+        $("razaoLabel").textContent = "Razão social";
+        $("docHint").textContent = "14 dígitos";
+        inp.placeholder = "00.000.000/0000-00";
+        inp.maxLength = 18;
+        inp.autocomplete = "off";
+        $("razao_social_nome").autocomplete = "organization";
+        $("razao_social_nome").placeholder = "Razão social da empresa";
+      } else if (tipo === "PF") {
+        $("docLabel").textContent = "CPF";
+        $("razaoLabel").textContent = "Nome completo";
+        $("docHint").textContent = "11 dígitos";
+        inp.placeholder = "000.000.000-00";
+        inp.maxLength = 14;
+        $("razao_social_nome").autocomplete = "name";
+        $("razao_social_nome").placeholder = "Seu nome completo";
+      } else {
+        $("docLabel").textContent = "CNPJ / CPF";
+        $("razaoLabel").textContent = "Razão social / Nome";
+        $("docHint").textContent = "selecione o tipo acima";
+        inp.placeholder = "Selecione o tipo acima";
+        inp.maxLength = 18;
+      }
+      // reaplica a máscara ao valor já digitado, se houver
+      if (inp.value) inp.value = tipo === "PF" ? mascaraCPF(inp.value) : mascaraCNPJ(inp.value);
+      limparErro("fldDoc", "errDoc", "documento");
+    }
+
+    document.querySelectorAll('input[name="tipo_pessoa"]').forEach(function (r) {
+      r.addEventListener("change", function () {
+        limparErro("fldTipo", "errTipo", null);
+        aplicarTipo();
+      });
+    });
+
+    $("documento").addEventListener("input", function () {
+      const tipo = tipoSelecionado();
+      if (!tipo) return;                                  // sem tipo, não mascara
+      const pos = this.selectionStart === this.value.length;
+      this.value = tipo === "PF" ? mascaraCPF(this.value) : mascaraCNPJ(this.value);
+      if (pos) this.setSelectionRange(this.value.length, this.value.length);
+    });
+
+    $("telefone").addEventListener("input", function () {
+      this.value = mascaraTelefone(this.value);
+    });
+
+    // limpa o erro do campo assim que a pessoa começa a corrigi-lo
+    [["documento","fldDoc","errDoc"],["razao_social_nome","fldRazao","errRazao"],
+     ["contato_nome","fldContato","errContato"],["email","fldEmail","errEmail"],
+     ["telefone","fldTel","errTel"],["necessidade","fldNec","errNec"],
+     ["consentimento","fldConsent","errConsent"]].forEach(function (t) {
+      const el = $(t[0]);
+      const ev = (el.type === "checkbox" || el.tagName === "SELECT") ? "change" : "input";
+      el.addEventListener(ev, function () { limparErro(t[1], t[2], t[0]); });
+    });
+
+    /* ==================================================================
+       VALIDAÇÃO DO FORMULÁRIO
+       ================================================================== */
+
+    const RE_EMAIL = /^[^\s@]+@[^\s@]+\.[A-Za-z]{2,}$/;
+
+    /** @returns {{ok:boolean, primeiroErro:?string}} */
+    function validarFormulario() {
+      limparTodosErros();
+      let primeiro = null;
+      const falha = function (fldId, errId, msg, inputId, focoId) {
+        marcarErro(fldId, errId, msg, inputId);
+        if (!primeiro) primeiro = focoId || inputId || fldId;
+      };
+
+      const tipo = tipoSelecionado();
+      if (!tipo) falha("fldTipo", "errTipo", "Escolha Pessoa Jurídica ou Pessoa Física.", null, "tipoPJ");
+
+      const docBruto = $("documento").value.trim();
+      const docDig = soDigitos(docBruto);
+      if (!tipo) {
+        /* já sinalizado acima; sem tipo não dá para saber qual documento validar */
+      } else if (!docDig) {
+        falha("fldDoc", "errDoc", tipo === "PJ" ? "Informe o CNPJ." : "Informe o CPF.", "documento");
+      } else if (tipo === "PJ") {
+        if (docDig.length !== 14) falha("fldDoc", "errDoc", "CNPJ deve ter 14 dígitos — você digitou " + docDig.length + ".", "documento");
+        else if (!validarCNPJ(docDig)) falha("fldDoc", "errDoc", "CNPJ inválido: os dígitos verificadores não conferem. Confira o número.", "documento");
+      } else {
+        if (docDig.length !== 11) falha("fldDoc", "errDoc", "CPF deve ter 11 dígitos — você digitou " + docDig.length + ".", "documento");
+        else if (!validarCPF(docDig)) falha("fldDoc", "errDoc", "CPF inválido: os dígitos verificadores não conferem. Confira o número.", "documento");
+      }
+
+      const razao = $("razao_social_nome").value.trim();
+      if (!razao) falha("fldRazao", "errRazao", tipo === "PF" ? "Informe seu nome completo." : "Informe a razão social.", "razao_social_nome");
+      else if (razao.length < 3) falha("fldRazao", "errRazao", "Nome muito curto (mínimo 3 caracteres).", "razao_social_nome");
+
+      const contato = $("contato_nome").value.trim();
+      if (!contato) falha("fldContato", "errContato", "Informe o nome de quem devemos procurar.", "contato_nome");
+      else if (contato.length < 2) falha("fldContato", "errContato", "Nome muito curto.", "contato_nome");
+
+      const email = $("email").value.trim();
+      if (!email) falha("fldEmail", "errEmail", "Informe um e-mail para retorno.", "email");
+      else if (!RE_EMAIL.test(email)) falha("fldEmail", "errEmail", "E-mail inválido. Exemplo: nome@empresa.com.br", "email");
+
+      const telDig = soDigitos($("telefone").value);
+      if (!telDig) falha("fldTel", "errTel", "Informe um telefone ou WhatsApp.", "telefone");
+      else if (telDig.length < 10 || telDig.length > 11) falha("fldTel", "errTel", "Telefone deve ter DDD + 8 ou 9 dígitos.", "telefone");
+
+      if (!$("necessidade").value) falha("fldNec", "errNec", "Selecione o tipo de necessidade.", "necessidade");
+
+      const msg = $("mensagem").value.trim();
+      if (msg.length > 2000) falha("fldMsg", "errMsg", "Mensagem muito longa (máximo 2000 caracteres).", "mensagem");
+
+      if (!$("consentimento").checked) falha("fldConsent", "errConsent", "É preciso autorizar o contato para enviarmos sua solicitação.", "consentimento");
+
+      return { ok: primeiro === null, primeiroErro: primeiro };
+    }
+
+    /* ==================================================================
+       PAYLOAD — o que o cenário do Make recebe
+       O Make é quem calcula Score_PJPF e decide a trilha
+       (Industrial/SPDA vs. Residencial/PF). Aqui só vão dados brutos.
+       ================================================================== */
+
+    function montarPayload() {
+      const tipo = tipoSelecionado();
+      const docDig = soDigitos($("documento").value);
+      const docFmt = tipo === "PF" ? mascaraCPF(docDig) : mascaraCNPJ(docDig);
+      const telDig = soDigitos($("telefone").value);
+      const agora = new Date().toISOString();
+
+      const razao = $("razao_social_nome").value.trim();
+      const contato = $("contato_nome").value.trim();
+      const email = $("email").value.trim();
+      const necessidade = $("necessidade").value;
+      const mensagem = $("mensagem").value.trim();
+
+      // Dados_Brutos: resumo textual concatenado, legível na fila de auditoria
+      const dadosBrutos = [
+        "Tipo: " + (tipo === "PJ" ? "Pessoa Juridica" : "Pessoa Fisica"),
+        "Documento: " + docFmt,
+        "Razao social/Nome: " + razao,
+        "Contato: " + contato,
+        "E-mail: " + email,
+        "Telefone: " + $("telefone").value.trim(),
+        "Necessidade: " + necessidade,
+        "Mensagem: " + (mensagem || "(nao informada)"),
+        "Origem: " + ORIGEM_LEAD,
+        "Enviado em: " + agora
+      ].join(" | ");
+
+      return {
+        tipo_pessoa: tipo,                    // "PJ" | "PF"
+        documento: docDig,                    // só dígitos (chave de deduplicação no Make)
+        documento_formatado: docFmt,          // com máscara, para exibição
+        razao_social_nome: razao,             // -> RazaoSocial_Nome
+        contato_nome: contato,
+        email: email,
+        telefone: telDig,                     // só dígitos
+        telefone_formatado: $("telefone").value.trim(),
+        necessidade: necessidade,
+        mensagem: mensagem,                   // "" se não preenchida
+        origem: ORIGEM_LEAD,                  // -> Origem_Lead = "Inbound"
+        enviado_em: agora,                    // ISO 8601 UTC
+        dados_brutos: dadosBrutos,            // -> Dados_Brutos
+        consentimento_contato: true,          // sempre true (form não envia sem aceite)
+        consentimento_em: agora,              // carimbo do aceite, para trilha LGPD
+        pagina_origem: location.pathname       // sem query string (nada de PII em URL)
+      };
+    }
+
+    /* ==================================================================
+       ENVIO
+       ================================================================== */
+
+    const form = $("formLead");
+    const btn = $("btnEnviar");
+    let enviando = false;
+
+    function setEnviando(on) {
+      enviando = on;
+      btn.disabled = on;
+      btn.textContent = on ? "Enviando..." : "Enviar solicitação";
+      form.setAttribute("aria-busy", on ? "true" : "false");
+    }
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      if (enviando) return;
+
+      // honeypot: bot preencheu o campo escondido -> finge sucesso, não envia nada
+      if ($("site_web").value) {
+        setMensagem("Solicitação recebida. Obrigado!", "ok");
+        return;
+      }
+
+      const v = validarFormulario();
+      if (!v.ok) {
+        setMensagem("Revise os campos destacados abaixo antes de enviar.", "err");
+        const alvo = $(v.primeiroErro);
+        if (alvo && alvo.focus) alvo.focus();
+        return;
+      }
+
+      const payload = montarPayload();
+
+      // ---- GUARD: webhook do Make ainda não configurado ----
+      if (!webhookConfigurado()) {
+        setMensagem(
+          "Configuração pendente: webhook do Make não definido. " +
+          "Seus dados foram validados mas NÃO foram enviados. " +
+          "Se você é do time da Eletrium, preencha a constante WEBHOOK_URL em inbound.html. " +
+          "Se você é cliente, por favor entre em contato por telefone enquanto resolvemos isso.",
+          "warn"
+        );
+        console.warn("[inbound] WEBHOOK_URL não configurado — POST bloqueado. Payload que seria enviado:", payload);
+        return;   // formulário preservado: nada é limpo
+      }
+
+      setEnviando(true);
+      setMensagem("Enviando sua solicitação...", "info");
+
+      const ctrl = new AbortController();
+      const timer = setTimeout(function () { ctrl.abort(); }, TIMEOUT_MS);
+
+      try {
+        const resp = await fetch(WEBHOOK_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: ctrl.signal
+        });
+        clearTimeout(timer);
+
+        if (!resp.ok) throw new Error("O servidor respondeu com erro " + resp.status + ".");
+
+        // sucesso: agradece e limpa o formulário
+        form.reset();
+        limparTodosErros();
+        aplicarTipo();
+        setMensagem(
+          "Recebemos sua solicitação, " + payload.contato_nome.split(" ")[0] + ". " +
+          "Nossa equipe técnica vai analisar e retornar em até 1 dia útil no e-mail " + payload.email + ".",
+          "ok"
+        );
+        btn.focus();
+      } catch (err) {
+        clearTimeout(timer);
+        const motivo = (err && err.name === "AbortError")
+          ? "O envio demorou demais e foi interrompido."
+          : "Não conseguimos falar com o servidor.";
+        // formulário NÃO é limpo — a pessoa não perde o que digitou
+        setMensagem(
+          motivo + " Seus dados continuam preenchidos aqui. " +
+          "Tente enviar novamente em alguns instantes; se persistir, entre em contato por telefone.",
+          "err"
+        );
+        console.error("[inbound] falha no envio:", err);
+      } finally {
+        setEnviando(false);
+      }
+    });
+
+    // estado inicial
+    aplicarTipo();
+    if (!webhookConfigurado()) {
+      console.warn("[inbound] WEBHOOK_URL ainda é o placeholder. O formulário valida mas não envia.");
+    }
+  })();
+  </script>
+</body>
+</html>
