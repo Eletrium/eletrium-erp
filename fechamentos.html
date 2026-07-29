@@ -59,6 +59,14 @@
     .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
     .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    /* bloco de decisão do veículo (única escrita da tela) */
+    .acao { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+    .acao[hidden] { display: none; }
+    .acao input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; font-size: .88rem; font-family: inherit; }
+    .acao input:focus { outline: 0; border-color: #1f6feb; }
+    .acao-btns { display: flex; gap: 8px; }
+    .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .acao-msg.err { color: #F85149; }
   </style>
 </head>
 <body>
@@ -290,6 +298,7 @@
     let nomeTecnico = {}, veicRotulo = {};
     let mapFech = {}, mapDiar = {}, mapVeic = {};
     let carregado = false;
+    let usuarioNome = "";   // vai para Aprovado_Por ao decidir um veículo
 
     const tecNome = (lookupId) => lookupId == null ? "—" : (nomeTecnico[lookupId] || ("técnico #" + lookupId));
 
@@ -298,7 +307,8 @@
     async function onIn() {
       setStatus("Autenticado como " + EG.getAccount().username);
       $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
-      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+      try { const u = await EG.me(); usuarioNome = u.nome; $("user").textContent = "👤 " + u.nome; }
+      catch { usuarioNome = EG.getAccount().username; $("user").textContent = "👤 " + usuarioNome; }
     }
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
@@ -760,11 +770,98 @@
           linha("Última alteração", fmtDT(f.Data_Ultima_Alteracao)) +
           linha("Observações", f.Observacoes) +
         "</dl>" +
-        (f.Status_Aprovacao === "Pendente"
-          ? "<div class='diverge'>Este veículo aguarda aprovação. Esta tela é somente leitura — aprove ou rejeite pelo Power Apps / SharePoint.</div>"
-          : "");
+        blocoDecisao(f);
       const sub = [f.Placa, f.Modelo].filter(Boolean).join(" — ") || "sem placa/modelo";
       mostrarDrawer(f.Title || f.Placa || "Veículo", sub, f.Status_Aprovacao, c, corpo, f);
+      ligarDecisao(o);
+    }
+
+    /* ==================================================================
+       DECISÃO DE VEÍCULO — única escrita desta tela.
+
+       Campos gravados: Status_Aprovacao (Choice, obrigatório), Aprovado_Por,
+       Data_Aprovacao, Motivo_Rejeicao, Alteracao_Pendente.
+
+       Não há disputa com o flow: "Eletrium - Aprovacao de Veiculo" apenas LÊ
+       Status_Aprovacao/Alteracao_Pendente para mandar e-mail de aviso — ele
+       não escreve em nenhum desses campos (verificado no JSON do flow).
+
+       MAS o flow dispara em MODIFICAÇÃO, e a condição dele é
+         Cadastrado_Por = 'Tecnico (PWA)'
+         AND (Status_Aprovacao = 'Pendente' OR Alteracao_Pendente = true)
+       Se a decisão não zerasse Alteracao_Pendente, a segunda cláusula seguiria
+       verdadeira e CADA aprovação dispararia um novo e-mail de "pendente".
+       Por isso Alteracao_Pendente:false vai junto da decisão, sempre.
+
+       Aprovado_Por é usado também na rejeição — a lista não tem campo
+       "Rejeitado_Por", e registrar quem decidiu vale mais que deixar em branco.
+       ================================================================== */
+    function blocoDecisao(f) {
+      const aberto = f.Status_Aprovacao === "Pendente" || f.Alteracao_Pendente === true;
+      return grupo("Decisão") +
+        "<div id='vAcao' class='acao'" + (aberto ? "" : " hidden") + ">" +
+          "<input id='vMotivo' type='text' maxlength='255' placeholder='motivo da rejeição (obrigatório para rejeitar)' value='" + esc(f.Motivo_Rejeicao || "") + "' />" +
+          "<div class='acao-btns'>" +
+            "<button id='vAprovar'>Aprovar</button>" +
+            "<button id='vRejeitar' class='sec'>Rejeitar</button>" +
+          "</div>" +
+          "<div id='vAcaoMsg' class='acao-msg'></div>" +
+        "</div>" +
+        (aberto ? "" : "<button id='vRever' class='sec'>Rever decisão</button>");
+    }
+
+    function ligarDecisao(o) {
+      const rev = $("vRever");
+      if (rev) rev.onclick = () => { $("vAcao").hidden = false; rev.hidden = true; };
+      const ap = $("vAprovar"), rj = $("vRejeitar");
+      if (ap) ap.onclick = () => decidirVeiculo(o, "Aprovado");
+      if (rj) rj.onclick = () => decidirVeiculo(o, "Rejeitado");
+    }
+
+    let decidindo = false;
+    async function decidirVeiculo(o, decisao) {
+      if (decidindo) return;
+      const msg = $("vAcaoMsg");
+      const motivo = ($("vMotivo") && $("vMotivo").value.trim()) || "";
+      if (decisao === "Rejeitado" && !motivo) {
+        msg.className = "acao-msg err";
+        msg.textContent = "Informe o motivo da rejeição.";
+        if ($("vMotivo")) $("vMotivo").focus();
+        return;
+      }
+      const campos = {
+        Status_Aprovacao: decisao,
+        Aprovado_Por: usuarioNome || "(usuário não identificado)",
+        Data_Aprovacao: new Date().toISOString(),
+        Alteracao_Pendente: false,
+        // Aprovar LIMPA o motivo de propósito. É a exceção consciente à regra de
+        // "não gravar vazio por cima": veículo aprovado carregando motivo de
+        // rejeição antigo é informação enganosa na tela e em qualquer relatório.
+        Motivo_Rejeicao: decisao === "Rejeitado" ? motivo : ""
+      };
+      const btns = [$("vAprovar"), $("vRejeitar")];
+      try {
+        decidindo = true;
+        btns.forEach(b => { if (b) b.disabled = true; });
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Veiculos_Tecnicos", o.id, campos);
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Veiculos_Tecnicos") + "/items/" + o.id + "?expand=fields");
+        const i = veiculos.findIndex(v => v.id === o.id);
+        if (i > -1) veiculos[i] = novo;
+        mapVeic[o.id] = novo;
+        renderVeic();
+        abrirVeicDrawer(novo);
+        setStatus("Veículo " + ((novo.fields || {}).Placa || o.id) + " → " + decisao + ".");
+      } catch (e) {
+        msg.className = "acao-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+        btns.forEach(b => { if (b) b.disabled = false; });
+      } finally {
+        decidindo = false;
+      }
     }
 
     function mostrarDrawer(titulo, sub, badge, corBadge, corpoHtml, fields) {
@@ -803,8 +900,10 @@
       kpisFech, kpisDiar, kpisVeic,
       filtrarFech, filtrarDiar, filtrarVeic,
       abrirFechDrawer, abrirDiarDrawer, abrirVeicDrawer,
+      blocoDecisao, ligarDecisao, decidirVeiculo,
       mesIdx, dKey, num, media, urlSeguro, fmtN, cel,
-      forcarCarregado: (v) => { carregado = v !== false; }
+      forcarCarregado: (v) => { carregado = v !== false; },
+      setUsuario: (n) => { usuarioNome = n; }
     };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
