@@ -42,6 +42,12 @@ window.EG = (function () {
     if (!r.ok) throw new Error(r.status + " " + (await r.text()));
     return r.json();
   }
+  async function gpost(url, body) {
+    const t = await token();
+    const r = await fetch(url.startsWith("http") ? url : GRAPH + url, { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) throw new Error(r.status + " " + (await r.text()));
+    return r.json();
+  }
   async function me() {
     if (currentUser) return currentUser;
     const m = await gget("/me?$select=id,displayName,userPrincipalName,mail");
@@ -66,6 +72,13 @@ window.EG = (function () {
   async function patchItemFields(list, id, fields) {
     const sid = await resolveSite();
     return gpatch("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items/" + id + "/fields", fields);
+  }
+  // Cria item. `fields` usa nomes INTERNOS; lookup vai como <Campo>LookupId
+  // (ex.: ClienteLookupId: 3) — o Graph não aceita "Cliente" com objeto.
+  // Só inclua chaves com valor: campo vazio enviado como "" grava vazio.
+  async function createItem(list, fields) {
+    const sid = await resolveSite();
+    return gpost("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items", { fields });
   }
 
   // helpers de formatação
@@ -137,5 +150,5 @@ window.EG = (function () {
     el.innerHTML = html; el.hidden = false;
   }
 
-  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, me, resolveSite, listItems, listColumns, patchItemFields, BRL, fmtDate, validarChoices, renderAvisoChoices, renderAvisosChoices };
+  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, validarChoices, renderAvisoChoices, renderAvisosChoices };
 })();

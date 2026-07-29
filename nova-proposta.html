@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Nova Proposta / Orçamento</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <!--
+    ==========================================================================
+    TELA DE CRIAÇÃO — Proposta (CRM) ou Orçamento de Venda (Suprimentos)
+
+    É a PRIMEIRA tela de escrita do frontend web. Todas as outras são leitura.
+
+    CANAL_VENDA: derivado, não capturado.
+      O dono decidiu explicitamente NÃO criar campo novo de captura — o canal
+      sai dos sinais que cada fluxo já produz. Ver derivarCanal*() abaixo, que
+      são funções puras justamente para poderem ser auditadas e testadas.
+      A pessoa pode sobrescrever, mas a sobrescrita é explícita e visível.
+
+    ENVIO PARCIAL: o POST leva apenas chaves com valor. Campo em branco NÃO é
+      enviado como "" — mesma política acordada para o mapper do 1A. Isso
+      importa aqui porque Propostas é alimentada também por flow e por Make;
+      mandar "" gravaria vazio por cima em vez de deixar o default agir.
+
+    OBRIGATÓRIOS (verificados via Get-PnPField em 29/07/2026):
+      Propostas .......... Title, Cliente
+      Orcamentos_Venda ... Title, Cliente, Origem_Demanda, Status_Orcamento
+    ==========================================================================
+  -->
+  <style>
+    [hidden] { display: none !important; }
+    .seg { display: inline-flex; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; margin-bottom: 16px; }
+    .seg button { background: #161b22; color: #8b949e; border: 0; padding: 8px 18px; font-size: .88rem; cursor: pointer; }
+    .seg button.on { background: #1f6feb; color: #fff; }
+    .form { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; max-width: 1000px; }
+    .f { display: flex; flex-direction: column; gap: 5px; }
+    .f.wide { grid-column: 1 / -1; }
+    .f label { color: #8b949e; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    .f label .req { color: #F85149; }
+    .f input, .f select, .f textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
+    }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f textarea { min-height: 76px; resize: vertical; }
+    .f .err { color: #F85149; font-size: .76rem; }
+    .canal {
+      grid-column: 1 / -1; background: #161b22; border: 1px solid #30363d;
+      border-radius: 10px; padding: 12px 14px;
+    }
+    .canal .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .canal .val { font-size: 1.05rem; font-weight: 600; }
+    .canal .por { color: #8b949e; font-size: .82rem; margin-top: 6px; line-height: 1.45; }
+    .canal .ovr { margin-left: auto; display: flex; align-items: center; gap: 6px; color: #8b949e; font-size: .8rem; }
+    .acoes { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+    .ok { background: #12291c; border: 1px solid #22B573; color: #7ee2a8; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+    .ok a { color: #7ee2a8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html" class="active">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="ok" id="okBox" hidden></div>
+
+    <div class="seg" id="seg" hidden>
+      <button data-t="proposta" class="on">Proposta (CRM)</button>
+      <button data-t="orcamento">Orçamento de Venda</button>
+    </div>
+
+    <form class="form" id="form" hidden autocomplete="off"></form>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    // =========================================================================
+    // ENUMS — precisam bater EXATAMENTE com o SharePoint (acento incluso).
+    // Levantados com Get-PnPField em 29/07/2026. validarChoices() confere em
+    // runtime e avisa se divergirem, para não falhar em silêncio.
+    // =========================================================================
+    const TIPO_SERVICO = ["Elétrica Predial", "Elétrica Industrial", "SPDA", "NR-10", "NR-12", "NR-35",
+      "Automação Industrial", "CFTV", "Telecom", "Refrigeração", "Manutenção", "Montagem de Painéis",
+      "Laudo Técnico", "Projeto Elétrico", "Fornecimento de Materiais", "Outro"];
+    const STATUS_PROP = ["Rascunho", "Enviada", "Em análise", "Aprovada", "Rejeitada", "Expirada"];
+    const ETAPA_PIPE = ["Lead Novo", "Qualificação", "Em Elaboração", "Enviada", "Em Negociação",
+      "Aguardando Decisão", "Ganho", "Perdido"];
+    const ORIGEM_LEAD = ["Indicação", "Google ADS", "LinkedIn", "Instagram", "Outbound/Prospecção",
+      "WhatsApp", "Site Orgânico", "Evento/Feira", "Email Marketing", "Outro"];
+    const ORIGEM_DEMANDA = ["CRM - Proposta Comercial", "Pedido Avulso de Material",
+      "Venda para Revenda/Atacado", "Reposicao Interna", "Outro", "Marketplace", "Rede Social",
+      "Venda Física/Balcão"];
+    const STATUS_ORC = ["Rascunho", "Aguardando Estoque", "Aprovado Internamente", "Enviado ao Cliente",
+      "Aceito - Aguardando Faturamento", "Faturado", "Cancelado"];
+    const PRIORIDADE_ORC = ["Baixa", "Normal", "Alta", "Urgente"];
+    const CANAL = ["Consultivo", "Direto"];
+
+    // =========================================================================
+    // DERIVAÇÃO DE Canal_Venda  —  funções PURAS (auditáveis, testáveis)
+    //
+    // Regra do dono: "Direto quando o escopo já vem definido; Consultivo como
+    // default de segurança." Não há campo de captura: derivamos de sinais que
+    // cada fluxo já produz hoje.
+    //
+    // PROPOSTA — sinal: Tipo_Servico_Proposta
+    //   "Fornecimento de Materiais" é o único tipo em que o cliente chega com o
+    //   escopo fechado (lista de itens, quantidades). Todos os outros — SPDA,
+    //   NR-10, laudo, projeto, automação — exigem diagnóstico técnico ANTES de
+    //   existir escopo; por definição são consultivos.
+    //
+    // ORÇAMENTO — sinal: Origem_Demanda
+    //   Balcão, marketplace, revenda, pedido avulso e reposição interna são
+    //   casos em que o solicitante já diz o que quer. "CRM - Proposta Comercial"
+    //   nasceu de uma proposta consultiva e herda esse canal. "Rede Social" e
+    //   "Outro" são ambíguos -> Consultivo por segurança.
+    // =========================================================================
+    const DIRETO_TIPO_SERVICO = new Set(["Fornecimento de Materiais"]);
+    const DIRETO_ORIGEM_DEMANDA = new Set([
+      "Pedido Avulso de Material", "Venda para Revenda/Atacado", "Marketplace",
+      "Venda Física/Balcão", "Reposicao Interna"
+    ]);
+
+    function derivarCanalProposta(tipoServico) {
+      if (!tipoServico) return { canal: "Consultivo", motivo: "Tipo de serviço ainda não escolhido — default de segurança." };
+      if (DIRETO_TIPO_SERVICO.has(tipoServico))
+        return { canal: "Direto", motivo: "“" + tipoServico + "” é fornecimento puro: o cliente chega com o escopo fechado." };
+      return { canal: "Consultivo", motivo: "“" + tipoServico + "” exige diagnóstico técnico antes de haver escopo." };
+    }
+    function derivarCanalOrcamento(origemDemanda) {
+      if (!origemDemanda) return { canal: "Consultivo", motivo: "Origem da demanda ainda não escolhida — default de segurança." };
+      if (DIRETO_ORIGEM_DEMANDA.has(origemDemanda))
+        return { canal: "Direto", motivo: "Em “" + origemDemanda + "” o solicitante já define o que quer." };
+      if (origemDemanda === "CRM - Proposta Comercial")
+        return { canal: "Consultivo", motivo: "Veio de proposta comercial do CRM — herda o canal consultivo." };
+      return { canal: "Consultivo", motivo: "“" + origemDemanda + "” é ambíguo quanto ao escopo — default de segurança." };
+    }
+
+    // =========================================================================
+    let tipo = "proposta", clientes = [], enviando = false;
+
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+      await carregar();
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    async function carregar() {
+      try {
+        setStatus("Carregando clientes...");
+        const cli = await EG.listItems("Clientes", "expand=fields($select=Title)&$top=500");
+        clientes = cli.map(c => ({ id: c.id, nome: (c.fields && c.fields.Title) || ("cliente #" + c.id) }))
+                      .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+        $("seg").hidden = false; $("form").hidden = false;
+        render();
+        // guardas de rótulo — avisam se algum enum divergir do SharePoint
+        Promise.all([
+          EG.validarChoices("Propostas", "Tipo_Servico_Proposta", TIPO_SERVICO).then(v => ({ v, rotulo: "Tipo de serviço (Proposta)" })),
+          EG.validarChoices("Propostas", "Canal_Venda", CANAL).then(v => ({ v, rotulo: "Canal de venda (Proposta)" })),
+          EG.validarChoices("Orcamentos_Venda", "Origem_Demanda", ORIGEM_DEMANDA).then(v => ({ v, rotulo: "Origem da demanda (Orçamento)" })),
+          EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", STATUS_ORC).then(v => ({ v, rotulo: "Status do orçamento" }))
+        ]).then(p => EG.renderAvisosChoices($("choiceWarn"), p)).catch(() => {});
+        setStatus("OK — " + clientes.length + " cliente(s). " + (clientes.length ? "" : "⚠️ Sem clientes: cadastre um antes, o campo é obrigatório."), clientes.length ? "" : "err");
+      } catch (e) { setStatus("Falha ao carregar: " + e.message, "err"); }
+    }
+
+    $("seg").addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-t]"); if (!b) return;
+      tipo = b.dataset.t;
+      [...$("seg").querySelectorAll("button")].forEach(x => x.classList.toggle("on", x === b));
+      $("okBox").hidden = true;
+      render();
+    });
+
+    const opts = (arr, sel) => ['<option value=""></option>']
+      .concat(arr.map(o => `<option value="${esc(o)}"${o === sel ? " selected" : ""}>${esc(o)}</option>`)).join("");
+    const optsCli = () => ['<option value=""></option>']
+      .concat(clientes.map(c => `<option value="${esc(c.id)}">${esc(c.nome)}</option>`)).join("");
+
+    function render() {
+      const campoCli = `<div class="f"><label for="cliente">Cliente <span class="req">*</span></label>
+        <select id="cliente">${optsCli()}</select><span class="err" id="e_cliente"></span></div>`;
+      const campoTit = `<div class="f"><label for="titulo">Título <span class="req">*</span></label>
+        <input id="titulo" type="text" maxlength="255" placeholder="ex.: SPDA — galpão 2" /><span class="err" id="e_titulo"></span></div>`;
+
+      const blocoCanal = `<div class="canal">
+          <div class="top">
+            <span style="color:#8b949e;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em">Canal de venda (derivado)</span>
+            <span class="val" id="canalVal">—</span>
+            <span class="ovr"><input type="checkbox" id="canalOvr" /><label for="canalOvr" style="text-transform:none;letter-spacing:0">definir manualmente</label>
+              <select id="canalMan" disabled>${opts(CANAL, "Consultivo")}</select></span>
+          </div>
+          <div class="por" id="canalPor"></div>
+        </div>`;
+
+      const acoes = `<div class="acoes">
+          <button type="button" id="btnCriar">Criar</button>
+          <span class="hint" id="hint" style="color:#8b949e;font-size:.82rem"></span>
+        </div>`;
+
+      if (tipo === "proposta") {
+        $("form").innerHTML = campoTit + campoCli + `
+          <div class="f"><label for="tipoServico">Tipo de serviço</label><select id="tipoServico">${opts(TIPO_SERVICO)}</select></div>
+          <div class="f"><label for="origemLead">Origem do lead</label><select id="origemLead">${opts(ORIGEM_LEAD)}</select></div>
+          <div class="f"><label for="status">Status</label><select id="status">${opts(STATUS_PROP, "Rascunho")}</select></div>
+          <div class="f"><label for="etapa">Etapa do pipeline</label><select id="etapa">${opts(ETAPA_PIPE, "Lead Novo")}</select></div>
+          <div class="f"><label for="vServico">Valor de serviço (R$)</label><input id="vServico" type="number" step="0.01" min="0" /></div>
+          <div class="f"><label for="vMateriais">Valor de materiais (R$)</label><input id="vMateriais" type="number" step="0.01" min="0" /></div>
+          <div class="f"><label for="dEmissao">Data de emissão</label><input id="dEmissao" type="date" /></div>
+          <div class="f"><label for="dValidade">Data de validade</label><input id="dValidade" type="date" /></div>
+          <div class="f wide"><label for="descricao">Descrição</label><textarea id="descricao"></textarea></div>
+          ` + blocoCanal + acoes;
+        $("tipoServico").onchange = atualizarCanal;
+      } else {
+        $("form").innerHTML = campoTit + campoCli + `
+          <div class="f"><label for="origemDemanda">Origem da demanda <span class="req">*</span></label>
+            <select id="origemDemanda">${opts(ORIGEM_DEMANDA)}</select><span class="err" id="e_origemDemanda"></span></div>
+          <div class="f"><label for="statusOrc">Status do orçamento <span class="req">*</span></label>
+            <select id="statusOrc">${opts(STATUS_ORC, "Rascunho")}</select><span class="err" id="e_statusOrc"></span></div>
+          <div class="f"><label for="vMat">Valor total de materiais (R$)</label><input id="vMat" type="number" step="0.01" min="0" /></div>
+          <div class="f"><label for="vSrv">Valor total de serviços (R$)</label><input id="vSrv" type="number" step="0.01" min="0" /></div>
+          <div class="f"><label for="prioridade">Prioridade</label><select id="prioridade">${opts(PRIORIDADE_ORC, "Normal")}</select></div>
+          <div class="f wide"><label for="obs">Observações</label><textarea id="obs"></textarea></div>
+          ` + blocoCanal + acoes;
+        $("origemDemanda").onchange = atualizarCanal;
+      }
+
+      $("canalOvr").onchange = () => { $("canalMan").disabled = !$("canalOvr").checked; atualizarCanal(); };
+      $("canalMan").onchange = atualizarCanal;
+      $("btnCriar").onclick = criar;
+      atualizarCanal();
+    }
+
+    function canalAtual() {
+      if ($("canalOvr") && $("canalOvr").checked)
+        return { canal: $("canalMan").value, motivo: "Definido manualmente — a derivação automática foi sobrescrita.", manual: true };
+      return tipo === "proposta"
+        ? derivarCanalProposta($("tipoServico") ? $("tipoServico").value : "")
+        : derivarCanalOrcamento($("origemDemanda") ? $("origemDemanda").value : "");
+    }
+    function atualizarCanal() {
+      const c = canalAtual();
+      $("canalVal").textContent = c.canal;
+      $("canalVal").style.color = c.canal === "Direto" ? "#58A6FF" : "#D29922";
+      $("canalPor").textContent = c.motivo;
+    }
+
+    // Só entram no payload chaves COM valor — campo em branco não vira "".
+    function pnn(alvo, chave, valor) {
+      if (valor === undefined || valor === null) return;
+      if (typeof valor === "string" && valor.trim() === "") return;
+      if (typeof valor === "number" && !isFinite(valor)) return;
+      alvo[chave] = valor;
+    }
+    const numOu = (id) => { const el = $(id); if (!el || el.value === "") return undefined; const n = Number(el.value); return isFinite(n) ? n : undefined; };
+    const dataOu = (id) => { const el = $(id); return (el && el.value) ? new Date(el.value + "T12:00:00").toISOString() : undefined; };
+    const txtOu = (id) => { const el = $(id); return el ? el.value.trim() : undefined; };
+
+    function limparErros() { [...document.querySelectorAll(".err")].forEach(e => e.textContent = ""); }
+
+    async function criar() {
+      if (enviando) return;
+      limparErros();
+      const titulo = txtOu("titulo"), cliente = txtOu("cliente");
+      let falhou = false;
+      if (!titulo) { $("e_titulo").textContent = "obrigatório"; falhou = true; }
+      if (!cliente) { $("e_cliente").textContent = "obrigatório"; falhou = true; }
+      if (tipo === "orcamento") {
+        if (!txtOu("origemDemanda")) { $("e_origemDemanda").textContent = "obrigatório"; falhou = true; }
+        if (!txtOu("statusOrc")) { $("e_statusOrc").textContent = "obrigatório"; falhou = true; }
+      }
+      if (falhou) { setStatus("Preencha os campos obrigatórios.", "err"); return; }
+
+      const c = canalAtual();
+      const f = {};
+      pnn(f, "Title", titulo);
+      f.ClienteLookupId = Number(cliente);   // lookup: o Graph exige <Campo>LookupId
+      pnn(f, "Canal_Venda", c.canal);
+
+      const lista = tipo === "proposta" ? "Propostas" : "Orcamentos_Venda";
+      if (tipo === "proposta") {
+        pnn(f, "Tipo_Servico_Proposta", txtOu("tipoServico"));
+        pnn(f, "Origem_Lead", txtOu("origemLead"));
+        pnn(f, "Status", txtOu("status"));
+        pnn(f, "Etapa_Pipeline", txtOu("etapa"));
+        pnn(f, "Descricao", txtOu("descricao"));
+        pnn(f, "Valor_Servico", numOu("vServico"));
+        pnn(f, "Valor_Materiais", numOu("vMateriais"));
+        const vs = numOu("vServico") || 0, vm = numOu("vMateriais") || 0;
+        if (vs || vm) { f.ValorTotal = vs + vm; f.Tem_Material = vm > 0; }
+        pnn(f, "DataEmissao", dataOu("dEmissao"));
+        pnn(f, "DataValidade", dataOu("dValidade"));
+        f.Data_Entrada_Etapa = new Date().toISOString();  // o CRM ordena o pipeline por este campo
+      } else {
+        pnn(f, "Origem_Demanda", txtOu("origemDemanda"));
+        pnn(f, "Status_Orcamento", txtOu("statusOrc"));
+        pnn(f, "Prioridade", txtOu("prioridade"));
+        pnn(f, "Observacoes", txtOu("obs"));
+        pnn(f, "Valor_Total_Materiais", numOu("vMat"));
+        pnn(f, "Valor_Total_Servicos", numOu("vSrv"));
+        const m = numOu("vMat") || 0, s = numOu("vSrv") || 0;
+        if (m || s) { f.Valor_Total_Orcamento = m + s; f.Fornecimento_Conjugado = m > 0 && s > 0; }
+        f.Data_Criacao = new Date().toISOString();
+      }
+
+      try {
+        enviando = true; $("btnCriar").disabled = true;
+        setStatus("Criando em " + lista + "...");
+        const novo = await EG.createItem(lista, f);
+        const id = novo && novo.id;
+        $("okBox").innerHTML = "✅ Criado em <strong>" + esc(lista) + "</strong> — ID <strong>" + esc(id) + "</strong>, "
+          + "canal <strong>" + esc(c.canal) + "</strong>" + (c.manual ? " (manual)" : " (derivado)") + ". "
+          + (tipo === "proposta" ? '<a href="propostas.html">ver em Propostas</a>' : '<a href="suprimentos.html">ver em Suprimentos</a>');
+        $("okBox").hidden = false;
+        setStatus("OK — item " + id + " criado.");
+        ["titulo", "descricao", "vServico", "vMateriais", "vMat", "vSrv", "obs"].forEach(k => { if ($(k)) $(k).value = ""; });
+      } catch (e) {
+        setStatus("Falha ao criar: " + e.message, "err");
+      } finally { enviando = false; $("btnCriar").disabled = false; }
+    }
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
