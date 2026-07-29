@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Reaquecimento</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais — NÃO mover para app.css */
+    .intro { font-size: .84rem; color: #8b949e; padding: 0 20px 4px; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 14px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+    .kpi:hover { border-color: #58a6ff; }
+    .kpi .n { font-size: 1.5rem; font-weight: 700; }
+    .kpi .l { font-size: .76rem; color: #8b949e; margin-top: 2px; }
+    .kpi.hot { border-color: var(--kc, #30363d); background: color-mix(in srgb, var(--kc, #161b22) 12%, #161b22); }
+    .kpi.hot .n { color: var(--kc, #e6edf3); }
+    .kpi.sel { outline: 2px solid #58a6ff; outline-offset: -1px; }
+    .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .toolbar label { font-size: .84rem; color: #8b949e; }
+    .toolbar select { font-size: .88rem; padding: 6px 10px; border-radius: 6px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; }
+    .toolbar .count { font-size: .8rem; color: #8b949e; }
+    .rel-badge { display: inline-block; border-radius: 6px; padding: 2px 9px; font-size: .76rem; border: 1px solid var(--bc, #30363d); color: var(--bc, #8b949e); white-space: nowrap; }
+    .rel-badge.vazio { border-style: dashed; }
+    .empty b { color: #e6edf3; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="reaquecimento.html" class="active">Reaquecimento</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div class="intro">Acompanhamento somente leitura do monitor de reaquecimento: um cenário automático roda 1×/dia e marca clientes como
+    <b>Risco de Perda</b> após 90 dias sem atividade e <b>Inativo</b> após 180. Nenhuma ação é disparada por esta tela.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+  <main>
+    <div class="kpis" id="kpis"></div>
+    <div class="toolbar">
+      <label for="fRel">Relacionamento:</label>
+      <select id="fRel">
+        <option value="__atencao" selected>Atenção — Risco de Perda + Inativo</option>
+        <option value="__todos">Todos</option>
+        <option value="Lead Novo">Lead Novo</option>
+        <option value="Qualificado">Qualificado</option>
+        <option value="Cliente Ativo">Cliente Ativo</option>
+        <option value="Risco de Perda">Risco de Perda</option>
+        <option value="Inativo">Inativo</option>
+        <option value="Perdido">Perdido</option>
+        <option value="__sem">(sem status — ainda não monitorado)</option>
+      </select>
+      <span class="count" id="count"></span>
+    </div>
+    <div id="tbl"></div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (v) => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    // Rótulos EXATOS do Choice Clientes.Status_Relacionamento no SharePoint.
+    // Qualquer divergência é denunciada por EG.validarChoices (guarda anti-falha-silenciosa).
+    const REL = {
+      "Lead Novo":      { cor: "#58a6ff", hot: false },
+      "Qualificado":    { cor: "#39c5cf", hot: false },
+      "Cliente Ativo":  { cor: "#3fb950", hot: false },
+      "Risco de Perda": { cor: "#d29922", hot: true },
+      "Inativo":        { cor: "#f85149", hot: true },
+      "Perdido":        { cor: "#8b949e", hot: false }
+    };
+    const ORDEM = ["Risco de Perda", "Inativo", "Perdido", "Cliente Ativo", "Qualificado", "Lead Novo"];
+    const SEM = "__sem"; // clientes com Status_Relacionamento vazio (monitor ainda não classificou)
+
+    let clientes = [];
+    let carregou = false;
+
+    async function boot() {
+      const logged = await EG.init();
+      if (logged) await onIn();
+    }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando clientes...");
+        clientes = await EG.listItems("Clientes");
+        carregou = true;
+        render();
+        setStatus("OK — " + clientes.length + " cliente(s) na base.");
+        // Guarda de divergência de rótulos (padrão das demais telas).
+        EG.validarChoices("Clientes", "Status_Relacionamento", Object.keys(REL))
+          .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de Relacionamento (Clientes)"))
+          .catch(() => {});
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    const relDe = (i) => {
+      const v = (i.fields || {}).Status_Relacionamento;
+      return (v == null || v === "") ? SEM : v;
+    };
+
+    function render() {
+      renderKpis();
+      renderTabela();
+    }
+
+    function renderKpis() {
+      const cont = {}; ORDEM.forEach(k => cont[k] = 0); cont[SEM] = 0;
+      clientes.forEach(i => { const r = relDe(i); cont[r] = (cont[r] || 0) + 1; });
+      const filtro = $("fRel").value;
+      const kpi = (chave, rotulo, cor, hot) => {
+        const sel = filtro === chave || (filtro === "__atencao" && (chave === "Risco de Perda" || chave === "Inativo"));
+        return `<div class="kpi${hot ? " hot" : ""}${sel ? " sel" : ""}" data-k="${esc(chave)}" style="--kc:${cor}">
+          <div class="n">${cont[chave] || 0}</div><div class="l">${esc(rotulo)}</div>
+        </div>`;
+      };
+      $("kpis").innerHTML =
+        ORDEM.map(k => kpi(k, k, REL[k].cor, REL[k].hot)).join("") +
+        kpi(SEM, "Sem status (não monitorado)", "#8b949e", false);
+    }
+
+    function renderTabela() {
+      const filtro = $("fRel").value;
+      if (!clientes.length) {
+        $("count").textContent = "";
+        $("tbl").innerHTML = "<div class='empty'>Nenhum cliente na base.</div>";
+        return;
+      }
+      const monitorados = clientes.filter(i => relDe(i) !== SEM);
+      if (!monitorados.length && filtro !== SEM) {
+        $("count").textContent = "";
+        $("tbl").innerHTML = "<div class='empty'>Nenhum cliente monitorado ainda — o monitor de reaquecimento roda 1×/dia e ainda não preencheu " +
+          "<b>Status_Relacionamento</b> em nenhum dos " + clientes.length + " registro(s). " +
+          "Use o filtro <b>(sem status)</b> para ver quem aguarda classificação.</div>";
+        return;
+      }
+      let lista;
+      if (filtro === "__todos") lista = clientes.slice();
+      else if (filtro === "__atencao") lista = clientes.filter(i => { const r = relDe(i); return r === "Risco de Perda" || r === "Inativo"; });
+      else lista = clientes.filter(i => relDe(i) === filtro);
+
+      const peso = (r) => { const p = ORDEM.indexOf(r); return p === -1 ? ORDEM.length : p; };
+      lista.sort((a, b) => (peso(relDe(a)) - peso(relDe(b))) ||
+        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+
+      $("count").textContent = lista.length + " cliente(s) no filtro.";
+      if (!lista.length) {
+        const nome = filtro === "__atencao" ? "Risco de Perda / Inativo" : filtro;
+        $("tbl").innerHTML = "<div class='empty'>Nenhum cliente com relacionamento <b>" + esc(nome) + "</b>.</div>";
+        return;
+      }
+      const badge = (r) => {
+        if (r === SEM) return "<span class='rel-badge vazio'>sem status</span>";
+        const cor = (REL[r] || {}).cor || "#8b949e";
+        return "<span class='rel-badge' style='--bc:" + cor + "'>" + esc(r) + "</span>";
+      };
+      $("tbl").innerHTML = `<table>
+        <thead><tr><th>Cliente</th><th>Relacionamento</th><th>Status</th><th>Segmento</th><th>Última compra</th></tr></thead>
+        <tbody>${lista.map(i => {
+          const f = i.fields || {};
+          return `<tr>
+            <td>${esc(f.Title ?? "(sem nome)")}</td>
+            <td>${badge(relDe(i))}</td>
+            <td>${esc(f.Status ?? "—")}</td>
+            <td>${esc(f.Segmento ?? "—")}</td>
+            <td>${esc(EG.fmtDate(f.Data_Ultima_Compra) ?? "—")}</td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table>`;
+    }
+
+    $("fRel").onchange = () => { if (carregou) render(); };
+    $("kpis").addEventListener("click", (e) => {
+      const k = e.target.closest(".kpi"); if (!k || !carregou) return;
+      $("fRel").value = k.dataset.k; render();
+    });
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
