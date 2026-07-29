@@ -7,6 +7,64 @@
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
   <script src="graph.js"></script>
   <link rel="stylesheet" href="app.css" />
+  <!--
+    ==========================================================================
+    CLIENTES — leitura + CRIAÇÃO + EDIÇÃO
+
+    CRIAÇÃO segue o padrão de nova-proposta.html:
+      o POST leva apenas chaves COM valor — campo em branco NÃO é enviado
+      como "". A lista Clientes também é alimentada por flow/Make; mandar ""
+      gravaria vazio por cima em vez de deixar o default agir.
+
+    EDIÇÃO segue o padrão de fechamentos.html (decisão de veículo):
+      dirty tracking contra um snapshot, PATCH apenas dos campos ALTERADOS
+      (EG.patchItemFields) e releitura do servidor após gravar — a tela
+      mostra o estado REAL, não o eco local. Na edição, esvaziar um campo é
+      intenção explícita da pessoa: campo alterado para vazio vai como null
+      (limpa no SharePoint). É a exceção consciente à regra do POST.
+
+    CAMPOS FORA DO FORMULÁRIO (schema completo via Get-PnPField em 29/07/2026):
+      Ticket_Medio, Total_Faturado, Qtd_Propostas, Qtd_Projetos,
+      Dias_Sem_Compra, Alerta_Inatividade, NPS_Medio  -> calculados por
+        automação (Make/flows) a partir de Propostas e OS; editar à mão
+        criaria número mentiroso que a automação sobrescreve.
+      Latitude, Longitude, Raio_Tolerancia_M -> geocerca operacional do PWA
+        de campo, não é dado comercial.
+      CNPJ_Lead -> preenchido pelo funil de inbound/auditoria de leads.
+      Ficam visíveis no drawer de leitura; só não são editáveis aqui.
+
+    CNPJ_CPF: validação com dígito verificador REAL, copiada de inbound.html
+      (que é página pública standalone — não dá para importar de lá). Suporta
+      o CNPJ ALFANUMÉRICO da Receita Federal (vigente 2026) e continua
+      aceitando CNPJs numéricos. Vazio é permitido. Ao gravar, o documento
+      válido é normalizado com máscara (11.222.333/0001-81 / 123.456.789-09);
+      não havia convenção anterior na lista (única linha existente estava
+      vazia) e quem consome o campo consegue tirar a máscara com \D+.
+    ==========================================================================
+  -->
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+    .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+    .form { display: flex; flex-direction: column; gap: 12px; }
+    .f { display: flex; flex-direction: column; gap: 5px; }
+    .f label { color: #8b949e; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    .f label .req { color: #F85149; }
+    .f input, .f select, .f textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
+    }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f textarea { min-height: 70px; resize: vertical; }
+    .f .err { color: #F85149; font-size: .76rem; }
+    .f .hint { color: #8b949e; font-size: .74rem; line-height: 1.4; }
+    .f-grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em;
+               border-bottom: 1px solid #21262d; padding-bottom: 4px; margin-top: 10px; }
+    .form-acoes { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .form-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .form-msg.err { color: #F85149; }
+    .drawer-head .acs { display: flex; gap: 8px; align-items: center; }
+  </style>
 </head>
 <body>
   <header>
@@ -27,7 +85,14 @@
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
-  <main><div class="grid" id="grid"></div></main>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="toolbar">
+      <button id="btnNovo" disabled>＋ Novo cliente</button>
+    </div>
+    <div class="grid" id="grid"></div>
+  </main>
 
   <div class="overlay" id="overlay"></div>
   <aside class="drawer" id="drawer" aria-hidden="true"></aside>
@@ -35,7 +100,185 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
-    let itemMap = {};
+    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ==================================================================
+       ENUMS — fallback hard-coded, batem com o SharePoint (Get-PnPField,
+       29/07/2026). Em runtime os selects são repopulados com o que
+       EG.listColumns("Clientes") devolver; se o Graph falhar, o fallback
+       segura a tela. EG.validarChoices denuncia divergência no aviso.
+       ================================================================== */
+    const FALLBACK_CHOICES = {
+      TipoPessoa: ["Pessoa Jurídica", "Pessoa Física"],
+      Estado: ["MG", "SP", "RJ", "ES", "GO", "BA", "PR", "RS", "SC", "DF", "Outro"],
+      Segmento: ["Indústria", "Comercial", "Residencial", "Construtora", "Condomínio", "Outro"],
+      Status: ["Ativo", "Inativo", "Prospect"],
+      Status_Relacionamento: ["Lead Novo", "Qualificado", "Cliente Ativo", "Risco de Perda", "Inativo", "Perdido"],
+      Origem_Lead: ["Indicação", "Google ADS", "LinkedIn", "Instagram", "Outbound/Prospecção", "WhatsApp", "Site Orgânico", "Evento/Feira", "Email Marketing", "Outro"],
+      Frequencia_Compra: ["Mensal", "Bimestral", "Trimestral", "Semestral", "Anual", "Eventual", "Não definida"]
+    };
+    const CHOICES = {};
+    Object.keys(FALLBACK_CHOICES).forEach(n => { CHOICES[n] = FALLBACK_CHOICES[n].slice(); });
+
+    let choicesOk = false;
+    async function carregarChoices() {
+      if (choicesOk) return;
+      try {
+        const cols = await EG.listColumns("Clientes");
+        Object.keys(FALLBACK_CHOICES).forEach(n => {
+          const col = (cols || []).find(c => c.name === n);
+          if (col && col.choice && Array.isArray(col.choice.choices) && col.choice.choices.length)
+            CHOICES[n] = col.choice.choices;
+        });
+        choicesOk = true;
+      } catch (e) { console.warn("[clientes] listColumns falhou, usando enums de fallback:", e.message); }
+      // guarda de rótulos: divergência entre fallback e SharePoint vira aviso visível
+      Promise.all(Object.keys(FALLBACK_CHOICES).map(n =>
+        EG.validarChoices("Clientes", n, FALLBACK_CHOICES[n]).then(v => ({ v, rotulo: n + " (Clientes)" }))
+      )).then(p => EG.renderAvisosChoices($("choiceWarn"), p)).catch(() => {});
+    }
+
+    /* ==================================================================
+       VALIDAÇÃO DE DOCUMENTO — dígito verificador real, copiada de
+       inbound.html (soDigitos/soAlnum/validarCPF/calcDVCNPJ/validarCNPJ).
+       CNPJ no formato ALFANUMÉRICO da Receita Federal (vigente 2026):
+       12 primeiros caracteres 0-9/A-Z, 2 DVs sempre numéricos; no módulo 11
+       cada caractere vale (ASCII - 48). Retrocompatível com CNPJ numérico
+       por construção.
+       ================================================================== */
+    const soDigitos = (s) => String(s == null ? "" : s).replace(/\D+/g, "");
+    const soAlnum = (s) => String(s == null ? "" : s).toUpperCase().replace(/[^0-9A-Z]+/g, "");
+
+    function validarCPF(valor) {
+      const cpf = soDigitos(valor);
+      if (cpf.length !== 11) return false;
+      if (/^(\d)\1{10}$/.test(cpf)) return false;      // 000...0, 111...1, etc.
+      for (let t = 9; t < 11; t++) {
+        let soma = 0;
+        for (let i = 0; i < t; i++) soma += parseInt(cpf[i], 10) * ((t + 1) - i);
+        let dv = (soma * 10) % 11;
+        if (dv === 10) dv = 0;
+        if (dv !== parseInt(cpf[t], 10)) return false;
+      }
+      return true;
+    }
+
+    const CNPJ_P1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const CNPJ_P2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2];
+    const valorCharCNPJ = (c) => c.charCodeAt(0) - 48;
+
+    function calcDVCNPJ(base12) {
+      const ch = base12.split("");
+      let s1 = 0;
+      for (let i = 0; i < 12; i++) s1 += valorCharCNPJ(ch[i]) * CNPJ_P1[i];
+      const r1 = s1 % 11;
+      const dv1 = r1 < 2 ? 0 : 11 - r1;
+      const comDv1 = ch.concat([String(dv1)]);
+      let s2 = 0;
+      for (let i = 0; i < 13; i++) s2 += valorCharCNPJ(comDv1[i]) * CNPJ_P2[i];
+      const r2 = s2 % 11;
+      const dv2 = r2 < 2 ? 0 : 11 - r2;
+      return String(dv1) + String(dv2);
+    }
+
+    function validarCNPJ(valor) {
+      const cnpj = soAlnum(valor);
+      if (cnpj.length !== 14) return false;
+      if (!/^[0-9A-Z]{12}[0-9]{2}$/.test(cnpj)) return false;   // 12 alfanuméricos + 2 DVs numéricos
+      if (/^(.)\1{13}$/.test(cnpj)) return false;               // sequência repetida
+      return calcDVCNPJ(cnpj.slice(0, 12)) === cnpj.slice(12);
+    }
+
+    function mascaraCPF(v) {
+      const d = soDigitos(v).slice(0, 11);
+      let out = d.slice(0, 3);
+      if (d.length > 3) out += "." + d.slice(3, 6);
+      if (d.length > 6) out += "." + d.slice(6, 9);
+      if (d.length > 9) out += "-" + d.slice(9, 11);
+      return out;
+    }
+    function mascaraCNPJ(v) {
+      const bruto = soAlnum(v).slice(0, 14);
+      const d = bruto.length > 12 ? bruto.slice(0, 12) + bruto.slice(12).replace(/[^0-9]/g, "") : bruto;
+      let out = d.slice(0, 2);
+      if (d.length > 2) out += "." + d.slice(2, 5);
+      if (d.length > 5) out += "." + d.slice(5, 8);
+      if (d.length > 8) out += "/" + d.slice(8, 12);
+      if (d.length > 12) out += "-" + d.slice(12, 14);
+      return out;
+    }
+
+    /* Valida CNPJ_CPF respeitando TipoPessoa quando escolhido; sem tipo,
+       infere pelo conteúdo. VAZIO É PERMITIDO — nem todo cliente chega com
+       documento. Devolve também o valor normalizado (com máscara) a gravar. */
+    function validarDocumento(bruto, tipoPessoa) {
+      const alnum = soAlnum(bruto), dig = soDigitos(bruto);
+      if (!alnum) return { ok: true, valor: "" };
+      if (tipoPessoa === "Pessoa Física")
+        return validarCPF(dig)
+          ? { ok: true, valor: mascaraCPF(dig) }
+          : { ok: false, msg: "CPF inválido: os dígitos verificadores não conferem." };
+      if (tipoPessoa === "Pessoa Jurídica")
+        return validarCNPJ(alnum)
+          ? { ok: true, valor: mascaraCNPJ(alnum) }
+          : { ok: false, msg: "CNPJ inválido (14 caracteres; os 12 primeiros podem ter letras, os 2 DVs são números)." };
+      // tipo não escolhido: 11 dígitos puros -> CPF; 14 alfanuméricos -> CNPJ
+      if (dig.length === 11 && alnum === dig)
+        return validarCPF(dig) ? { ok: true, valor: mascaraCPF(dig) } : { ok: false, msg: "CPF inválido: os dígitos verificadores não conferem." };
+      if (alnum.length === 14)
+        return validarCNPJ(alnum) ? { ok: true, valor: mascaraCNPJ(alnum) } : { ok: false, msg: "CNPJ inválido: os dígitos verificadores não conferem." };
+      return { ok: false, msg: "Documento não reconhecido: CPF tem 11 dígitos, CNPJ tem 14 caracteres." };
+    }
+
+    const RE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+    /* ==================================================================
+       CAMPOS DO FORMULÁRIO (criação e edição usam a mesma definição)
+
+       ⚠️ DONO DE CAMPO — Status_Relacionamento:
+       este campo também é escrito por um monitor Make DIÁRIO que promove
+       risco por inatividade (Cliente Ativo -> Risco de Perda -> Inativo).
+       Editar aqui é legítimo — é campo de CRM e a reativação manual faz
+       parte do trabalho comercial — MAS o monitor pode REPROMOVÊR um
+       cliente reativado à mão se ele continuar sem OS concluída ou
+       Proposta "Ganho" recentes. Reativar de verdade = mudar o campo E
+       gerar movimento comercial; só mudar o campo é adiar o rebaixamento.
+       ================================================================== */
+    const CAMPOS = [
+      { grupo: "Identificação" },
+      { n: "Title", rotulo: "Razão social / Nome", req: true, ph: "ex.: Metalúrgica Aurora Ltda" },
+      { n: "TipoPessoa", rotulo: "Tipo de pessoa", tipo: "choice" },
+      { n: "CNPJ_CPF", rotulo: "CNPJ / CPF", ph: "opcional — validado se preenchido" },
+      { n: "InscricaoEstadual", rotulo: "Inscrição estadual" },
+      { grupo: "Contato" },
+      { n: "Contato", rotulo: "Pessoa de contato" },
+      { n: "Email", rotulo: "E-mail" },
+      { n: "Telefone", rotulo: "Telefone" },
+      { grupo: "Endereço" },
+      { n: "Endereco", rotulo: "Endereço" },
+      { n: "Cidade", rotulo: "Cidade" },
+      { n: "Estado", rotulo: "Estado", tipo: "choice" },
+      { n: "CEP", rotulo: "CEP" },
+      { grupo: "Comercial" },
+      { n: "Segmento", rotulo: "Segmento", tipo: "choice" },
+      { n: "Status", rotulo: "Status", tipo: "choice" },
+      { n: "Status_Relacionamento", rotulo: "Relacionamento", tipo: "choice",
+        hint: "também mantido por monitor automático de inatividade — reativar à mão sem OS/proposta recente será desfeito pelo monitor" },
+      { n: "Origem_Lead", rotulo: "Origem do lead", tipo: "choice" },
+      { n: "Campanha_Origem", rotulo: "Campanha de origem" },
+      { n: "Responsavel_Comercial", rotulo: "Responsável comercial" },
+      { n: "Frequencia_Compra", rotulo: "Frequência de compra", tipo: "choice" },
+      { n: "Data_Primeiro_Contato", rotulo: "Data do primeiro contato", tipo: "date" },
+      { n: "Data_Ultima_Compra", rotulo: "Data da última compra", tipo: "date" },
+      { grupo: "Observações" },
+      { n: "Observacoes", rotulo: "Observações", tipo: "textarea" }
+    ];
+    const CAMPOS_DADOS = CAMPOS.filter(c => c.n);
+
+    /* ============================ estado ============================ */
+    let itens = [], itemMap = {};
+    let snapshot = null;      // valores iniciais do form (dirty tracking da edição)
+    let gravando = false;
 
     async function boot() {
       const logged = await EG.init();
@@ -52,56 +295,238 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando clientes...");
+        carregarChoices();   // em paralelo — o form usa fallback até chegar
         const items = await EG.listItems("Clientes");
-        itemMap = {}; items.forEach(i => itemMap[i.id] = i);
-        render(items);
-        setStatus("OK — " + items.length + " cliente(s).");
+        setItens(items);
+        render();
+        $("btnNovo").disabled = false;
+        setStatus("OK — " + itens.length + " cliente(s).");
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
-    function render(items) {
-      $("grid").innerHTML = items.map(i => {
+    function setItens(items) {
+      itens = items || [];
+      itemMap = {}; itens.forEach(i => { itemMap[i.id] = i; });
+    }
+    function upsert(novo) {
+      const idx = itens.findIndex(i => i.id === novo.id);
+      if (idx > -1) itens[idx] = novo; else itens.unshift(novo);
+      itemMap[novo.id] = novo;
+    }
+
+    function render() {
+      $("grid").innerHTML = itens.map(i => {
         const f = i.fields || {};
         const loc = [f.Cidade, f.Estado].filter(Boolean).join(" / ");
-        return `<div class="card" data-id="${i.id}">
-          <div class="t">${f.Title ?? "(sem nome)"}</div>
-          <div class="s">${f.CNPJ_CPF ?? "—"}${loc ? " · " + loc : ""}</div>
-          ${f.Status ? `<span class="badge">${f.Status}</span>` : ""}
-          ${f.Segmento ? `<span class="badge">${f.Segmento}</span>` : ""}
+        return `<div class="card" data-id="${esc(i.id)}">
+          <div class="t">${esc(f.Title ?? "(sem nome)")}</div>
+          <div class="s">${esc(f.CNPJ_CPF ?? "—")}${loc ? " · " + esc(loc) : ""}</div>
+          ${f.Status ? `<span class="badge">${esc(f.Status)}</span>` : ""}
+          ${f.Segmento ? `<span class="badge">${esc(f.Segmento)}</span>` : ""}
         </div>`;
       }).join("") || "<div class='empty'>Nenhum cliente.</div>";
     }
 
-    // drawer
+    /* ======================= drawer: LEITURA ======================= */
     $("grid").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c && itemMap[c.dataset.id]) openDrawer(itemMap[c.dataset.id]); });
     $("overlay").onclick = closeDrawer;
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
-    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${l}</dt><dd>${v}</dd>`;
+    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${esc(l)}</dt><dd>${esc(v)}</dd>`;
 
     function openDrawer(i) {
       const f = i.fields || {};
       const rows = [
         rowD("CNPJ / CPF", f.CNPJ_CPF), rowD("Tipo de pessoa", f.TipoPessoa),
+        rowD("Inscrição estadual", f.InscricaoEstadual),
         rowD("Contato", f.Contato), rowD("E-mail", f.Email), rowD("Telefone", f.Telefone),
         rowD("Endereço", f.Endereco), rowD("Cidade", f.Cidade), rowD("Estado", f.Estado), rowD("CEP", f.CEP),
         rowD("Segmento", f.Segmento), rowD("Status", f.Status), rowD("Relacionamento", f.Status_Relacionamento),
+        rowD("Origem do lead", f.Origem_Lead), rowD("Campanha de origem", f.Campanha_Origem),
         rowD("Responsável comercial", f.Responsavel_Comercial),
+        rowD("Frequência de compra", f.Frequencia_Compra),
+        rowD("Primeiro contato", EG.fmtDate(f.Data_Primeiro_Contato)),
+        rowD("Última compra", EG.fmtDate(f.Data_Ultima_Compra)),
         rowD("Ticket médio", f.Ticket_Medio != null ? EG.BRL(f.Ticket_Medio) : null),
         rowD("Total faturado", f.Total_Faturado != null ? EG.BRL(f.Total_Faturado) : null),
         rowD("Qtd. propostas", f.Qtd_Propostas), rowD("Qtd. projetos", f.Qtd_Projetos),
-        rowD("Última compra", EG.fmtDate(f.Data_Ultima_Compra)), rowD("Dias sem compra", f.Dias_Sem_Compra),
-        rowD("Origem do lead", f.Origem_Lead), rowD("Observações", f.Observacoes)
+        rowD("Dias sem compra", f.Dias_Sem_Compra),
+        rowD("Observações", f.Observacoes)
       ].join("");
       $("drawer").innerHTML = `
-        <div class="drawer-head"><div class="t">${f.Title ?? "(sem nome)"}</div><button class="x" id="dc">Fechar ✕</button></div>
+        <div class="drawer-head"><div class="t">${esc(f.Title ?? "(sem nome)")}</div>
+          <div class="acs"><button id="de">Editar ✏️</button><button class="x" id="dc">Fechar ✕</button></div></div>
         <div class="drawer-body"><dl>${rows}</dl>
           <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
-          <pre id="rf" hidden style="margin-top:8px">${JSON.stringify(f, null, 2)}</pre>
+          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
-      $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("dc").onclick = closeDrawer;
+      $("de").onclick = () => abrirForm(i);
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    /* ================= drawer: FORMULÁRIO (criar/editar) ================= */
+    $("btnNovo").onclick = () => abrirForm(null);
+
+    // AAAA-MM-DD local a partir do ISO do Graph, para <input type=date>
+    const isoParaInput = (s) => {
+      if (!s) return "";
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    // meio-dia local -> ISO, mesma convenção de nova-proposta (evita virar o dia no fuso)
+    const inputParaIso = (v) => v ? new Date(v + "T12:00:00").toISOString() : null;
+
+    const optsChoice = (nome, sel) => ['<option value=""></option>']
+      .concat((CHOICES[nome] || []).map(o => `<option value="${esc(o)}"${o === sel ? " selected" : ""}>${esc(o)}</option>`)).join("");
+
+    function campoHtml(c, valor) {
+      const id = "c_" + c.n;
+      const rotulo = `<label for="${id}">${esc(c.rotulo)}${c.req ? ' <span class="req">*</span>' : ""}</label>`;
+      let controle;
+      if (c.tipo === "choice") controle = `<select id="${id}">${optsChoice(c.n, valor)}</select>`;
+      else if (c.tipo === "textarea") controle = `<textarea id="${id}">${esc(valor)}</textarea>`;
+      else if (c.tipo === "date") controle = `<input id="${id}" type="date" value="${esc(valor)}" />`;
+      else controle = `<input id="${id}" type="text" maxlength="255" value="${esc(valor)}" placeholder="${esc(c.ph || "")}" />`;
+      return `<div class="f">${rotulo}${controle}` +
+        (c.hint ? `<span class="hint">⚠️ ${esc(c.hint)}</span>` : "") +
+        `<span class="err" id="e_${c.n}"></span></div>`;
+    }
+
+    function valorInicial(c, f) {
+      if (!f) return "";
+      if (c.tipo === "date") return isoParaInput(f[c.n]);
+      return f[c.n] == null ? "" : String(f[c.n]);
+    }
+
+    // item == null -> criação; item -> edição
+    function abrirForm(item) {
+      const f = item ? (item.fields || {}) : null;
+      snapshot = {};
+      const corpo = CAMPOS.map(c => {
+        if (c.grupo) return `<div class="f-grupo">${esc(c.grupo)}</div>`;
+        const v = valorInicial(c, f);
+        snapshot[c.n] = v;
+        return campoHtml(c, v);
+      }).join("");
+      $("drawer").innerHTML = `
+        <div class="drawer-head"><div class="t">${item ? "Editar — " + esc((f && f.Title) || ("cliente #" + item.id)) : "Novo cliente"}</div>
+          <button class="x" id="dc">Fechar ✕</button></div>
+        <div class="drawer-body"><form class="form" id="formCli" autocomplete="off" onsubmit="return false">
+          ${corpo}
+          <div class="form-acoes">
+            <button type="button" id="btnSalvar">${item ? "Salvar alterações" : "Criar cliente"}</button>
+            <button type="button" class="sec" id="btnCancelar">Cancelar</button>
+          </div>
+          <div class="form-msg" id="formMsg"></div>
+        </form></div>`;
+      $("dc").onclick = closeDrawer;
+      $("btnCancelar").onclick = () => item ? openDrawer(item) : closeDrawer();
+      $("btnSalvar").onclick = () => salvar(item);
+      // máscara de documento no blur — não bloqueia digitação, só arruma
+      $("c_CNPJ_CPF").addEventListener("blur", () => {
+        const el = $("c_CNPJ_CPF");
+        const r = validarDocumento(el.value, $("c_TipoPessoa").value);
+        if (r.ok && r.valor) el.value = r.valor;
+      });
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+
+    function valorAtual(c) {
+      const el = $("c_" + c.n);
+      return el ? el.value.trim() : "";
+    }
+    function limparErros() { CAMPOS_DADOS.forEach(c => { const e = $("e_" + c.n); if (e) e.textContent = ""; }); }
+
+    /** @returns {?Object} mapa campo->valor de FORM (strings), ou null se inválido */
+    function validarForm() {
+      limparErros();
+      let primeiro = null;
+      const falha = (n, msg) => { const e = $("e_" + n); if (e) e.textContent = msg; if (!primeiro) primeiro = n; };
+
+      const vals = {};
+      CAMPOS_DADOS.forEach(c => { vals[c.n] = valorAtual(c); });
+
+      if (!vals.Title) falha("Title", "obrigatório");
+      const doc = validarDocumento(vals.CNPJ_CPF, vals.TipoPessoa);
+      if (!doc.ok) falha("CNPJ_CPF", doc.msg);
+      else vals.CNPJ_CPF = doc.valor;                       // normalizado com máscara
+      if (vals.Email && !RE_EMAIL.test(vals.Email)) falha("Email", "e-mail inválido");
+
+      if (primeiro) {
+        const el = $("c_" + primeiro); if (el) el.focus();
+        $("formMsg").className = "form-msg err";
+        $("formMsg").textContent = "Corrija os campos destacados.";
+        return null;
+      }
+      return vals;
+    }
+
+    async function salvar(item) {
+      if (gravando) return;
+      const vals = validarForm();
+      if (!vals) return;
+      const msg = $("formMsg");
+
+      try {
+        gravando = true; $("btnSalvar").disabled = true;
+        msg.className = "form-msg"; msg.textContent = "Gravando...";
+
+        let id;
+        if (!item) {
+          // CRIAÇÃO — só entram chaves COM valor; branco não vira "" (padrão nova-proposta)
+          const payload = {};
+          CAMPOS_DADOS.forEach(c => {
+            const v = vals[c.n];
+            if (v === "") return;
+            payload[c.n] = c.tipo === "date" ? inputParaIso(v) : v;
+          });
+          const novo = await EG.createItem("Clientes", payload);
+          id = novo && novo.id;
+          if (!id) throw new Error("o Graph não devolveu o id do item criado");
+        } else {
+          // EDIÇÃO — dirty tracking: PATCH apenas do que mudou vs snapshot.
+          // Campo esvaziado de propósito vai como null (limpa no SharePoint) —
+          // exceção consciente à regra "não gravar vazio por cima": aqui o
+          // vazio é decisão da pessoa, e só campos ALTERADOS entram no PATCH.
+          const mudados = {};
+          CAMPOS_DADOS.forEach(c => {
+            const v = vals[c.n];
+            if (v === (snapshot ? snapshot[c.n] : "")) return;
+            mudados[c.n] = v === "" ? null : (c.tipo === "date" ? inputParaIso(v) : v);
+          });
+          if (!Object.keys(mudados).length) {
+            msg.textContent = "Nada foi alterado.";
+            return;
+          }
+          await EG.patchItemFields("Clientes", item.id, mudados);
+          id = item.id;
+        }
+
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const sid = await EG.resolveSite();
+        const atual = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Clientes") + "/items/" + id + "?expand=fields");
+        upsert(atual);
+        render();
+        openDrawer(atual);
+        setStatus((item ? "Cliente atualizado" : "Cliente criado") + " — " + (((atual.fields || {}).Title) || ("#" + id)) + ".");
+      } catch (e) {
+        msg.className = "form-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+      } finally {
+        gravando = false;
+        const b = $("btnSalvar"); if (b) b.disabled = false;
+      }
+    }
+
+    /* Exposto para teste manual no console, sem login (mesma ideia do inbound):
+       CLI.validarCNPJ("12.ABC.345/01DE-35") etc. */
+    window.CLI = { validarCPF, validarCNPJ, calcDVCNPJ, soDigitos, soAlnum,
+                   mascaraCPF, mascaraCNPJ, validarDocumento, isoParaInput, inputParaIso };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
