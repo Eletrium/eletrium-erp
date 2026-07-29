@@ -22,6 +22,22 @@
     td .badge { white-space: nowrap; margin-top: 0; }
     .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
     .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
+
+    /* bloco de edição do drawer (padrão do bloco de decisão de fechamentos.html) */
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    .ed { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+    .ed[hidden] { display: none; }
+    .ed label { display: flex; flex-direction: column; gap: 4px; color: #8b949e; font-size: .78rem; }
+    .ed input, .ed select, .ed textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 7px 10px; font-size: .86rem; font-family: inherit;
+    }
+    .ed input:focus, .ed select:focus, .ed textarea:focus { outline: 0; border-color: #1f6feb; }
+    .ed textarea { min-height: 64px; resize: vertical; }
+    .ed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+    .ed-btns { display: flex; gap: 8px; }
+    .ed-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .ed-msg.err { color: #F85149; }
   </style>
 </head>
 <body>
@@ -55,7 +71,7 @@
     <div class="toolbar" id="toolbar" hidden>
       <label for="fStatus">Status</label>
       <select id="fStatus"><option value="">(Todos)</option></select>
-      <span class="ro">somente leitura</span>
+      <span class="ro">edição pelo detalhe da OS</span>
       <span class="hint" id="hint"></span>
     </div>
 
@@ -87,6 +103,53 @@
     const statusCor = (s) => STATUS_COR[s] || "#8b949e";
 
     let itemMap = {}, todas = [], nomeCliente = {}, nomeTecnico = {};
+    let tecnicosOS = [];   // itens crus de TecnicosMEI — popula o select de técnico da edição
+    let choiceOS = {};     // { nomeInterno: [choices...] } lido de EG.listColumns("OrdensDeServico")
+
+    /* =================================================================
+       DONO DE CAMPO — OrdensDeServico é reescrita pelo cenário Make "1A"
+       a cada 20 minutos. Os campos abaixo pertencem ao 1A e são PROIBIDOS
+       de editar por esta tela: qualquer valor gravado aqui seria
+       sobrescrito (silenciosamente) no próximo ciclo do sync.
+
+         Status, Status_Atual, ObsCampo, Prioridade_OS, Tipo_OS_Completo,
+         DataConclusao, Hora_Inicio, Hora_Encerramento, Hora_Ultima_Pausa,
+         Hora_Ultima_Retomada, Horas_Produtivas, Horas_Pausadas,
+         Horas_Computadas, Horas_Realizadas_OS, Qtd_Interrupcoes,
+         Qtd_Realizada, Meta_Dia, Pct_Acumulado, Em_Pausa_Agora,
+         Motivo_Pausa_Atual, Proximo_Passo, Nao_Conformidade,
+         Ultima_Atualizacao
+
+       Editáveis (verificados SEM escritor automatizado): Tecnico (lookup),
+       DataPrevista, ValorOS, Descricao, Observacoes (da gestão — NÃO
+       confundir com ObsCampo, que é do técnico/1A), Prioridade, Tipo_OS,
+       Categoria, Custo_MO_Previsto, Custo_EPI_OS, Custo_Ferr_OS,
+       Horas_Previstas_OS.
+       ================================================================= */
+    const CAMPOS_1A = [
+      "Status", "Status_Atual", "ObsCampo", "Prioridade_OS", "Tipo_OS_Completo",
+      "DataConclusao", "Hora_Inicio", "Hora_Encerramento", "Hora_Ultima_Pausa",
+      "Hora_Ultima_Retomada", "Horas_Produtivas", "Horas_Pausadas",
+      "Horas_Computadas", "Horas_Realizadas_OS", "Qtd_Interrupcoes",
+      "Qtd_Realizada", "Meta_Dia", "Pct_Acumulado", "Em_Pausa_Agora",
+      "Motivo_Pausa_Atual", "Proximo_Passo", "Nao_Conformidade", "Ultima_Atualizacao"
+    ];
+
+    // campo -> id do input do formulário + tipo (dirige dirty tracking e conversão p/ Graph)
+    const CAMPOS_EDIT = [
+      { campo: "TecnicoLookupId",   el: "eTecnico",            tipo: "lookup" },
+      { campo: "DataPrevista",      el: "eDataPrevista",       tipo: "data" },
+      { campo: "ValorOS",           el: "eValorOS",            tipo: "num" },
+      { campo: "Prioridade",        el: "ePrioridade",         tipo: "choice" },
+      { campo: "Tipo_OS",           el: "eTipo_OS",            tipo: "choice" },
+      { campo: "Categoria",         el: "eCategoria",          tipo: "choice" },
+      { campo: "Custo_MO_Previsto", el: "eCusto_MO_Previsto",  tipo: "num" },
+      { campo: "Custo_EPI_OS",      el: "eCusto_EPI_OS",       tipo: "num" },
+      { campo: "Custo_Ferr_OS",     el: "eCusto_Ferr_OS",      tipo: "num" },
+      { campo: "Horas_Previstas_OS", el: "eHoras_Previstas_OS", tipo: "num" },
+      { campo: "Descricao",         el: "eDescricao",          tipo: "texto" },
+      { campo: "Observacoes",       el: "eObservacoes",        tipo: "texto" }
+    ];
 
     const esc = (v) => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const num = (v) => (typeof v === "number" ? v : (v == null || v === "" ? 0 : Number(v) || 0));
@@ -114,14 +177,21 @@
         EG.validarChoices("OrdensDeServico", "Status", STATUS_OS)
           .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de OS"))
           .catch(() => {});
-        // lookups voltam do Graph como ClienteLookupId / TecnicoLookupId — resolvemos o nome pelo join local
-        const [os, cli, tec] = await Promise.all([
+        // lookups voltam do Graph como ClienteLookupId / TecnicoLookupId — resolvemos o nome pelo join local.
+        // As colunas entram na mesma leva para popular os selects de Choice DINAMICAMENTE
+        // (Prioridade/Tipo_OS/Categoria — nada de rótulo hardcodado; Categoria é novo e mudaria por baixo).
+        // Falha na leitura de colunas não derruba a tela: só desabilita os selects de Choice.
+        const [os, cli, tec, cols] = await Promise.all([
           EG.listItems("OrdensDeServico"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
-          EG.listItems("TecnicosMEI", "expand=fields($select=Title)&$top=500")
+          EG.listItems("TecnicosMEI", "expand=fields($select=Title)&$top=500"),
+          EG.listColumns("OrdensDeServico").catch(e => { console.warn("Falha ao ler colunas:", e.message); return []; })
         ]);
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
         nomeTecnico = {}; tec.forEach(t => nomeTecnico[t.id] = t.fields && t.fields.Title);
+        tecnicosOS = tec;
+        choiceOS = {};
+        (cols || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceOS[c.name] = c.choice.choices; });
         itemMap = {}; os.forEach(o => itemMap[o.id] = o);
         todas = os.slice().sort((a, b) => new Date(b.fields && b.fields.DataAbertura || 0) - new Date(a.fields && a.fields.DataAbertura || 0));
         indicadores(todas);
@@ -185,11 +255,14 @@
       const gerais = [
         rowD("Cliente", cliNome(f)), rowD("Técnico", tecNome(f)),
         rowD("Tipo", f.Tipo_OS), rowD("Tipo (completo)", f.Tipo_OS_Completo),
+        rowD("Categoria", f.Categoria), rowD("Prioridade", f.Prioridade),
         rowD("Status atual", f.Status_Atual), rowD("Status do dia", f.Status_OS_Dia),
         rowD("Descrição", f.Descricao),
+        rowD("Observações (gestão)", f.Observacoes),
         rowD("Abertura", EG.fmtDate(f.DataAbertura)), rowD("Prevista", EG.fmtDate(f.DataPrevista)),
         rowD("Início", fmtDT(f.Hora_Inicio)), rowD("Conclusão", EG.fmtDate(f.DataConclusao)),
         rowM("Valor da OS", f.ValorOS),
+        rowD("Horas previstas", f.Horas_Previstas_OS),
         rowD("Alerta de esquecimento", f.Alerta_Esquecimento_Enviado == null ? null : (f.Alerta_Esquecimento_Enviado ? "Sim" : "Não"))
       ].join("");
 
@@ -211,13 +284,189 @@
         <div class="drawer-body">
           <dl>${gerais}</dl>
           ${custos ? '<div class="k" style="color:#8b949e;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em">Custos (realizado + EPI + ferramentas)</div>' + custos : ""}
-          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
+          ${blocoEdicao()}
+          <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
           <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
       $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      ligarEdicao(o);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    /* ==================================================================
+       EDIÇÃO DA OS — única escrita desta tela.
+       Mesmo padrão do bloco de decisão de fechamentos.html
+       (blocoDecisao/ligarDecisao/decidirVeiculo):
+         - PATCH via EG.patchItemFields, SÓ com os campos alterados;
+         - releitura do servidor após gravar (nunca confiar no eco local);
+         - re-render de drawer + tabela + KPIs com o estado real.
+       Só os campos de CAMPOS_EDIT aparecem no formulário — os campos do
+       cenário 1A (ver CAMPOS_1A acima) ficam fora, e ainda há uma trava
+       em salvarOS() contra regressão futura.
+       ================================================================== */
+    // yyyy-mm-dd LOCAL para o input date (mesma lógica da dKey de fechamentos.html)
+    const toDateInput = (s) => {
+      if (!s) return ""; const d = new Date(s); if (isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    // normaliza o valor ORIGINAL do item para a mesma forma do input (dirty tracking por string)
+    function normOrig(tipo, v) {
+      if (tipo === "data") return toDateInput(v);
+      if (tipo === "num") return (v == null || v === "" || !isFinite(Number(v))) ? "" : String(Number(v));
+      return v == null ? "" : String(v); // lookup, choice, texto
+    }
+    // normaliza o valor ATUAL do input para comparação com normOrig
+    function normEl(tipo, val) {
+      if (tipo === "num") return (val === "" || !isFinite(Number(val))) ? "" : String(Number(val));
+      return val;
+    }
+    // converte o valor do input para o que o Graph grava
+    function paraGraph(tipo, val) {
+      if (val === "") return (tipo === "texto") ? "" : null;  // null limpa lookup/data/num/choice
+      if (tipo === "lookup" || tipo === "num") return Number(val);
+      // Data: meio-dia UTC — a data local fica correta em qualquer fuso plausível
+      // (meia-noite UTC viraria o dia ANTERIOR ao ser exibida em Brasília).
+      if (tipo === "data") return val + "T12:00:00Z";
+      return val;
+    }
+
+    function blocoEdicao() {
+      // valores/opções são preenchidos por ligarEdicao() via .value — nada de
+      // valor de usuário interpolado em atributo HTML.
+      return `
+        <div class="grupo">Edição</div>
+        <button id="eToggle" class="sec" style="margin-top:8px">Editar OS</button>
+        <div id="eForm" class="ed" hidden>
+          <label>Técnico <select id="eTecnico"></select></label>
+          <div class="ed-grid">
+            <label>Data prevista <input type="date" id="eDataPrevista" /></label>
+            <label>Valor da OS (R$) <input type="number" step="0.01" id="eValorOS" /></label>
+            <label>Prioridade <select id="ePrioridade"></select></label>
+            <label>Tipo de OS <select id="eTipo_OS"></select></label>
+            <label>Categoria <select id="eCategoria"></select></label>
+            <label>Horas previstas <input type="number" step="0.5" id="eHoras_Previstas_OS" /></label>
+            <label>Custo MO previsto (R$) <input type="number" step="0.01" id="eCusto_MO_Previsto" /></label>
+            <label>Custo EPI (R$) <input type="number" step="0.01" id="eCusto_EPI_OS" /></label>
+            <label>Custo ferramentas (R$) <input type="number" step="0.01" id="eCusto_Ferr_OS" /></label>
+          </div>
+          <label>Descrição <textarea id="eDescricao"></textarea></label>
+          <label>Observações da gestão (não é a obs. de campo do técnico) <textarea id="eObservacoes"></textarea></label>
+          <div class="ed-btns">
+            <button id="eSalvar">Salvar</button>
+            <button id="eCancelar" class="sec">Cancelar</button>
+          </div>
+          <div id="eMsg" class="ed-msg"></div>
+        </div>`;
+    }
+
+    // popula um select de Choice com os valores REAIS do SharePoint (choiceOS).
+    // Sem colunas carregadas -> select desabilitado (não arriscamos gravar rótulo inventado).
+    function popularChoice(sel, campo, atual) {
+      sel.innerHTML = "";
+      const vazio = document.createElement("option");
+      vazio.value = ""; vazio.textContent = "(vazio)"; sel.appendChild(vazio);
+      const ops = choiceOS[campo];
+      const lista = Array.isArray(ops) ? ops.slice() : [];
+      // valor legado que não está mais nos choices continua visível e selecionável
+      if (atual != null && atual !== "" && !lista.includes(atual)) lista.unshift(atual);
+      lista.forEach(v => { const op = document.createElement("option"); op.value = v; op.textContent = v; sel.appendChild(op); });
+      if (!Array.isArray(ops)) { sel.disabled = true; sel.title = "choices de " + campo + " não carregados — recarregue a página"; }
+      sel.value = atual == null ? "" : String(atual);
+    }
+
+    function ligarEdicao(o) {
+      const f = o.fields || {};
+      const tg = $("eToggle"), form = $("eForm");
+      if (!tg || !form) return;
+      tg.onclick = () => { form.hidden = false; tg.hidden = true; };
+      $("eCancelar").onclick = () => openDrawer(o); // descarta o rascunho re-renderizando do estado em memória
+
+      // técnico — EG.listItems("TecnicosMEI") já carregado; grava como TecnicoLookupId numérico
+      const selTec = $("eTecnico");
+      selTec.innerHTML = "";
+      const semTec = document.createElement("option");
+      semTec.value = ""; semTec.textContent = "(sem técnico)"; selTec.appendChild(semTec);
+      const ordenados = tecnicosOS.slice().sort((a, b) =>
+        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      ordenados.forEach(t => {
+        const op = document.createElement("option");
+        op.value = String(t.id); op.textContent = (t.fields || {}).Title || ("técnico #" + t.id);
+        selTec.appendChild(op);
+      });
+      if (f.TecnicoLookupId != null && !ordenados.some(t => String(t.id) === String(f.TecnicoLookupId))) {
+        const op = document.createElement("option");
+        op.value = String(f.TecnicoLookupId); op.textContent = "técnico #" + f.TecnicoLookupId;
+        selTec.appendChild(op);
+      }
+      selTec.value = f.TecnicoLookupId == null ? "" : String(f.TecnicoLookupId);
+
+      popularChoice($("ePrioridade"), "Prioridade", f.Prioridade);
+      popularChoice($("eTipo_OS"), "Tipo_OS", f.Tipo_OS);
+      popularChoice($("eCategoria"), "Categoria", f.Categoria);
+
+      $("eDataPrevista").value = toDateInput(f.DataPrevista);
+      $("eValorOS").value = normOrig("num", f.ValorOS);
+      $("eCusto_MO_Previsto").value = normOrig("num", f.Custo_MO_Previsto);
+      $("eCusto_EPI_OS").value = normOrig("num", f.Custo_EPI_OS);
+      $("eCusto_Ferr_OS").value = normOrig("num", f.Custo_Ferr_OS);
+      $("eHoras_Previstas_OS").value = normOrig("num", f.Horas_Previstas_OS);
+      $("eDescricao").value = f.Descricao ?? "";
+      $("eObservacoes").value = f.Observacoes ?? "";
+
+      $("eSalvar").onclick = () => salvarOS(o);
+    }
+
+    let salvandoOS = false;
+    async function salvarOS(o) {
+      if (salvandoOS) return;
+      const msg = $("eMsg");
+      const f = o.fields || {};
+
+      // dirty tracking: só entra no payload o que o usuário efetivamente mudou
+      const campos = {};
+      CAMPOS_EDIT.forEach(c => {
+        const el = $(c.el);
+        if (!el || el.disabled) return;             // choice sem opções carregadas não grava
+        const antes = normOrig(c.tipo, f[c.campo]);
+        const agora = normEl(c.tipo, el.value);
+        if (antes !== agora) campos[c.campo] = paraGraph(c.tipo, agora);
+      });
+      // trava contra regressão: nenhum campo do 1A pode escapar para o PATCH
+      Object.keys(campos).forEach(k => {
+        if (CAMPOS_1A.includes(k)) { delete campos[k]; console.warn("Campo do 1A bloqueado na edição:", k); }
+      });
+      if (!Object.keys(campos).length) {
+        msg.className = "ed-msg"; msg.textContent = "Nada foi alterado.";
+        return;
+      }
+
+      const btns = [$("eSalvar"), $("eCancelar")];
+      try {
+        salvandoOS = true;
+        btns.forEach(b => { if (b) b.disabled = true; });
+        msg.className = "ed-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("OrdensDeServico", o.id, campos);
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + o.id + "?expand=fields");
+        itemMap[o.id] = novo;
+        const i = todas.findIndex(x => x.id === o.id);
+        if (i > -1) todas[i] = novo;
+        indicadores(todas);
+        aplicarFiltro();
+        openDrawer(novo); // volta ao modo leitura já com os dados relidos
+        setStatus("OS " + ((novo.fields || {}).Title || o.id) + " atualizada (" + Object.keys(campos).join(", ") + ").");
+      } catch (e) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+        btns.forEach(b => { if (b) b.disabled = false; });
+      } finally {
+        salvandoOS = false;
+      }
+    }
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
