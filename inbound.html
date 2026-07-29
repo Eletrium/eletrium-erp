@@ -31,13 +31,20 @@
       os dados brutos que o Make precisa para pontuar e alimentar a fila
       Fila_Auditoria_Leads (RazaoSocial_Nome, Dados_Brutos, Origem_Lead="Inbound").
 
-    >>> BLOQUEADOR CONHECIDO — WEBHOOK AINDA NÃO CONFIGURADO <<<
-      A constante WEBHOOK_URL abaixo ainda contém o placeholder porque o dono
-      não forneceu a URL do webhook do Make. Enquanto o placeholder estiver lá,
-      um GUARD impede o POST: o formulário valida e dá feedback normalmente, mas
-      o envio exibe "Configuração pendente: webhook do Make não definido" em vez
-      de estourar um erro de rede. Para ativar: substitua APENAS o valor da
-      constante WEBHOOK_URL pela URL https://hook.<região>.make.com/<token>.
+    WEBHOOK — CONFIGURADO
+      WEBHOOK_URL aponta para o webhook do cenário Make "Eletrium - Inbound:
+      Landing, Classificacao e Fila" (scenario 5792583). O GUARD abaixo continua
+      no código, mas fica inerte enquanto a URL for válida: se alguém devolver a
+      constante ao placeholder, o POST volta a ser bloqueado com "Configuração
+      pendente" em vez de estourar erro de rede.
+
+      ATENÇÃO — o cenário 5792583 está PAUSADO e sua chave Gemini ainda é
+      placeholder. Até ele ser ativado, o POST desta página recebe 4xx/5xx do
+      Make: o formulário exibe o erro de envio corretamente, mas nenhum lead
+      chega à Fila_Auditoria_Leads.
+
+      A URL do webhook NÃO é segredo (é um endpoint público de ingestão), mas
+      continua valendo: nenhum token/API key/secret nesta página.
     ============================================================================
   -->
   <style>
@@ -281,7 +288,7 @@
        "Configuração pendente" em vez de falhar com erro de rede.
        NUNCA acrescente token/API key/secret nesta página — ela é pública.
        ====================================================================== */
-    const WEBHOOK_URL = "COLE_AQUI_A_URL_DO_WEBHOOK_MAKE";
+    const WEBHOOK_URL = "https://hook.us2.make.com/a10t2t8iq54n667dk66t7mawvtzovr9b";
 
     const WEBHOOK_PLACEHOLDER = "COLE_AQUI_A_URL_DO_WEBHOOK_MAKE";
     const webhookConfigurado = () =>
