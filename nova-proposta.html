@@ -226,7 +226,7 @@
         $("form").innerHTML = campoTit + campoCli + `
           <div class="f"><label for="tipoServico">Tipo de serviço</label><select id="tipoServico">${opts(TIPO_SERVICO)}</select></div>
           <div class="f"><label for="origemLead">Origem do lead</label><select id="origemLead">${opts(ORIGEM_LEAD)}</select></div>
-          <div class="f"><label for="status">Status</label><select id="status">${opts(STATUS_PROP, "Rascunho")}</select></div>
+          <div class="f"><label for="statusProp">Status</label><select id="statusProp">${opts(STATUS_PROP, "Rascunho")}</select></div>
           <div class="f"><label for="etapa">Etapa do pipeline</label><select id="etapa">${opts(ETAPA_PIPE, "Lead Novo")}</select></div>
           <div class="f"><label for="vServico">Valor de serviço (R$)</label><input id="vServico" type="number" step="0.01" min="0" /></div>
           <div class="f"><label for="vMateriais">Valor de materiais (R$)</label><input id="vMateriais" type="number" step="0.01" min="0" /></div>
@@ -253,6 +253,7 @@
       $("canalMan").onchange = atualizarCanal;
       $("btnCriar").onclick = criar;
       atualizarCanal();
+      checarIdsDuplicados();
     }
 
     function canalAtual() {
@@ -276,9 +277,44 @@
       if (typeof valor === "number" && !isFinite(valor)) return;
       alvo[chave] = valor;
     }
-    const numOu = (id) => { const el = $(id); if (!el || el.value === "") return undefined; const n = Number(el.value); return isFinite(n) ? n : undefined; };
-    const dataOu = (id) => { const el = $(id); return (el && el.value) ? new Date(el.value + "T12:00:00").toISOString() : undefined; };
-    const txtOu = (id) => { const el = $(id); return el ? el.value.trim() : undefined; };
+    // Lê o valor de um controle pelo id.
+    //
+    // A guarda `typeof el.value !== "string"` não é paranoia: getElementById
+    // devolve o PRIMEIRO elemento com aquele id no documento. Se um campo do
+    // formulário repetir um id que já existe na página, ele resolve para o
+    // elemento errado — que pode não ter .value — e `.trim()` estoura um
+    // TypeError que aponta para o helper, não para a causa.
+    // Foi exatamente isso: o <select id="status"> do formulário colidia com a
+    // <div id="status"> da barra de status. Agora o campo é "statusProp" e
+    // qualquer colisão futura vira erro nomeado no console.
+    const ctrl = (id) => {
+      const el = $(id);
+      if (!el) return null;
+      if (typeof el.value !== "string") {
+        console.error("[nova-proposta] id '" + id + "' resolveu para um elemento sem .value (colisão de id?):", el);
+        return null;
+      }
+      return el;
+    };
+    const numOu = (id) => { const el = ctrl(id); if (!el || el.value === "") return undefined; const n = Number(el.value); return isFinite(n) ? n : undefined; };
+    const dataOu = (id) => { const el = ctrl(id); return (el && el.value) ? new Date(el.value + "T12:00:00").toISOString() : undefined; };
+    const txtOu = (id) => { const el = ctrl(id); return el ? el.value.trim() : undefined; };
+
+    // Detecta ids duplicados assim que o formulário é montado, em vez de
+    // esperar o clique em Criar. Roda no fim de render().
+    function checarIdsDuplicados() {
+      const vistos = new Map(), dup = [];
+      document.querySelectorAll("[id]").forEach(el => {
+        const n = (vistos.get(el.id) || 0) + 1;
+        vistos.set(el.id, n);
+        if (n === 2) dup.push(el.id);
+      });
+      if (dup.length) {
+        console.error("[nova-proposta] ids DUPLICADOS no documento:", dup);
+        setStatus("Erro interno: id duplicado (" + dup.join(", ") + "). Avise o time.", "err");
+      }
+      return dup;
+    }
 
     function limparErros() { [...document.querySelectorAll(".err")].forEach(e => e.textContent = ""); }
 
@@ -305,7 +341,7 @@
       if (tipo === "proposta") {
         pnn(f, "Tipo_Servico_Proposta", txtOu("tipoServico"));
         pnn(f, "Origem_Lead", txtOu("origemLead"));
-        pnn(f, "Status", txtOu("status"));
+        pnn(f, "Status", txtOu("statusProp"));
         pnn(f, "Etapa_Pipeline", txtOu("etapa"));
         pnn(f, "Descricao", txtOu("descricao"));
         pnn(f, "Valor_Servico", numOu("vServico"));
