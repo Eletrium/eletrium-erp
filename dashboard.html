@@ -32,7 +32,7 @@
     .bars .b.rec { background: #0078D4; } .bars .b.cus { background: #7D8590; }
     .bars .lb { color: #8b949e; font-size: .68rem; margin-top: 5px; white-space: nowrap; }
 
-    /* listas de barras horizontais (cards 2 e 4) */
+    /* listas de barras horizontais (cards 2, 4 e 8) */
     .hlist { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
     .hrow .hhead { display: flex; justify-content: space-between; gap: 10px; font-size: .84rem; margin-bottom: 4px; }
     .hrow .hhead .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -139,6 +139,11 @@
         <div id="c7body"></div>
       </div>
 
+      <div class="dcard half2" id="c8">
+        <h2>Margem por categoria</h2>
+        <div id="c8body"></div>
+      </div>
+
     </div>
   </main>
 
@@ -161,6 +166,19 @@
     const T_MANUTENCAO = ["Manutenção preventiva", "Manutenção corretiva"];
     const T_INSTALACAO = ["Execução de projeto — programada"];
     const T_CORRETIVA = "Manutenção corretiva";
+    // Choice OrdensDeServico.Categoria criado em 29/07/2026 — rótulos batem caractere
+    // a caractere com o SharePoint (travessão U+2014 e acentos incluídos).
+    const CATEGORIAS_OS = [
+      "SPDA — NBR 5419",
+      "Instalações elétricas — NBR 5410",
+      "Segurança em eletricidade — NR-10",
+      "Máquinas e equipamentos — NR-12",
+      "Automação e comando",
+      "CFTV e telecom",
+      "Refrigeração",
+      "Outros"
+    ];
+    const SEM_CATEGORIA = "Sem categoria";   // bucket de fallback INTENCIONAL para OS sem Categoria
     const MESES = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
 
     /* ========= helpers numéricos — tudo blindado contra null/NaN/divisão por zero ========= */
@@ -195,6 +213,7 @@
       const porCliente = {};                          // lookupId -> {rec, cus, n}
       const mix = { manutencao: { rec: 0, cus: 0, n: 0 }, instalacao: { rec: 0, cus: 0, n: 0 }, outros: { rec: 0, cus: 0, n: 0 } };
       const backlog = {};                             // Tipo_OS -> {Status: contagem}
+      const porCategoria = {};                        // Categoria -> {rec, cus, n} (sem valor => SEM_CATEGORIA)
       let mttrSoma = 0, mttrN = 0, mttrIgnoradas = 0, corretivasSemConclusao = 0;
       let semConclusao = 0, semValor = 0;
 
@@ -229,6 +248,13 @@
             if (h >= 0) { mttrSoma += h; mttrN++; } else { mttrIgnoradas++; }   // conclusão antes da abertura = dado inconsistente
           } else { corretivasSemConclusao++; }
         }
+
+        // 8 — margem por Categoria. OS sem Categoria cai no bucket "Sem categoria":
+        // fallback intencional, não erro — o campo é novo (29/07/2026) e o preenchimento
+        // vai acontecer aos poucos.
+        const cat = (f.Categoria == null || f.Categoria === "") ? SEM_CATEGORIA : String(f.Categoria);
+        const g = porCategoria[cat] || (porCategoria[cat] = { rec: 0, cus: 0, n: 0 });
+        g.rec += rec; g.cus += cus; g.n++;
 
         // 7 — backlog por Tipo_OS x Status
         const tipo = (f.Tipo_OS == null || f.Tipo_OS === "") ? "(sem tipo)" : String(f.Tipo_OS);
@@ -291,6 +317,19 @@
       });
       const maxBacklog = backlogLinhas.reduce((m, l) => Math.max(m, l.total), 0);
 
+      // ---- card 8: margem por categoria (margem = receita − custo, em R$) ----
+      // Hoje (29/07/2026) NENHUMA OS tem Categoria preenchida: todas caem em
+      // "Sem categoria" e `categorias` sai vazio — o card mostra o empty-state.
+      // Isso é o comportamento ESPERADO, não um bug. Nada aqui inventa dados.
+      const catsPresentes = Object.keys(porCategoria).filter(c => c !== SEM_CATEGORIA);
+      const ordemCats = CATEGORIAS_OS.filter(c => catsPresentes.indexOf(c) >= 0)
+        .concat(catsPresentes.filter(c => CATEGORIAS_OS.indexOf(c) < 0).sort());   // rótulo desconhecido vira linha própria, não some
+      const catLinha = (nome, v) => ({ categoria: nome, rec: v.rec, cus: v.cus, n: v.n, margem: v.rec - v.cus, margemPct: margemPct(v.rec, v.cus) });
+      const categorias = ordemCats.map(c => catLinha(c, porCategoria[c]));
+      const semCategoria = catLinha(SEM_CATEGORIA, porCategoria[SEM_CATEGORIA] || { rec: 0, cus: 0, n: 0 });
+      const maxMargemCat = categorias.concat(semCategoria.n > 0 ? [semCategoria] : [])
+        .reduce((m, c) => Math.max(m, c.margem), 0);
+
       return {
         total: list.length,
         semConclusao, semValor,
@@ -301,7 +340,8 @@
         fatias, mixTotal,
         mttr: { horas: mttrHoras, n: mttrN, ignoradas: mttrIgnoradas, semConclusao: corretivasSemConclusao },
         serie12,
-        backlog: backlogLinhas, maxBacklog
+        backlog: backlogLinhas, maxBacklog,
+        categorias, semCategoria, maxMargemCat
       };
     }
 
@@ -452,8 +492,31 @@
       $("c7body").innerHTML = `<div class="bk">${corpo}</div><div class="bklegend">${leg}</div>`;
     }
 
+    function renderC8(m) {
+      // Empty-state ESPERADO hoje: o Choice "Categoria" foi criado em 29/07/2026 e
+      // nenhuma OS foi classificada ainda. Sem OS classificada não há barra a traçar
+      // — mostrar isso com clareza é o correto; inventar distribuição seria mentira.
+      if (!m.categorias.length) {
+        $("c8body").innerHTML = vazio("Nenhuma OS foi classificada por categoria ainda — o campo Categoria é novo e isso é esperado, não um problema.")
+          + `<div class="nota">${m.semCategoria.n > 0 ? m.semCategoria.n + " OS aguardando classificação. " : ""}As barras aparecem automaticamente conforme o campo Categoria for preenchido nas OS.</div>`;
+        return;
+      }
+      const linhas = m.categorias.concat(m.semCategoria.n > 0 ? [m.semCategoria] : []);
+      $("c8body").innerHTML = `<div class="hlist">${linhas.map(c => {
+        const semCat = c.categoria === SEM_CATEGORIA;
+        const cor = semCat ? "#7D8590" : corMargem(c.margemPct);
+        const larg = m.maxMargemCat > 0 ? Math.max(0, Math.min(100, (c.margem / m.maxMargemCat) * 100)) : 0;   // margem negativa não vira barra invertida
+        return `<div class="hrow" title="${esc(c.categoria + " — receita " + brl(c.rec) + " / custo " + brl(c.cus) + " / " + c.n + " OS")}">
+            <div class="hhead"><span class="nm">${esc(c.categoria)}</span><span class="vl" style="color:${cor}">${esc(brl(c.margem))}</span></div>
+            <div class="track"><span style="width:${larg.toFixed(2)}%;background:${cor}"></span></div>
+            <div class="sub">${esc(brl(c.rec))} receita · ${esc(brl(c.cus))} custo · margem ${fmtPct(c.margemPct)} · ${c.n} OS</div>
+          </div>`;
+      }).join("")}</div>`
+        + (m.semCategoria.n > 0 ? `<div class="nota">Margem = receita − custo. "${esc(SEM_CATEGORIA)}" agrupa as ${m.semCategoria.n} OS sem o campo Categoria preenchido — fallback intencional, não erro.</div>` : `<div class="nota">Margem = receita − custo, por valor do campo Categoria.</div>`);
+    }
+
     function renderAll(m) {
-      renderC1(m); renderC2(m); renderC3(m); renderC4(m); renderC5(m); renderC6(m); renderC7(m);
+      renderC1(m); renderC2(m); renderC3(m); renderC4(m); renderC5(m); renderC6(m); renderC7(m); renderC8(m);
       const alertas = [];
       if (m.semConclusao) alertas.push(m.semConclusao + " sem Data de Conclusão");
       if (m.semValor) alertas.push(m.semValor + " sem Valor da OS");
@@ -479,11 +542,13 @@
       try {
         setStatus("Carregando ordens de serviço...");
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
-        // Tipo_OS_Completo usa apenasSemChoice: o bucket "Outros" é intencional.
+        // Tipo_OS_Completo e Categoria usam apenasSemChoice: os buckets de fallback
+        // ("Outros" / "Sem categoria") são intencionais.
         Promise.all([
           EG.validarChoices("OrdensDeServico", "Status", STATUS_OS).then(v => ({ v, rotulo: "Status (backlog)" })),
           EG.validarChoices("OrdensDeServico", "Tipo_OS", TIPOS_OS).then(v => ({ v, rotulo: "Tipo de OS (backlog)" })),
-          EG.validarChoices("OrdensDeServico", "Tipo_OS_Completo", T_MANUTENCAO.concat(T_INSTALACAO), { apenasSemChoice: true }).then(v => ({ v, rotulo: "Tipo completo (mix / MTTR)" }))
+          EG.validarChoices("OrdensDeServico", "Tipo_OS_Completo", T_MANUTENCAO.concat(T_INSTALACAO), { apenasSemChoice: true }).then(v => ({ v, rotulo: "Tipo completo (mix / MTTR)" })),
+          EG.validarChoices("OrdensDeServico", "Categoria", CATEGORIAS_OS, { apenasSemChoice: true }).then(v => ({ v, rotulo: "Categoria (margem por categoria)" }))
         ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
         const [os, cli] = await Promise.all([
           EG.listItems("OrdensDeServico"),
@@ -497,7 +562,10 @@
 
     // exposto para teste da agregação com dados falsos (sem login):
     //   DASH.renderAll(DASH.computeModel(itensFalsos, {"1":"Cliente X"}, new Date()))
-    window.DASH = { computeModel, renderAll, num, custoOS, margemPct, classeTipo, mIdx, mLabel, corMargem };
+    // A agregação de "Margem por categoria" vive em computeModel (campos
+    // .categorias/.semCategoria/.maxMargemCat do modelo) — testável via
+    //   DASH.computeModel(itensFalsos).categorias
+    window.DASH = { computeModel, renderAll, num, custoOS, margemPct, classeTipo, mIdx, mLabel, corMargem, CATEGORIAS_OS, SEM_CATEGORIA };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
