@@ -32,6 +32,18 @@
     tr.semestoque td:first-child { box-shadow: inset 3px 0 0 #f85149; }
     .inativo { opacity: .55; }
     .sub { color: #8b949e; font-size: .8rem; }
+
+    /* --- edição do orçamento no drawer (única escrita desta tela) --- */
+    .eo { display: flex; flex-direction: column; gap: 9px; margin-top: 14px; border-top: 1px solid #30363d; padding-top: 12px; }
+    .eo .eo-t { font-weight: 600; font-size: .88rem; color: #e6edf3; }
+    .eo label { color: #8b949e; font-size: .8rem; display: flex; flex-direction: column; gap: 4px; }
+    .eo select, .eo input, .eo textarea { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 10px; font-size: .86rem; font-family: inherit; }
+    .eo select:focus, .eo input:focus, .eo textarea:focus { outline: 0; border-color: #1f6feb; }
+    .eo textarea { min-height: 70px; resize: vertical; }
+    .eo .eo-btns { display: flex; gap: 8px; }
+    .eo .eo-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .eo .eo-msg.err { color: #f85149; }
+    .eo .eo-aviso { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; line-height: 1.45; }
   </style>
 </head>
 <body>
@@ -111,6 +123,29 @@
   <aside class="drawer" id="drawer" aria-hidden="true"></aside>
 
   <script>
+    /* =====================================================================
+       MAPA DE DONO DE CAMPO — quem escreve nas listas que esta tela lê.
+       Levantado em 2026-07-29 (telas canvas em ERPEletrium/src/CanvasApps/Telas/Src,
+       flows em ERPEletrium/src/Workflows, cenários Make ativos: só escrevem em
+       OrdensDeServico e Clientes — nenhum toca as listas daqui).
+
+       Orcamentos_Venda (aba "Orçamentos de Material")
+         · Criação: canvas Scr_Vendas_Novo (Numero, Cliente, Origem_Demanda,
+           valores/margens, Status_Orcamento="Rascunho", Data_Criacao, Observacoes="").
+         · Única transição automática existente: canvas Scr_Vendas_DetalheOrcamento
+           faz Status -> "Aceito - Aguardando Faturamento" e, JUNTO, soma
+           Produtos.Estoque_Reservado dos itens. Esse efeito colateral NÃO existe
+           aqui — daí o aviso no drawer ao escolher esse status.
+         · Nenhum flow e nenhum cenário Make escreve nesta lista.
+         · SEM escritor: demais transições de Status_Orcamento, Prioridade,
+           Data_Proximo_Passo, Observacoes -> editáveis aqui (drawer do orçamento).
+       Produtos
+         · Estoque_Reservado é escrito pelo canvas Scr_Vendas_DetalheOrcamento
+           (reserva no aceite). Mexer em estoque por aqui poderia divergir dessa
+           reserva -> aba de Produtos mantida somente leitura.
+       Itens_Orcamento_Venda — criados pelo canvas Scr_Vendas_Novo; só leitura.
+       Clientes — esta tela só lê Title (nomes para lookup).
+       ===================================================================== */
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
     const esc = (s) => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -135,6 +170,13 @@
     const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
     const fmtPct = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
     const brl = (v) => v == null ? "—" : EG.BRL(Number(v));
+    // ISO do Graph -> valor de <input type=date> na data LOCAL (mesma data que EG.fmtDate exibe)
+    const isoParaInputDate = (s) => {
+      if (!s) return "";
+      const d = new Date(s); if (isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
 
     /* ---------- auth ---------- */
     async function boot() { if (await EG.init()) await onIn(); }
@@ -164,13 +206,15 @@
         EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", Object.keys(STATUS_CORES))
           .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de Orçamento"))
           .catch(() => {});
-        const [orc, prd, its, cli, cols] = await Promise.all([
+        const [orc, prd, its, cli, cols, colsOrc] = await Promise.all([
           soft(EG.listItems("Orcamentos_Venda"), "Orcamentos_Venda"),
           soft(EG.listItems("Produtos"), "Produtos"),
           soft(EG.listItems("Itens_Orcamento_Venda"), "Itens_Orcamento_Venda"),
           soft(EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"), "Clientes"),
-          soft(EG.listColumns("Itens_Orcamento_Venda"), "colunas de Itens_Orcamento_Venda")
+          soft(EG.listColumns("Itens_Orcamento_Venda"), "colunas de Itens_Orcamento_Venda"),
+          soft(EG.listColumns("Orcamentos_Venda"), "colunas de Orcamentos_Venda")
         ]);
+        aplicarColunasOrc(colsOrc);
         orcamentos = orc; produtos = prd; itens = its;
 
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = (c.fields || {}).Title);
@@ -295,6 +339,104 @@
       return itens.filter(i => String((i.fields || {}).OrcamentoLookupId) === String(id));
     }
 
+    /* ==================================================================
+       EDIÇÃO DO ORÇAMENTO — única escrita desta tela (padrão de
+       fechamentos.html: blocoDecisao/decidirVeiculo).
+       Campos: Status_Orcamento (Choice, obrigatório), Prioridade (Choice),
+       Data_Proximo_Passo (DateTime), Observacoes (Note). Nenhum deles tem
+       escritor automatizado (ver MAPA DE DONO no topo). PATCH mínimo:
+       só o que mudou de fato, e releitura do servidor após gravar.
+       ================================================================== */
+    let orcCampoChoices = null; // internalName -> choices[] lidos do SharePoint (nunca hardcodar rótulo novo)
+    function aplicarColunasOrc(cols) {
+      orcCampoChoices = {};
+      (cols || []).forEach(c => {
+        if (c && c.name && c.choice && Array.isArray(c.choice.choices)) orcCampoChoices[c.name] = c.choice.choices;
+      });
+    }
+
+    // options de um select de Choice: valores do servidor; o valor atual do item
+    // entra mesmo se estiver fora da lista (nunca trocar de valor por acidente).
+    function optsChoice(choices, atual, rotuloVazio) {
+      const lista = (choices || []).slice();
+      let html = rotuloVazio != null ? "<option value=''" + ((atual == null || atual === "") ? " selected" : "") + ">" + esc(rotuloVazio) + "</option>" : "";
+      html += lista.map(c => "<option value='" + esc(c) + "'" + (c === atual ? " selected" : "") + ">" + esc(c) + "</option>").join("");
+      if (atual != null && atual !== "" && lista.indexOf(atual) === -1)
+        html += "<option value='" + esc(atual) + "' selected>" + esc(atual) + " (valor atual — fora da lista)</option>";
+      return html;
+    }
+
+    function blocoEdicaoOrc(f) {
+      const stChoices = orcCampoChoices ? orcCampoChoices.Status_Orcamento : null;
+      if (!stChoices || !stChoices.length) {
+        return "<div class='eo'><div class='eo-t'>Atualizar orçamento</div>" +
+          "<div class='eo-msg'>Edição indisponível: as opções de Choice não foram lidas do SharePoint — recarregue os dados.</div></div>";
+      }
+      return "<div class='eo'>" +
+        "<div class='eo-t'>Atualizar orçamento</div>" +
+        "<label>Status <select id='eoStatus'>" + optsChoice(stChoices, f.Status_Orcamento) + "</select></label>" +
+        "<div class='eo-aviso' id='eoAvisoAceito' hidden>Mudar para “Aceito - Aguardando Faturamento” por aqui NÃO reserva estoque dos itens — " +
+          "essa reserva é feita apenas pelo botão de aceite do canvas (Scr_Vendas_DetalheOrcamento).</div>" +
+        "<label>Prioridade <select id='eoPrior'>" + optsChoice(orcCampoChoices.Prioridade, f.Prioridade, "(não definida)") + "</select></label>" +
+        "<label>Data do próximo passo <input type='date' id='eoData' value='" + esc(isoParaInputDate(f.Data_Proximo_Passo)) + "' /></label>" +
+        "<label>Observações <textarea id='eoObs' maxlength='2000'>" + esc(f.Observacoes || "") + "</textarea></label>" +
+        "<div class='eo-btns'><button id='eoSalvar'>Salvar alterações</button></div>" +
+        "<div class='eo-msg' id='eoMsg'></div>" +
+        "</div>";
+    }
+
+    function ligarEdicaoOrc(o) {
+      const sv = $("eoSalvar");
+      if (!sv) return; // bloco indisponível (choices não carregados)
+      const f = o.fields || {};
+      const st = $("eoStatus"), av = $("eoAvisoAceito");
+      if (st && av) {
+        const chk = () => { av.hidden = !(st.value === "Aceito - Aguardando Faturamento" && f.Status_Orcamento !== st.value); };
+        st.addEventListener("change", chk); chk();
+      }
+      sv.onclick = () => gravarOrc(o);
+    }
+
+    let gravandoOrc = false;
+    async function gravarOrc(o) {
+      if (gravandoOrc) return;
+      const f = o.fields || {}, msg = $("eoMsg");
+      // dirty tracking: PATCH leva SÓ o que mudou em relação ao item carregado
+      const campos = {};
+      const st = $("eoStatus").value;
+      if (st && st !== (f.Status_Orcamento || "")) campos.Status_Orcamento = st;
+      const pr = $("eoPrior").value;
+      if (pr !== (f.Prioridade || "")) campos.Prioridade = pr === "" ? null : pr;
+      const dt = $("eoData").value; // "AAAA-MM-DD" ou ""
+      if (dt !== isoParaInputDate(f.Data_Proximo_Passo))
+        campos.Data_Proximo_Passo = dt ? dt + "T03:00:00Z" : null; // meia-noite de Brasília (UTC-3): a data exibida não escorrega de dia
+      const ob = $("eoObs").value;
+      if (ob !== (f.Observacoes || "")) campos.Observacoes = ob; // limpar de propósito grava vazio mesmo
+      if (!Object.keys(campos).length) { msg.className = "eo-msg"; msg.textContent = "Nada foi alterado."; return; }
+      try {
+        gravandoOrc = true;
+        $("eoSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Orcamentos_Venda", o.id, campos);
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Orcamentos_Venda") + "/items/" + o.id + "?expand=fields");
+        const i = orcamentos.findIndex(x => x.id === o.id);
+        if (i > -1) orcamentos[i] = novo;
+        orcMap[o.id] = novo;
+        montaFiltroStatus(); renderOrc();
+        drawerOrc(novo);
+        setStatus("Orçamento " + ((novo.fields || {}).Title || o.id) + " atualizado.");
+      } catch (e) {
+        msg.className = "eo-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+        $("eoSalvar").disabled = false;
+      } finally {
+        gravandoOrc = false;
+      }
+    }
+
     function drawerOrc(o) {
       const f = o.fields || {};
       const rows = [
@@ -329,7 +471,9 @@
 
       abreDrawer(f.Title ?? "(sem número)", `<dl>${rows}</dl>
         <div class="sub" style="margin-top:14px;font-weight:600;color:#e6edf3">Itens do orçamento</div>
-        ${tabelaItens}`, f);
+        ${tabelaItens}
+        ${blocoEdicaoOrc(f)}`, f);
+      ligarEdicaoOrc(o);
     }
 
     function drawerPrd(p) {
