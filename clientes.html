@@ -79,6 +79,8 @@
       <a href="dashboard.html">Dashboard</a>
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -370,19 +372,32 @@
     /* ================= drawer: FORMULÁRIO (criar/editar) ================= */
     $("btnNovo").onclick = () => abrirForm(null);
 
-    // AAAA-MM-DD local a partir do ISO do Graph, para <input type=date>
+    // AAAA-MM-DD local a partir do ISO do Graph, para <input type=date>.
+    // Data-pura (meia-noite UTC, típico de Date only) usa o próprio AAAA-MM-DD do ISO —
+    // convertê-la para local mostraria o dia ANTERIOR em Brasília.
     const isoParaInput = (s) => {
       if (!s) return "";
       const d = new Date(s);
       if (isNaN(d.getTime())) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
       const p = (n) => String(n).padStart(2, "0");
       return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
     };
     // meio-dia local -> ISO, mesma convenção de nova-proposta (evita virar o dia no fuso)
     const inputParaIso = (v) => v ? new Date(v + "T12:00:00").toISOString() : null;
 
-    const optsChoice = (nome, sel) => ['<option value=""></option>']
-      .concat((CHOICES[nome] || []).map(o => `<option value="${esc(o)}"${o === sel ? " selected" : ""}>${esc(o)}</option>`)).join("");
+    // O valor ATUAL do item entra no select mesmo se estiver fora da lista de
+    // choices (valor legado ou fallback divergente do SharePoint). Sem isso o
+    // select cairia em "", o dirty tracking veria "alterado" e o Salvar
+    // gravaria null — apagando o valor em silêncio.
+    const optsChoice = (nome, sel) => {
+      const lista = (CHOICES[nome] || []);
+      const fora = sel != null && sel !== "" && !lista.includes(sel);
+      return ['<option value=""></option>']
+        .concat(lista.map(o => `<option value="${esc(o)}"${o === sel ? " selected" : ""}>${esc(o)}</option>`))
+        .concat(fora ? [`<option value="${esc(sel)}" selected>${esc(sel)} (valor atual — fora da lista)</option>`] : [])
+        .join("");
+    };
 
     function campoHtml(c, valor) {
       const id = "c_" + c.n;
