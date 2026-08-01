@@ -1,0 +1,935 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Portal de Alocação (Parceiros MEI)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <!-- ====================================================================
+       PORTAL DE ALOCAÇÃO — relação PJ×PJ com técnicos parceiros (MEI)
+
+       CONTEXTO DE NEGÓCIO: os técnicos são MEI (pessoa jurídica autônoma).
+       Este portal existe para (a) o gestor PROPOR a alocação de uma OS a um
+       parceiro, com prazo de resposta, e (b) o parceiro VER O ESCOPO e
+       ACEITAR FORMALMENTE a prestação de serviço. O aceite é ATIVO e feito
+       pelo LOGIN DO PRÓPRIO PARCEIRO — isso é deliberado: o registro de que
+       o parceiro leu o escopo e decidiu aceitar (ou recusar, ou deixar
+       expirar) é EVIDÊNCIA DE AUTONOMIA da relação PJ×PJ, não de
+       subordinação. Nada aqui "designa" trabalho ao técnico; tudo é
+       proposta + resposta, com trilha de auditoria (Aceite_Evidencia).
+
+       MAPA DE DONO DE CAMPO (quem escreve o quê):
+       - OS_Alocacoes_Parceiros: ESTA TELA É A ÚNICA ESCRITORA da lista.
+           create : Title, OSLookupId, TecnicoLookupId, Status_Alocacao,
+                    Enviada_Em, Prazo_Horas, Expira_Em, Escopo_Resumo,
+                    Valor_Proposto (só quando informado)
+           patch  : Status_Alocacao (Aceita/Recusada/Expirada/Cancelada),
+                    Aceita_Em, Aceite_Registrado_Por, Aceite_Evidencia,
+                    Motivo_Recusa
+       - OrdensDeServico : SOMENTE LEITURA aqui (dono: os.html / pipeline).
+       - TecnicosMEI     : SOMENTE LEITURA aqui (dono: cadastro de técnicos).
+       - Clientes        : SOMENTE LEITURA aqui.
+
+       EXPIRAÇÃO ON-READ (não há job server-side): ao carregar, toda proposta
+       "Proposta Enviada" com Expira_Em < agora é exibida como Expirada E
+       persistida (PATCH Status_Alocacao="Expirada"). Push/notificação de
+       prazo é integração futura, desacoplada desta tela.
+       ==================================================================== -->
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+    .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
+    .tab:hover { color: #e6edf3; }
+    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .hint.right { margin-left: auto; }
+
+    .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+
+    select, input[type=number], textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit;
+    }
+    select:focus, input:focus, textarea:focus { outline: 0; border-color: #1f6feb; }
+    textarea { resize: vertical; min-height: 70px; }
+
+    /* formulário de nova proposta (gestor) */
+    .form-card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 18px; max-width: 720px; }
+    .form-card .fc-t { font-weight: 600; margin-bottom: 12px; }
+    .campo { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .campo label { color: #8b949e; font-size: .8rem; }
+    .campo .obr { color: #F0883E; }
+    .radios { display: flex; gap: 16px; align-items: center; }
+    .radios label { color: #e6edf3; font-size: .86rem; display: flex; gap: 6px; align-items: center; cursor: pointer; }
+    .form-msg { font-size: .8rem; color: #8b949e; min-height: 1em; margin-top: 4px; }
+    .form-msg.err { color: #F85149; }
+    .form-msg.ok { color: #22B573; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+
+    td .badge { white-space: nowrap; margin-top: 0; }
+    td.n { text-align: right; white-space: nowrap; }
+    td.dim { color: #8b949e; }
+    .cd { font-size: .76rem; color: #D29922; white-space: nowrap; }
+
+    /* aviso "login sem cadastro MEI" e avisos gerais */
+    .aviso { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
+             border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
+    .aviso strong { color: #e6edf3; }
+    .aviso.warn { border-color: #d2992255; background: #d2992218; color: #e3b341; }
+
+    /* cards de proposta pendente do parceiro */
+    .pend { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; margin-bottom: 8px; }
+    .pend-card { background: #161b22; border: 1px solid #58a6ff55; border-left: 3px solid #58A6FF; border-radius: 10px; padding: 12px 14px; cursor: pointer; }
+    .pend-card:hover { border-color: #58A6FF; }
+    .pend-card .t { font-weight: 600; font-size: .95rem; }
+    .pend-card .s { color: #8b949e; font-size: .82rem; margin-top: 3px; }
+
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    .drawer-body .escopo { white-space: pre-wrap; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; font-size: .86rem; line-height: 1.5; }
+
+    /* bloco de ação do drawer (aceite / recusa / cancelamento) */
+    .acao { display: flex; flex-direction: column; gap: 9px; margin-top: 12px; }
+    .acao textarea { font-size: .86rem; }
+    .acao-btns { display: flex; gap: 8px; flex-wrap: wrap; }
+    .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .acao-msg.err { color: #F85149; }
+    .btn-aceitar { background: #238636; border-color: #2ea043; color: #fff; }
+    .btn-aceitar:hover { background: #2ea043; }
+    .btn-aceitar:disabled { opacity: .5; }
+    /* passo 2 do aceite — a trava formal */
+    .confirma { border: 1px solid #2ea04355; background: #23863618; border-radius: 8px; padding: 10px 12px; }
+    .confirma label { display: flex; gap: 8px; align-items: flex-start; font-size: .85rem; line-height: 1.45; cursor: pointer; }
+    .confirma input[type=checkbox] { margin-top: 3px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html" class="active">Alocação</a>
+      <a href="checklist.html">Checklist</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="tabs" id="tabs" hidden>
+      <button class="tab active" data-sec="ges" id="tabGes">Propostas (gestor)</button>
+      <button class="tab" data-sec="par" id="tabPar">Minhas propostas (parceiro)</button>
+      <button class="tab" data-sec="age" id="tabAge">Minha Agenda (parceiro)</button>
+      <span class="hint right" style="align-self:center"><span class="ro">escrita: só em OS_Alocacoes_Parceiros</span></span>
+    </div>
+
+    <!-- ==================== 1. PROPOSTAS (GESTOR) ==================== -->
+    <section id="sec_ges" hidden>
+      <div class="form-card">
+        <div class="fc-t">Nova proposta de alocação</div>
+        <div class="campo">
+          <label for="gOS">Ordem de serviço <span class="obr">*</span> <span class="hint">(exclui concluídas/canceladas)</span></label>
+          <select id="gOS"><option value="">(selecione a OS)</option></select>
+        </div>
+        <div class="campo">
+          <label for="gTec">Parceiro MEI <span class="obr">*</span> <span class="hint">(somente cadastros ativos)</span></label>
+          <select id="gTec"><option value="">(selecione o parceiro)</option></select>
+        </div>
+        <div class="campo">
+          <label>Prazo de resposta <span class="obr">*</span></label>
+          <div class="radios">
+            <label><input type="radio" name="gPrazo" value="24" checked /> 24 horas</label>
+            <label><input type="radio" name="gPrazo" value="48" /> 48 horas</label>
+          </div>
+        </div>
+        <div class="campo">
+          <label for="gEscopo">Resumo do escopo <span class="obr">*</span> <span class="hint">(o que o parceiro vai ler antes de aceitar)</span></label>
+          <textarea id="gEscopo" maxlength="4000" placeholder="descreva o serviço proposto: atividades, local, condições..."></textarea>
+        </div>
+        <div class="campo">
+          <label for="gValor">Valor proposto (R$) <span class="hint">(opcional — em branco não grava nada)</span></label>
+          <input type="number" id="gValor" min="0" step="0.01" placeholder="ex.: 350,00 → 350.00" style="max-width:200px" />
+        </div>
+        <button id="gEnviar">Enviar proposta</button>
+        <div id="gMsg" class="form-msg"></div>
+      </div>
+
+      <div class="toolbar">
+        <label for="gFStatus">Status</label>
+        <select id="gFStatus"><option value="">(Todos)</option></select>
+        <button class="sec" id="gLimpar">Limpar</button>
+        <span class="hint right" id="gContador"></span>
+      </div>
+
+      <table id="gTbl" hidden>
+        <thead><tr>
+          <th>OS</th><th>Parceiro</th><th>Enviada em</th><th>Prazo</th><th>Expira em</th><th>Valor</th><th>Status</th>
+        </tr></thead>
+        <tbody id="gTbody"></tbody>
+      </table>
+      <div class="empty" id="gEmpty" hidden></div>
+    </section>
+
+    <!-- ================ 2. MINHAS PROPOSTAS (PARCEIRO) ================ -->
+    <section id="sec_par" hidden>
+      <!-- LIMITAÇÃO CONHECIDA do matching: o vínculo parceiro↔login é feito por
+           TecnicosMEI.Email == e-mail do usuário logado (case-insensitive).
+           Se o cadastro MEI estiver com e-mail divergente do login Microsoft
+           (apelido, domínio antigo, campo vazio), o parceiro não vê nada — o
+           aviso abaixo orienta a procurar o gestor. Vínculo por coluna Person
+           ou por AAD object id é evolução futura. -->
+      <div class="aviso warn" id="parSemVinculo" hidden>
+        <strong>Seu login não está vinculado a um cadastro MEI.</strong>
+        Nenhum técnico em TecnicosMEI tem o e-mail <span id="parEmail"></span> —
+        fale com o gestor para ajustar o e-mail do seu cadastro.
+      </div>
+      <div class="aviso" id="parIntro" hidden>
+        Propostas de prestação de serviço enviadas para você. Abra uma proposta
+        pendente para ler o escopo e <strong>decidir com autonomia</strong>:
+        aceitar, recusar ou deixar expirar.
+      </div>
+
+      <div class="secao" id="parSecPend" hidden>Aguardando sua resposta <span>— clique para ver o escopo e decidir</span></div>
+      <div class="pend" id="parPend"></div>
+
+      <div class="secao" id="parSecTodas" hidden>Todas as minhas propostas</div>
+      <table id="pTbl" hidden>
+        <thead><tr>
+          <th>OS</th><th>Cliente</th><th>Enviada em</th><th>Expira em</th><th>Valor</th><th>Status</th>
+        </tr></thead>
+        <tbody id="pTbody"></tbody>
+      </table>
+      <div class="empty" id="pEmpty" hidden></div>
+    </section>
+
+    <!-- ================= 3. MINHA AGENDA (PARCEIRO) ================= -->
+    <section id="sec_age" hidden>
+      <div class="aviso" id="ageIntro" hidden>
+        OS das propostas que você <strong>aceitou</strong>, ordenadas pela data prevista.
+        Somente leitura — alterações de status da OS acontecem no fluxo normal do ERP.
+      </div>
+      <table id="aTbl" hidden>
+        <thead><tr>
+          <th>Data prevista</th><th>OS</th><th>Cliente</th><th>Categoria / Tipo</th><th>Status da OS</th><th></th>
+        </tr></thead>
+        <tbody id="aTbody"></tbody>
+      </table>
+      <div class="empty" id="aEmpty" hidden></div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    const LISTA_ALOC = "OS_Alocacoes_Parceiros";
+
+    /* Choices de Status_Alocacao — batem caractere a caractere com a lista.
+       Divergência é denunciada por EG.validarChoices no carregamento. */
+    const STATUS_ALOC = ["Proposta Enviada", "Aceita", "Recusada", "Expirada", "Cancelada"];
+    const COR_ALOC = {
+      "Proposta Enviada": "#58A6FF",
+      "Aceita": "#22B573",
+      "Recusada": "#F85149",
+      "Expirada": "#8B949E",
+      "Cancelada": "#D29922"
+    };
+    const cor = (v) => COR_ALOC[v] || "#8b949e";
+
+    /* ===================== helpers de valor / data ===================== */
+    const temValor = (v) => v != null && v !== "";
+    const ehNum = (v) => temValor(v) && isFinite(Number(v));
+    const celBRL = (v) => ehNum(v) ? EG.BRL(Number(v)) : "—"; // ausente vira "—", nunca "R$ 0,00"
+
+    // Data-pura (meia-noite UTC, típico de campo Date only) vira meia-noite LOCAL —
+    // sem isso a agenda ordenaria/exibiria 1 dia a menos em Brasília. Ver graph.js.
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
+    const fmtDT = (s) => { const d = parseD(s); return d ? d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : (s || "—"); };
+    const fmtD = (s) => EG.fmtDate(s) || "—";
+
+    // normaliza para comparação tolerante: minúsculas e sem acento
+    // (\p{M} = marcas combinantes após NFD — evita range literal de diacríticos no fonte)
+    const norm = (s) => String(s ?? "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+
+    /* ===================== expiração (regra central) =====================
+       Não há job server-side. A verdade sobre o prazo é Expira_Em vs relógio:
+       - statusEfetivo(): pendente já vencida é EXIBIDA como Expirada mesmo
+         antes do PATCH persistir (ou se ele falhar);
+       - expirarOnRead(): persiste a expiração no carregamento;
+       - as ações (aceitar/recusar/cancelar) reverificam NO CLIQUE, porque a
+         página pode ficar aberta por horas com dados velhos. */
+    const msRestante = (f) => {
+      if (!f || !f.Expira_Em) return null;
+      const d = new Date(f.Expira_Em);
+      return isNaN(d.getTime()) ? null : d.getTime() - Date.now();
+    };
+    const expirou = (f) => { const ms = msRestante(f); return ms != null && ms <= 0; };
+    const statusEfetivo = (f) => (f.Status_Alocacao === "Proposta Enviada" && expirou(f)) ? "Expirada" : (f.Status_Alocacao || "—");
+    const countdown = (f) => {
+      const ms = msRestante(f);
+      if (ms == null) return "";
+      if (ms <= 0) return "prazo vencido";
+      const h = Math.floor(ms / 3600000);
+      return h >= 1 ? ("expira em " + h + "h") : ("expira em " + Math.max(1, Math.floor(ms / 60000)) + "min");
+    };
+
+    /* ============================== estado ============================== */
+    let alocacoes = [], ordens = [], tecnicos = [], clientes = [];
+    let mapAloc = {}, mapOS = {}, mapTec = {}, nomeCliente = {};
+    let meusTecIds = [];      // ids de TecnicosMEI cujo Email == e-mail do login
+    let carregado = false;
+    let usuarioNome = "", usuarioEmail = "";
+
+    const osF = (lookupId) => (mapOS[lookupId] || {}).fields || {};
+    const tecF = (lookupId) => (mapTec[lookupId] || {}).fields || {};
+    const tecNome = (lookupId) => lookupId == null ? "—" : (tecF(lookupId).Title || ("técnico #" + lookupId));
+    const osTitulo = (lookupId) => lookupId == null ? "—" : (osF(lookupId).Title || ("OS #" + lookupId));
+    const cliDaOS = (osLookupId) => {
+      const c = osF(osLookupId).ClienteLookupId;
+      return c == null ? "—" : (nomeCliente[c] || ("cliente #" + c));
+    };
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); usuarioNome = u.nome; usuarioEmail = u.email || ""; $("user").textContent = "👤 " + u.nome; }
+      catch { usuarioNome = EG.getAccount().username; usuarioEmail = EG.getAccount().username || ""; $("user").textContent = "👤 " + usuarioNome; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // uma lista que falha não derruba as outras
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    /* ============================== abas ============================== */
+    let secAtual = "ges";
+    document.querySelectorAll(".tab").forEach(b => { b.onclick = () => mostrarSec(b.dataset.sec); });
+    function mostrarSec(id) {
+      secAtual = id;
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.sec === id));
+      ["ges", "par", "age"].forEach(s => { $("sec_" + s).hidden = !carregado || (s !== id); });
+    }
+
+    /* ============================== carga ============================== */
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando alocações...");
+
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
+        EG.validarChoices(LISTA_ALOC, "Status_Alocacao", STATUS_ALOC)
+          .then(v => EG.renderAvisosChoices($("choiceWarn"), [{ v, rotulo: "Status da Alocação (" + LISTA_ALOC + ")" }]))
+          .catch(() => {});
+
+        const [al, os, te, cl] = await Promise.all([
+          soft(EG.listItems(LISTA_ALOC), LISTA_ALOC),
+          soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
+          soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
+          soft(EG.listItems("Clientes"), "Clientes")
+        ]);
+        setDados(al, os, te, cl);
+        carregado = true;
+        $("tabs").hidden = false;
+        montarForm();
+
+        // EXPIRAÇÃO ON-READ: persiste "Expirada" nas pendentes já vencidas.
+        // Roda depois de setDados para o statusEfetivo já proteger a exibição
+        // mesmo que algum PATCH falhe (a tela nunca mostra pendente vencida).
+        await expirarOnRead();
+
+        renderTudo();
+        mostrarSec(secAtual);
+        setStatus("OK — " + alocacoes.length + " proposta(s), " + ordens.length + " OS, " +
+                  tecnicos.length + " técnico(s), " + clientes.length + " cliente(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // separado da carga para poder ser exercitado com dados falsos (window.ALOC.setDados)
+    function setDados(al, os, te, cl) {
+      alocacoes = al || []; ordens = os || []; tecnicos = te || []; clientes = cl || [];
+      mapAloc = {}; alocacoes.forEach(i => { mapAloc[i.id] = i; });
+      mapOS = {}; ordens.forEach(i => { mapOS[i.id] = i; });
+      mapTec = {}; tecnicos.forEach(i => { mapTec[i.id] = i; });
+      nomeCliente = {}; clientes.forEach(i => { nomeCliente[i.id] = (i.fields || {}).Title; });
+      // vínculo parceiro↔login por e-mail, case-insensitive (limitação comentada na aba 2)
+      const meu = norm(usuarioEmail);
+      meusTecIds = meu
+        ? tecnicos.filter(t => norm((t.fields || {}).Email) === meu).map(t => String(t.id))
+        : [];
+    }
+
+    const ehMinha = (f) => f.TecnicoLookupId != null && meusTecIds.includes(String(f.TecnicoLookupId));
+
+    /* Persiste a expiração das pendentes vencidas. Best-effort: uma falha de
+       PATCH não derruba a carga — statusEfetivo() já exibe como Expirada. */
+    async function expirarOnRead() {
+      const vencidas = alocacoes.filter(o => {
+        const f = o.fields || {};
+        return f.Status_Alocacao === "Proposta Enviada" && expirou(f);
+      });
+      for (const o of vencidas) {
+        try {
+          await EG.patchItemFields(LISTA_ALOC, o.id, { Status_Alocacao: "Expirada" }); // PATCH mínimo
+          await relerAloc(o.id);   // releitura do servidor — nunca confiar no eco local
+        } catch (e) { console.warn("Falha ao expirar proposta " + o.id + ":", e.message); }
+      }
+      if (vencidas.length) console.info(vencidas.length + " proposta(s) expiradas on-read.");
+    }
+
+    // relê UM item do servidor e substitui no estado — usado após toda gravação
+    async function relerAloc(id) {
+      const sid = await EG.resolveSite();
+      const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent(LISTA_ALOC) + "/items/" + id + "?expand=fields");
+      const i = alocacoes.findIndex(a => String(a.id) === String(id));
+      if (i > -1) alocacoes[i] = novo; else alocacoes.unshift(novo);
+      mapAloc[novo.id] = novo;
+      return novo;
+    }
+
+    function renderTudo() { renderGes(); renderPar(); renderAge(); atualizarAbas(); }
+    function atualizarAbas() {
+      const minhas = alocacoes.filter(o => ehMinha(o.fields || {}));
+      const pend = minhas.filter(o => statusEfetivo(o.fields || {}) === "Proposta Enviada").length;
+      $("tabGes").textContent = "Propostas (gestor) (" + alocacoes.length + ")";
+      $("tabPar").textContent = "Minhas propostas (parceiro) (" + minhas.length + (pend ? " · " + pend + " pendente" + (pend > 1 ? "s" : "") : "") + ")";
+      $("tabAge").textContent = "Minha Agenda (parceiro)";
+    }
+
+    /* ==================================================================
+       1. PROPOSTAS (GESTOR)
+       ================================================================== */
+    // OS elegível para proposta: status que não indica encerramento. Filtro
+    // por radical normalizado ("conclu"/"cancel") para tolerar variações de
+    // rótulo ("Concluída", "Concluida", "Cancelada"...) sem esconder OS por
+    // causa de um acento.
+    const osElegivel = (f) => { const s = norm(f.Status); return !(s.includes("conclu") || s.includes("cancel")); };
+    // Parceiro ativo: TecnicosMEI.Status normalizado exatamente "ativo".
+    // Sem status definido também entra (cadastro antigo sem o campo) — melhor
+    // ver um parceiro a mais no select do que sumir com um ativo real.
+    const tecAtivo = (f) => { const s = norm(f.Status); return s === "" || s === "ativo"; };
+
+    function montarForm() {
+      const os = ordens.filter(o => osElegivel(o.fields || {}))
+        .slice().sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      $("gOS").innerHTML = '<option value="">(selecione a OS)</option>' + os.map(o => {
+        const f = o.fields || {};
+        const rot = [f.Title, f.Status ? "[" + f.Status + "]" : null].filter(Boolean).join(" ");
+        return '<option value="' + esc(o.id) + '">' + esc(rot || ("OS #" + o.id)) + "</option>";
+      }).join("");
+
+      const tec = tecnicos.filter(t => tecAtivo(t.fields || {}))
+        .slice().sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      $("gTec").innerHTML = '<option value="">(selecione o parceiro)</option>' + tec.map(t =>
+        '<option value="' + esc(t.id) + '">' + esc((t.fields || {}).Title || ("técnico #" + t.id)) + "</option>").join("");
+
+      $("gFStatus").innerHTML = '<option value="">(Todos)</option>' + STATUS_ALOC.map(s =>
+        '<option value="' + esc(s) + '">' + esc(s) + "</option>").join("");
+    }
+
+    let gravando = false;
+    $("gEnviar").onclick = async () => {
+      if (gravando) return;
+      const msg = $("gMsg");
+      const erro = (t) => { msg.className = "form-msg err"; msg.textContent = t; };
+      const osId = $("gOS").value, tecId = $("gTec").value;
+      const prazo = Number((document.querySelector("input[name=gPrazo]:checked") || {}).value || 24);
+      const escopo = $("gEscopo").value.trim();
+      const valorRaw = $("gValor").value.trim();
+      if (!osId) return erro("Selecione a ordem de serviço.");
+      if (!tecId) return erro("Selecione o parceiro MEI.");
+      if (prazo !== 24 && prazo !== 48) return erro("Prazo inválido.");
+      if (!escopo) return erro("O resumo do escopo é obrigatório — é o que o parceiro vai ler antes de aceitar.");
+      let valor = null;
+      if (valorRaw !== "") {
+        valor = Number(valorRaw);
+        if (!isFinite(valor) || valor < 0) return erro("Valor proposto inválido.");
+      }
+
+      const agora = new Date();
+      const campos = {
+        Title: "ALOC " + (osF(osId).Title || ("OS #" + osId)) + " · " + tecNome(tecId),
+        OSLookupId: Number(osId),          // lookup grava <Campo>LookupId numérico — ver graph.js
+        TecnicoLookupId: Number(tecId),
+        Status_Alocacao: "Proposta Enviada",
+        Enviada_Em: agora.toISOString(),
+        Prazo_Horas: prazo,
+        Expira_Em: new Date(agora.getTime() + prazo * 3600000).toISOString()
+      };
+      // regra do repo: nunca gravar "" — Valor_Proposto só entra quando informado
+      if (valor != null) campos.Valor_Proposto = valor;
+
+      try {
+        gravando = true; $("gEnviar").disabled = true;
+        msg.className = "form-msg"; msg.textContent = "Enviando proposta...";
+        const criado = await EG.createItem(LISTA_ALOC, campos);
+        await relerAloc(criado.id);        // releitura do servidor após a gravação
+        renderTudo();
+        msg.className = "form-msg ok";
+        msg.textContent = "Proposta enviada — expira em " + prazo + "h. O parceiro decide pelo login dele.";
+        $("gOS").value = ""; $("gTec").value = ""; $("gEscopo").value = ""; $("gValor").value = "";
+        setStatus("Proposta criada (" + campos.Title + ").");
+      } catch (e) {
+        erro("Falha ao criar proposta: " + e.message);
+      } finally {
+        gravando = false; $("gEnviar").disabled = false;
+      }
+    };
+
+    function renderGes() {
+      const fs = $("gFStatus").value;
+      const lista = alocacoes
+        .filter(o => !fs || statusEfetivo(o.fields || {}) === fs)
+        .slice().sort((a, b) => String((b.fields || {}).Enviada_Em || "").localeCompare(String((a.fields || {}).Enviada_Em || "")));
+      $("gContador").textContent = lista.length + " de " + alocacoes.length + " proposta(s)";
+
+      if (!lista.length) {
+        $("gTbody").innerHTML = ""; $("gTbl").hidden = true; $("gEmpty").hidden = false;
+        $("gEmpty").textContent = alocacoes.length
+          ? "Nenhuma proposta corresponde ao filtro."
+          : "Nenhuma proposta de alocação ainda. Use o formulário acima para propor uma OS a um parceiro.";
+        return;
+      }
+      $("gEmpty").hidden = true; $("gTbl").hidden = false;
+      $("gTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const st = statusEfetivo(f);
+        const c = cor(st);
+        const cd = st === "Proposta Enviada" ? "<div class='cd'>" + esc(countdown(f)) + "</div>" : "";
+        return "<tr data-tipo='ges' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(osTitulo(f.OSLookupId)) + "</td>" +
+          "<td>" + esc(tecNome(f.TecnicoLookupId)) + "</td>" +
+          "<td class='dim'>" + esc(fmtDT(f.Enviada_Em)) + "</td>" +
+          "<td class='n'>" + (ehNum(f.Prazo_Horas) ? esc(f.Prazo_Horas) + "h" : "—") + "</td>" +
+          "<td class='dim'>" + esc(fmtDT(f.Expira_Em)) + cd + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Valor_Proposto)) + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(st) + "</span></td>" +
+          "</tr>";
+      }).join("");
+    }
+    $("gFStatus").addEventListener("change", renderGes);
+    $("gLimpar").onclick = () => { $("gFStatus").value = ""; renderGes(); };
+
+    /* ==================================================================
+       2. MINHAS PROPOSTAS (PARCEIRO)
+       ================================================================== */
+    function renderPar() {
+      const semVinculo = meusTecIds.length === 0;
+      $("parSemVinculo").hidden = !semVinculo;
+      $("parEmail").textContent = usuarioEmail || "(sem e-mail no login)";
+      $("parIntro").hidden = semVinculo;
+
+      const minhas = alocacoes.filter(o => ehMinha(o.fields || {}))
+        .slice().sort((a, b) => String((b.fields || {}).Enviada_Em || "").localeCompare(String((a.fields || {}).Enviada_Em || "")));
+
+      const pend = minhas.filter(o => statusEfetivo(o.fields || {}) === "Proposta Enviada");
+      $("parSecPend").hidden = pend.length === 0;
+      $("parPend").innerHTML = pend.map(o => {
+        const f = o.fields || {};
+        return "<div class='pend-card' data-tipo='par' data-id='" + esc(o.id) + "'>" +
+          "<div class='t'>" + esc(osTitulo(f.OSLookupId)) + "</div>" +
+          "<div class='s'>" + esc(cliDaOS(f.OSLookupId)) + (ehNum(f.Valor_Proposto) ? " · " + esc(EG.BRL(Number(f.Valor_Proposto))) : "") + "</div>" +
+          "<div class='s' style='color:#D29922'>" + esc(countdown(f) || "sem prazo definido") + "</div>" +
+          "</div>";
+      }).join("");
+
+      $("parSecTodas").hidden = minhas.length === 0;
+      if (!minhas.length) {
+        $("pTbody").innerHTML = ""; $("pTbl").hidden = true;
+        $("pEmpty").hidden = semVinculo;   // sem vínculo, o aviso amarelo já explica
+        $("pEmpty").textContent = "Nenhuma proposta enviada para você até agora.";
+        return;
+      }
+      $("pEmpty").hidden = true; $("pTbl").hidden = false;
+      $("pTbody").innerHTML = minhas.map(o => {
+        const f = o.fields || {};
+        const st = statusEfetivo(f);
+        const c = cor(st);
+        const cd = st === "Proposta Enviada" ? "<div class='cd'>" + esc(countdown(f)) + "</div>" : "";
+        return "<tr data-tipo='par' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(osTitulo(f.OSLookupId)) + "</td>" +
+          "<td>" + esc(cliDaOS(f.OSLookupId)) + "</td>" +
+          "<td class='dim'>" + esc(fmtDT(f.Enviada_Em)) + "</td>" +
+          "<td class='dim'>" + esc(fmtDT(f.Expira_Em)) + cd + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Valor_Proposto)) + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(st) + "</span></td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ==================================================================
+       3. MINHA AGENDA (PARCEIRO) — somente leitura
+       ================================================================== */
+    function renderAge() {
+      const aceitas = alocacoes.filter(o => {
+        const f = o.fields || {};
+        return ehMinha(f) && f.Status_Alocacao === "Aceita" && f.OSLookupId != null;
+      });
+      $("ageIntro").hidden = aceitas.length === 0;
+      // ordena pela DataPrevista da OS (date-only tratado por parseD/ehDataPura); sem data vai pro fim
+      const ord = aceitas.slice().sort((a, b) => {
+        const da = parseD(osF((a.fields || {}).OSLookupId).DataPrevista);
+        const db = parseD(osF((b.fields || {}).OSLookupId).DataPrevista);
+        if (!da && !db) return 0; if (!da) return 1; if (!db) return -1;
+        return da - db;
+      });
+
+      if (!ord.length) {
+        $("aTbody").innerHTML = ""; $("aTbl").hidden = true; $("aEmpty").hidden = false;
+        $("aEmpty").textContent = meusTecIds.length
+          ? "Nenhuma prestação de serviço aceita ainda — sua agenda é montada pelos seus aceites."
+          : "Seu login não está vinculado a um cadastro MEI — fale com o gestor (veja a aba Minhas propostas).";
+        return;
+      }
+      $("aEmpty").hidden = true; $("aTbl").hidden = false;
+      $("aTbody").innerHTML = ord.map(o => {
+        const f = o.fields || {};
+        const os = osF(f.OSLookupId);
+        const catTipo = [os.Categoria, os.Tipo_OS_Completo].filter(Boolean).join(" / ");
+        return "<tr data-tipo='age' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(fmtD(os.DataPrevista)) + "</td>" +
+          "<td>" + esc(osTitulo(f.OSLookupId)) + "</td>" +
+          "<td>" + esc(cliDaOS(f.OSLookupId)) + "</td>" +
+          "<td class='dim'>" + esc(catTipo || "—") + "</td>" +
+          "<td class='dim'>" + esc(os.Status || "—") + "</td>" +
+          "<td><span class='cd' style='color:#58a6ff'>ver detalhes</span></td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ==================================================================
+       DRAWER — detalhe da proposta (gestor), tela de escopo (parceiro)
+       e detalhe read-only da agenda
+       ================================================================== */
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+    const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
+
+    // bloco comum: dados da OS + escopo proposto (a "tela de escopo")
+    function blocoEscopo(f) {
+      const os = osF(f.OSLookupId);
+      return grupo("Ordem de serviço") +
+        "<dl>" +
+          linha("OS", osTitulo(f.OSLookupId)) +
+          linha("Cliente", cliDaOS(f.OSLookupId)) +
+          linha("Categoria", os.Categoria) +
+          linha("Tipo", os.Tipo_OS_Completo) +
+          linha("Data prevista", os.DataPrevista ? fmtD(os.DataPrevista) : null) +
+          linha("Status atual da OS", os.Status) +
+        "</dl>" +
+        (os.Descricao ? grupo("Descrição da OS") + "<div class='escopo'>" + esc(os.Descricao) + "</div>" : "") +
+        grupo("Escopo proposto") +
+        (f.Escopo_Resumo ? "<div class='escopo'>" + esc(f.Escopo_Resumo) + "</div>"
+                         : "<div class='escopo' style='color:#8b949e'>— sem resumo de escopo gravado —</div>") +
+        "<dl>" +
+          linha("Valor proposto", ehNum(f.Valor_Proposto) ? EG.BRL(Number(f.Valor_Proposto)) : null) +
+          linha("Enviada em", f.Enviada_Em ? fmtDT(f.Enviada_Em) : null) +
+          linha("Prazo de resposta", ehNum(f.Prazo_Horas) ? f.Prazo_Horas + "h" : null) +
+          linha("Expira em", f.Expira_Em ? fmtDT(f.Expira_Em) : null) +
+          linha("Prazo restante", statusEfetivo(f) === "Proposta Enviada" ? (countdown(f) || null) : null) +
+        "</dl>";
+    }
+
+    function blocoResultado(f) {
+      const st = statusEfetivo(f);
+      if (st === "Proposta Enviada") return "";
+      return grupo("Resultado") +
+        "<dl>" +
+          linha("Status", st) +
+          linha("Aceita em", f.Aceita_Em ? fmtDT(f.Aceita_Em) : null) +
+          linha("Aceite registrado por", f.Aceite_Registrado_Por) +
+          linha("Motivo da recusa", f.Motivo_Recusa) +
+        "</dl>";
+    }
+
+    /* -------- gestor: detalhe + cancelamento -------- */
+    function abrirGesDrawer(o) {
+      const f = o.fields || {};
+      const st = statusEfetivo(f);
+      const podeCancelar = st === "Proposta Enviada";
+      const corpo =
+        "<dl>" + linha("Parceiro MEI", tecNome(f.TecnicoLookupId)) + linha("Título", f.Title) + "</dl>" +
+        blocoEscopo(f) +
+        blocoResultado(f) +
+        (podeCancelar
+          ? grupo("Ação do gestor") +
+            "<div class='acao'>" +
+              "<div class='acao-btns'><button id='dCancelar' class='sec'>Cancelar proposta</button></div>" +
+              "<div id='dMsg' class='acao-msg'>Cancelar retira a proposta antes da resposta do parceiro.</div>" +
+            "</div>"
+          : "");
+      mostrarDrawer(osTitulo(f.OSLookupId), tecNome(f.TecnicoLookupId), st, cor(st), corpo, f);
+      const btn = $("dCancelar");
+      if (btn) btn.onclick = () => cancelarProposta(o);
+    }
+
+    let agindo = false;
+    async function cancelarProposta(o) {
+      if (agindo) return;
+      const msg = $("dMsg");
+      try {
+        agindo = true; if ($("dCancelar")) $("dCancelar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Verificando e gravando...";
+        // reverificação NO CLIQUE: o item pode ter sido aceito/expirado desde a carga
+        const atual = await relerAloc(o.id);
+        const f = atual.fields || {};
+        if (f.Status_Alocacao !== "Proposta Enviada") {
+          renderTudo(); abrirGesDrawer(atual);
+          setStatus("Esta proposta já está '" + (f.Status_Alocacao || "?") + "' — nada foi cancelado.", "err");
+          return;
+        }
+        if (expirou(f)) {
+          await EG.patchItemFields(LISTA_ALOC, o.id, { Status_Alocacao: "Expirada" });
+          const novo = await relerAloc(o.id);
+          renderTudo(); abrirGesDrawer(novo);
+          setStatus("O prazo já venceu: a proposta foi marcada como Expirada (não Cancelada).", "err");
+          return;
+        }
+        await EG.patchItemFields(LISTA_ALOC, o.id, { Status_Alocacao: "Cancelada" }); // PATCH mínimo
+        const novo = await relerAloc(o.id);
+        renderTudo(); abrirGesDrawer(novo);
+        setStatus("Proposta cancelada.");
+      } catch (e) {
+        if (msg) { msg.className = "acao-msg err"; msg.textContent = "Falha ao cancelar: " + e.message; }
+        if ($("dCancelar")) $("dCancelar").disabled = false;
+      } finally { agindo = false; }
+    }
+
+    /* -------- parceiro: tela de escopo + aceite/recusa --------
+       O ACEITE é a peça central do portal: rótulo "Aceitar Prestação de
+       Serviço" + confirmação em 2 passos com a declaração explícita. Essa
+       trava formal — decisão ativa, no login do próprio parceiro, com
+       evidência técnica gravada (Aceite_Evidencia) — é o registro de
+       AUTONOMIA da relação PJ×PJ: o parceiro leu o escopo e ESCOLHEU
+       prestar o serviço. */
+    function abrirParDrawer(o) {
+      const f = o.fields || {};
+      const st = statusEfetivo(f);
+      const pendente = st === "Proposta Enviada";
+      const corpo =
+        blocoEscopo(f) +
+        blocoResultado(f) +
+        (pendente
+          ? grupo("Sua decisão") +
+            "<div class='acao'>" +
+              "<div class='acao-btns'>" +
+                "<button id='dAceitar' class='btn-aceitar'>Aceitar Prestação de Serviço</button>" +
+                "<button id='dRecusar' class='sec'>Recusar</button>" +
+              "</div>" +
+              // passo 2 do aceite — revelado pelo clique no botão acima
+              "<div id='dConfirma' class='confirma' hidden>" +
+                "<label><input type='checkbox' id='dCheck' /> " +
+                  "<span>Confirmo que li o escopo e aceito prestar o serviço nas condições propostas</span></label>" +
+                "<div class='acao-btns' style='margin-top:8px'>" +
+                  "<button id='dConfirmar' class='btn-aceitar' disabled>Confirmar aceite</button>" +
+                  "<button id='dVoltar' class='sec'>Voltar</button>" +
+                "</div>" +
+              "</div>" +
+              // recusa exige motivo
+              "<div id='dRecusaBox' hidden>" +
+                "<textarea id='dMotivo' maxlength='2000' placeholder='motivo da recusa (obrigatório)'></textarea>" +
+                "<div class='acao-btns' style='margin-top:8px'>" +
+                  "<button id='dRecusarConf' class='sec'>Confirmar recusa</button>" +
+                  "<button id='dRecusarVoltar' class='sec'>Voltar</button>" +
+                "</div>" +
+              "</div>" +
+              "<div id='dMsg' class='acao-msg'>Sua resposta é registrada no seu login e vale como manifestação formal.</div>" +
+            "</div>"
+          : "");
+      mostrarDrawer(osTitulo(f.OSLookupId), "Proposta de prestação de serviço", st, cor(st), corpo, f);
+      if (!pendente) return;
+      $("dAceitar").onclick = () => { $("dConfirma").hidden = false; $("dRecusaBox").hidden = true; };
+      $("dVoltar").onclick = () => { $("dConfirma").hidden = true; $("dCheck").checked = false; $("dConfirmar").disabled = true; };
+      $("dCheck").onchange = () => { $("dConfirmar").disabled = !$("dCheck").checked; };
+      $("dConfirmar").onclick = () => aceitarProposta(o);
+      $("dRecusar").onclick = () => { $("dRecusaBox").hidden = false; $("dConfirma").hidden = true; $("dMotivo").focus(); };
+      $("dRecusarVoltar").onclick = () => { $("dRecusaBox").hidden = true; };
+      $("dRecusarConf").onclick = () => recusarProposta(o);
+    }
+
+    // reverificação comum às duas respostas do parceiro: NO CLIQUE, contra o
+    // SERVIDOR — a página pode ficar aberta por horas; proposta expirada não
+    // pode ser aceita nem recusada, e vira Expirada na hora.
+    async function verificarPendenteNoClique(o) {
+      const atual = await relerAloc(o.id);
+      const f = atual.fields || {};
+      if (f.Status_Alocacao !== "Proposta Enviada") {
+        renderTudo(); abrirParDrawer(atual);
+        setStatus("Esta proposta já está '" + (f.Status_Alocacao || "?") + "' — nada foi gravado.", "err");
+        return null;
+      }
+      if (expirou(f)) {
+        await EG.patchItemFields(LISTA_ALOC, o.id, { Status_Alocacao: "Expirada" });
+        const novo = await relerAloc(o.id);
+        renderTudo(); abrirParDrawer(novo);
+        setStatus("O prazo desta proposta venceu — ela expirou e não pode mais ser aceita.", "err");
+        return null;
+      }
+      return atual;
+    }
+
+    async function aceitarProposta(o) {
+      if (agindo) return;
+      const msg = $("dMsg");
+      try {
+        agindo = true;
+        ["dConfirmar", "dVoltar", "dAceitar", "dRecusar"].forEach(id => { if ($(id)) $(id).disabled = true; });
+        msg.className = "acao-msg"; msg.textContent = "Verificando prazo e registrando aceite...";
+        const atual = await verificarPendenteNoClique(o);
+        if (!atual) return;
+        const f = atual.fields || {};
+        const agora = new Date().toISOString();
+        // Aceite_Evidencia: registro técnico do ato — junto com o rótulo do
+        // botão e a confirmação em 2 passos, compõe a evidência de que o
+        // aceite foi ativo e autônomo (PJ×PJ), não uma designação.
+        const evidencia = {
+          aceitoEm: agora,
+          usuario: usuarioNome,
+          email: usuarioEmail,
+          userAgent: navigator.userAgent,
+          expiraEm: f.Expira_Em || null,
+          propostaEnviadaEm: f.Enviada_Em || null
+        };
+        await EG.patchItemFields(LISTA_ALOC, o.id, {   // PATCH mínimo do aceite
+          Status_Alocacao: "Aceita",
+          Aceita_Em: agora,
+          Aceite_Registrado_Por: (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : ""),
+          Aceite_Evidencia: JSON.stringify(evidencia)
+        });
+        const novo = await relerAloc(o.id);            // releitura do servidor
+        renderTudo(); abrirParDrawer(novo);
+        setStatus("Prestação de serviço aceita — a OS entrou na sua agenda.");
+      } catch (e) {
+        if (msg) { msg.className = "acao-msg err"; msg.textContent = "Falha ao registrar o aceite: " + e.message; }
+        ["dConfirmar", "dVoltar", "dAceitar", "dRecusar"].forEach(id => { if ($(id)) $(id).disabled = false; });
+      } finally { agindo = false; }
+    }
+
+    async function recusarProposta(o) {
+      if (agindo) return;
+      const msg = $("dMsg");
+      const motivo = ($("dMotivo") && $("dMotivo").value.trim()) || "";
+      if (!motivo) {
+        msg.className = "acao-msg err"; msg.textContent = "Informe o motivo da recusa.";
+        if ($("dMotivo")) $("dMotivo").focus();
+        return;
+      }
+      try {
+        agindo = true;
+        ["dRecusarConf", "dRecusarVoltar", "dAceitar", "dRecusar"].forEach(id => { if ($(id)) $(id).disabled = true; });
+        msg.className = "acao-msg"; msg.textContent = "Registrando recusa...";
+        const atual = await verificarPendenteNoClique(o);
+        if (!atual) return;
+        await EG.patchItemFields(LISTA_ALOC, o.id, {   // PATCH mínimo — motivo nunca vai vazio
+          Status_Alocacao: "Recusada",
+          Motivo_Recusa: motivo
+        });
+        const novo = await relerAloc(o.id);
+        renderTudo(); abrirParDrawer(novo);
+        setStatus("Proposta recusada. Recusar é parte da autonomia do parceiro — nenhuma penalidade automática.");
+      } catch (e) {
+        if (msg) { msg.className = "acao-msg err"; msg.textContent = "Falha ao registrar a recusa: " + e.message; }
+        ["dRecusarConf", "dRecusarVoltar", "dAceitar", "dRecusar"].forEach(id => { if ($(id)) $(id).disabled = false; });
+      } finally { agindo = false; }
+    }
+
+    /* -------- agenda: detalhe read-only da OS aceita -------- */
+    function abrirAgeDrawer(o) {
+      const f = o.fields || {};
+      const os = osF(f.OSLookupId);
+      const corpo =
+        "<dl>" +
+          linha("OS", osTitulo(f.OSLookupId)) +
+          linha("Cliente", cliDaOS(f.OSLookupId)) +
+          linha("Categoria", os.Categoria) +
+          linha("Tipo", os.Tipo_OS_Completo) +
+          linha("Data prevista", os.DataPrevista ? fmtD(os.DataPrevista) : null) +
+          linha("Status atual da OS", os.Status) +
+        "</dl>" +
+        (os.Descricao ? grupo("Descrição") + "<div class='escopo'>" + esc(os.Descricao) + "</div>" : "") +
+        grupo("Seu aceite") +
+        "<dl>" +
+          linha("Aceita em", f.Aceita_Em ? fmtDT(f.Aceita_Em) : null) +
+          linha("Registrado por", f.Aceite_Registrado_Por) +
+          linha("Valor proposto", ehNum(f.Valor_Proposto) ? EG.BRL(Number(f.Valor_Proposto)) : null) +
+        "</dl>" +
+        (f.Escopo_Resumo ? grupo("Escopo aceito") + "<div class='escopo'>" + esc(f.Escopo_Resumo) + "</div>" : "");
+      mostrarDrawer(osTitulo(f.OSLookupId), fmtD(os.DataPrevista), os.Status || "—", "#8b949e", corpo, f);
+    }
+
+    function mostrarDrawer(titulo, sub, badge, corBadge, corpoHtml, fields) {
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(titulo) +
+          (sub ? "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(sub) + "</div>" : "") +
+          (badge ? "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" : "") +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpoHtml +
+          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
+          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
+        "</div>";
+      $("dc").onclick = fechar;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    // um só handler para tabelas e cards das 3 abas
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      const el = e.target.closest("[data-tipo][data-id]");
+      if (!el) return;
+      const o = mapAloc[el.dataset.id];
+      if (!o) return;
+      if (el.dataset.tipo === "ges") abrirGesDrawer(o);
+      else if (el.dataset.tipo === "par") abrirParDrawer(o);
+      else if (el.dataset.tipo === "age") abrirAgeDrawer(o);
+    });
+    $("overlay").onclick = fechar;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+
+    /* Exposto para testar a lógica sem login (dados falsos):
+       ALOC.setUsuario("Fulano","fulano@x.com"); ALOC.setDados([...],[...],[...],[...]);
+       ALOC.forcarCarregado(); ALOC.montarForm(); ALOC.renderTudo(); ALOC.mostrarSec("par"); */
+    window.ALOC = {
+      setDados, montarForm, renderTudo, mostrarSec,
+      renderGes, renderPar, renderAge,
+      abrirGesDrawer, abrirParDrawer, abrirAgeDrawer,
+      statusEfetivo, expirou, msRestante, countdown, osElegivel, tecAtivo, norm,
+      expirarOnRead, relerAloc,
+      forcarCarregado: (v) => { carregado = v !== false; },
+      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
