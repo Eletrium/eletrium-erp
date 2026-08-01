@@ -38,6 +38,17 @@
     .ed-btns { display: flex; gap: 8px; }
     .ed-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .ed-msg.err { color: #F85149; }
+
+    /* seções novas do drawer (KM / Fechamento / Equipe) */
+    .lock { font-size: .8rem; cursor: help; }
+    .chk { list-style: none; padding: 0; margin: 8px 0 0; display: flex; flex-direction: column; gap: 4px; }
+    .chk li { font-size: .84rem; }
+    .chk .ok { color: #22B573; }
+    .chk .falta { color: #F0883E; }
+    .eq-row { border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+    .eq-row .eq-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: .9rem; font-weight: 600; }
+    .eq-row .badge { margin-top: 0; }
+    .eq-row details pre { margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -55,6 +66,10 @@
       <a href="reaquecimento.html">Reaquecimento</a>
       <a href="faturamento.html">Faturamento</a>
       <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html">Checklist</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -106,8 +121,11 @@
     const statusCor = (s) => STATUS_COR[s] || "#8b949e";
 
     let itemMap = {}, todas = [], nomeCliente = {}, nomeTecnico = {};
-    let tecnicosOS = [];   // itens crus de TecnicosMEI — popula o select de técnico da edição
+    let tecnicosOS = [];   // itens crus de TecnicosMEI — popula os selects de técnico/líder (traz Valor_Hora_Contratado p/ snapshot)
     let choiceOS = {};     // { nomeInterno: [choices...] } lido de EG.listColumns("OrdensDeServico")
+    let equipe = [];       // itens crus de OS_Equipe (de TODAS as OS) — filtrados por OSLookupId no drawer
+    let choiceEq = {};     // choices de OS_Equipe (Funcao) lidos de EG.listColumns("OS_Equipe")
+    let equipeCarregada = false; // distingue "lista vazia" de "falha ao carregar OS_Equipe"
 
     /* =================================================================
        DONO DE CAMPO — OrdensDeServico é reescrita pelo cenário Make "1A"
@@ -128,6 +146,22 @@
        confundir com ObsCampo, que é do técnico/1A), Prioridade, Tipo_OS,
        Categoria, Custo_MO_Previsto, Custo_EPI_OS, Custo_Ferr_OS,
        Horas_Previstas_OS.
+
+       NOVOS (módulo OS/MEI — escritos por ESTA tela, sem escritor
+       automatizado hoje): OS_Anterior (lookup), Lider_Eletricista (lookup),
+       KM_Inicial, KM_Final, KM_Herdado, Cadeia_KM_Rompida,
+       Justificativa_Rompimento_KM, Foto_Rompimento_KM_URL,
+       KM_Divergencia_Pct, Alerta_KM_Divergente, OS_Logistica, Laudo_URL,
+       Assinatura_URL. (Assinatura_URL/Fotos_Evidencia/Selfie_URL serão
+       alimentados também pela captura mobile — integração pendente.)
+
+       A lista OS_Equipe INTEIRA é escrita por esta tela (e, no futuro, pelo
+       app mobile de campo): nenhum cenário Make escreve nela hoje.
+
+       EXCEÇÃO CONTROLADA: Status e DataConclusao pertencem ao 1A, mas o
+       botão "Concluir OS" (Frente B) grava ambos por ação explícita e com
+       pré-requisitos — ver o comentário de conflito em concluirOS()/Frente B.
+       Eles CONTINUAM em CAMPOS_1A: o editor genérico segue proibido.
        ================================================================= */
     const CAMPOS_1A = [
       "Status", "Status_Atual", "ObsCampo", "Prioridade_OS", "Tipo_OS_Completo",
@@ -150,6 +184,13 @@
       { campo: "Custo_EPI_OS",      el: "eCusto_EPI_OS",       tipo: "num" },
       { campo: "Custo_Ferr_OS",     el: "eCusto_Ferr_OS",      tipo: "num" },
       { campo: "Horas_Previstas_OS", el: "eHoras_Previstas_OS", tipo: "num" },
+      // Frente A (KM encadeado): OS_Anterior/Lider_Eletricista gravam como
+      // <Campo>LookupId numérico; KM_Inicial fica disabled quando KM_Herdado=true
+      // (input disabled é pulado pelo dirty tracking de salvarOS — não grava).
+      { campo: "OS_AnteriorLookupId",       el: "eOS_Anterior",       tipo: "lookup" },
+      { campo: "Lider_EletricistaLookupId", el: "eLider_Eletricista", tipo: "lookup" },
+      { campo: "KM_Inicial",        el: "eKM_Inicial",         tipo: "num" },
+      { campo: "KM_Final",          el: "eKM_Final",           tipo: "num" },
       { campo: "Descricao",         el: "eDescricao",          tipo: "texto" },
       { campo: "Observacoes",       el: "eObservacoes",        tipo: "texto" }
     ];
@@ -184,23 +225,33 @@
         // As colunas entram na mesma leva para popular os selects de Choice DINAMICAMENTE
         // (Prioridade/Tipo_OS/Categoria — nada de rótulo hardcodado; Categoria é novo e mudaria por baixo).
         // Falha na leitura de colunas não derruba a tela: só desabilita os selects de Choice.
-        const [os, cli, tec, cols] = await Promise.all([
+        const [os, cli, tec, cols, eq, colsEq] = await Promise.all([
           EG.listItems("OrdensDeServico"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
-          EG.listItems("TecnicosMEI", "expand=fields($select=Title)&$top=500"),
-          EG.listColumns("OrdensDeServico").catch(e => { console.warn("Falha ao ler colunas:", e.message); return []; })
+          // Valor_Hora_Contratado entra no $select: é a fonte do Valor_Hora_Snapshot
+          // no "De acordo do líder" (Frente C — equipe da OS).
+          EG.listItems("TecnicosMEI", "expand=fields($select=Title,Valor_Hora_Contratado)&$top=500"),
+          EG.listColumns("OrdensDeServico").catch(e => { console.warn("Falha ao ler colunas:", e.message); return []; }),
+          // OS_Equipe falhando não derruba a tela: a seção Equipe avisa e não grava
+          EG.listItems("OS_Equipe").catch(e => { console.warn("Falha ao carregar OS_Equipe:", e.message); return null; }),
+          EG.listColumns("OS_Equipe").catch(e => { console.warn("Falha ao ler colunas de OS_Equipe:", e.message); return []; })
         ]);
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
         nomeTecnico = {}; tec.forEach(t => nomeTecnico[t.id] = t.fields && t.fields.Title);
         tecnicosOS = tec;
         choiceOS = {};
         (cols || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceOS[c.name] = c.choice.choices; });
+        equipeCarregada = eq != null;
+        equipe = eq || [];
+        choiceEq = {};
+        (colsEq || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceEq[c.name] = c.choice.choices; });
         itemMap = {}; os.forEach(o => itemMap[o.id] = o);
         todas = os.slice().sort((a, b) => new Date(b.fields && b.fields.DataAbertura || 0) - new Date(a.fields && a.fields.DataAbertura || 0));
         indicadores(todas);
         $("kpis").hidden = false; $("toolbar").hidden = false;
         aplicarFiltro();
-        setStatus("OK — " + todas.length + " OS carregada(s).");
+        setStatus("OK — " + todas.length + " OS carregada(s)" +
+                  (equipeCarregada ? ", " + equipe.length + " linha(s) de equipe." : ". Aviso: OS_Equipe não carregou."));
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
@@ -288,11 +339,17 @@
           <dl>${gerais}</dl>
           ${custos ? '<div class="k" style="color:#8b949e;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em">Custos (realizado + EPI + ferramentas)</div>' + custos : ""}
           ${blocoEdicao()}
+          ${blocoKM(f)}
+          ${blocoFechamento(f)}
+          ${blocoEquipe()}
           <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
           <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
       $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
       ligarEdicao(o);
+      ligarKM(o);
+      ligarFechamento(o);
+      ligarEquipe(o);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
@@ -356,6 +413,15 @@
             <label>Custo MO previsto (R$) <input type="number" step="0.01" id="eCusto_MO_Previsto" /></label>
             <label>Custo EPI (R$) <input type="number" step="0.01" id="eCusto_EPI_OS" /></label>
             <label>Custo ferramentas (R$) <input type="number" step="0.01" id="eCusto_Ferr_OS" /></label>
+            <label>OS anterior (cadeia de KM) <select id="eOS_Anterior"></select></label>
+            <label>Líder eletricista <select id="eLider_Eletricista"></select></label>
+            <label><span>KM inicial <span id="eKM_IniLock" class="lock" hidden title="herdado da OS anterior — use Romper cadeia (seção KM) para liberar">🔒</span></span>
+              <input type="number" step="0.1" id="eKM_Inicial" /></label>
+            <label>KM final <input type="number" step="0.1" id="eKM_Final" /></label>
+            <!-- referência manual, NUNCA persistida — a referência automática por
+                 API de mapa (distância prevista do trajeto) é ponto de integração
+                 pendente. Usada só no cálculo de KM_Divergencia_Pct em salvarOS(). -->
+            <label>KM esperado (referência — não gravado) <input type="number" step="0.1" id="eKM_Ref" /></label>
           </div>
           <label>Descrição <textarea id="eDescricao"></textarea></label>
           <label>Observações da gestão (não é a obs. de campo do técnico) <textarea id="eObservacoes"></textarea></label>
@@ -382,6 +448,28 @@
       sel.value = atual == null ? "" : String(atual);
     }
 
+    // popula um select de técnicos (TecnicosMEI) — usado por Técnico, Líder
+    // Eletricista e pelo "Adicionar à equipe". Grava como <Campo>LookupId numérico.
+    // Id fora da lista carregada continua visível/selecionável (mesma regra do popularChoice).
+    function popularSelectTecnicos(sel, atualId, rotuloVazio) {
+      sel.innerHTML = "";
+      const vazio = document.createElement("option");
+      vazio.value = ""; vazio.textContent = rotuloVazio; sel.appendChild(vazio);
+      const ordenados = tecnicosOS.slice().sort((a, b) =>
+        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      ordenados.forEach(t => {
+        const op = document.createElement("option");
+        op.value = String(t.id); op.textContent = (t.fields || {}).Title || ("técnico #" + t.id);
+        sel.appendChild(op);
+      });
+      if (atualId != null && !ordenados.some(t => String(t.id) === String(atualId))) {
+        const op = document.createElement("option");
+        op.value = String(atualId); op.textContent = "técnico #" + atualId;
+        sel.appendChild(op);
+      }
+      sel.value = atualId == null ? "" : String(atualId);
+    }
+
     function ligarEdicao(o) {
       const f = o.fields || {};
       const tg = $("eToggle"), form = $("eForm");
@@ -390,23 +478,35 @@
       $("eCancelar").onclick = () => openDrawer(o); // descarta o rascunho re-renderizando do estado em memória
 
       // técnico — EG.listItems("TecnicosMEI") já carregado; grava como TecnicoLookupId numérico
-      const selTec = $("eTecnico");
-      selTec.innerHTML = "";
-      const semTec = document.createElement("option");
-      semTec.value = ""; semTec.textContent = "(sem técnico)"; selTec.appendChild(semTec);
-      const ordenados = tecnicosOS.slice().sort((a, b) =>
-        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
-      ordenados.forEach(t => {
+      popularSelectTecnicos($("eTecnico"), f.TecnicoLookupId, "(sem técnico)");
+      // líder eletricista — mesma lista, grava Lider_EletricistaLookupId
+      popularSelectTecnicos($("eLider_Eletricista"), f.Lider_EletricistaLookupId, "(sem líder)");
+
+      // OS anterior — todas as OS carregadas, EXCETO a própria (cadeia não se auto-referencia)
+      const selAnt = $("eOS_Anterior");
+      selAnt.innerHTML = "";
+      const semAnt = document.createElement("option");
+      semAnt.value = ""; semAnt.textContent = "(sem OS anterior)"; selAnt.appendChild(semAnt);
+      todas.filter(x => String(x.id) !== String(o.id)).forEach(x => {
         const op = document.createElement("option");
-        op.value = String(t.id); op.textContent = (t.fields || {}).Title || ("técnico #" + t.id);
-        selTec.appendChild(op);
+        op.value = String(x.id); op.textContent = (x.fields || {}).Title || ("OS #" + x.id);
+        selAnt.appendChild(op);
       });
-      if (f.TecnicoLookupId != null && !ordenados.some(t => String(t.id) === String(f.TecnicoLookupId))) {
+      if (f.OS_AnteriorLookupId != null && ![...selAnt.options].some(op => op.value === String(f.OS_AnteriorLookupId))) {
         const op = document.createElement("option");
-        op.value = String(f.TecnicoLookupId); op.textContent = "técnico #" + f.TecnicoLookupId;
-        selTec.appendChild(op);
+        op.value = String(f.OS_AnteriorLookupId); op.textContent = "OS #" + f.OS_AnteriorLookupId;
+        selAnt.appendChild(op);
       }
-      selTec.value = f.TecnicoLookupId == null ? "" : String(f.TecnicoLookupId);
+      selAnt.value = f.OS_AnteriorLookupId == null ? "" : String(f.OS_AnteriorLookupId);
+
+      // KM — inicial BLOQUEADO quando herdado da OS anterior (só Romper cadeia
+      // libera). Input disabled fica FORA do dirty tracking de salvarOS().
+      const herdado = f.KM_Herdado === true;
+      $("eKM_Inicial").value = normOrig("num", f.KM_Inicial);
+      $("eKM_Inicial").disabled = herdado;
+      $("eKM_IniLock").hidden = !herdado;
+      $("eKM_Final").value = normOrig("num", f.KM_Final);
+      $("eKM_Ref").value = ""; // referência manual — nunca persistida, nunca pré-preenchida
 
       popularChoice($("ePrioridade"), "Prioridade", f.Prioridade);
       popularChoice($("eTipo_OS"), "Tipo_OS", f.Tipo_OS);
@@ -439,6 +539,26 @@
         const agora = normEl(c.tipo, el.value);
         if (antes !== agora) campos[c.campo] = paraGraph(c.tipo, agora);
       });
+
+      // Frente A — divergência de KM. O "KM esperado (referência)" NÃO é
+      // persistido: a referência automática por API de mapa (distância prevista
+      // do trajeto) é ponto de integração pendente — hoje o gestor digita à mão.
+      // Só calcula quando KM_Final foi alterado NESTE salvamento e a referência
+      // está preenchida e positiva.
+      const refEl = $("eKM_Ref");
+      const refKm = refEl && refEl.value !== "" ? Number(refEl.value) : NaN;
+      if ("KM_Final" in campos && campos.KM_Final != null && isFinite(refKm) && refKm > 0) {
+        const iniAtual = ("KM_Inicial" in campos) ? campos.KM_Inicial
+          : ((f.KM_Inicial != null && f.KM_Inicial !== "" && isFinite(Number(f.KM_Inicial))) ? Number(f.KM_Inicial) : null);
+        if (iniAtual != null) {
+          const pct = Math.abs(campos.KM_Final - iniAtual - refKm) / refKm * 100;
+          campos.KM_Divergencia_Pct = Math.round(pct * 100) / 100;
+          // >20% liga o alerta; abaixo disso um alerta antigo NÃO é limpo aqui —
+          // limpar alerta é decisão de gestão, não efeito colateral de recálculo.
+          if (pct > 20) campos.Alerta_KM_Divergente = true;
+        }
+      }
+
       // trava contra regressão: nenhum campo do 1A pode escapar para o PATCH
       Object.keys(campos).forEach(k => {
         if (CAMPOS_1A.includes(k)) { delete campos[k]; console.warn("Campo do 1A bloqueado na edição:", k); }
@@ -471,6 +591,566 @@
         btns.forEach(b => { if (b) b.disabled = false; });
       } finally {
         salvandoOS = false;
+      }
+    }
+
+    /* ==================================================================
+       HELPERS das seções novas (KM / Fechamento / Equipe)
+       ================================================================== */
+    // só http/https vira link (nada de javascript:)
+    const urlOk = (v) => { if (!v) return null; const s = String(v).trim(); return /^https?:\/\//i.test(s) ? s : null; };
+    const linkSeguro = (v, rotulo) => {
+      const u = urlOk(v);
+      return u ? `<a href="${esc(u)}" target="_blank" rel="noopener" style="color:#58a6ff">${esc(rotulo)} ↗</a>` : "";
+    };
+    const temTexto = (v) => v != null && String(v).trim() !== "";
+    // conta URLs http(s) no Note Fotos_Evidencia — uma por linha e/ou separadas por vírgula/;
+    const contarFotos = (note) => !note ? 0
+      : String(note).split(/[\n,;]+/).map(s => s.trim()).filter(s => /^https?:\/\//i.test(s)).length;
+    // preenchido E realmente numérico — número inválido vira "—" na tela, nunca 0
+    const ehNumOS = (v) => v != null && v !== "" && isFinite(Number(v));
+    const celNum = (v, casas) => ehNumOS(v)
+      ? Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: casas == null ? 2 : casas })
+      : "—";
+    // DateTime ISO -> valor de <input type=datetime-local> (hora LOCAL)
+    const toDTLocal = (s) => {
+      if (!s) return ""; const d = new Date(s); if (isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
+    };
+    const liderNomeDe = (f) => f.Lider_EletricistaLookupId != null
+      ? (nomeTecnico[f.Lider_EletricistaLookupId] || ("técnico #" + f.Lider_EletricistaLookupId)) : "—";
+
+    // relê a OS do servidor e atualiza tabela/KPIs — nunca confiar no eco local
+    async function relerOS(id) {
+      const sid = await EG.resolveSite();
+      const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + id + "?expand=fields");
+      itemMap[id] = novo;
+      const i = todas.findIndex(x => String(x.id) === String(id));
+      if (i > -1) todas[i] = novo;
+      indicadores(todas);
+      aplicarFiltro();
+      return novo;
+    }
+
+    // variante de popularChoice para choices de OUTRA lista (recebe as opções direto).
+    // Mesmas regras: valor atual preservado mesmo fora da lista; sem choices -> disabled.
+    function popularChoiceDe(sel, ops, atual, rotuloVazio) {
+      sel.innerHTML = "";
+      const vazio = document.createElement("option");
+      vazio.value = ""; vazio.textContent = rotuloVazio || "(vazio)"; sel.appendChild(vazio);
+      const lista = Array.isArray(ops) ? ops.slice() : [];
+      if (atual != null && atual !== "" && !lista.includes(atual)) lista.unshift(atual);
+      lista.forEach(v => { const op = document.createElement("option"); op.value = v; op.textContent = v; sel.appendChild(op); });
+      if (!Array.isArray(ops)) { sel.disabled = true; sel.title = "choices não carregados — recarregue a página"; }
+      sel.value = atual == null ? "" : String(atual);
+    }
+
+    /* ==================================================================
+       FRENTE A — KM ENCADEADO
+       O odômetro de uma OS começa onde a anterior terminou (KM_Inicial =
+       KM_Final da OS_Anterior). "Herdar KM" grava o valor e marca
+       KM_Herdado=true, que BLOQUEIA a edição manual de KM_Inicial; só
+       "Romper cadeia" (justificativa OBRIGATÓRIA) desbloqueia — e o
+       rompimento cria automaticamente uma OS de logística de retorno à base,
+       encadeada na OS rompida.
+       ================================================================== */
+    function blocoKM(f) {
+      const ant = f.OS_AnteriorLookupId != null ? (itemMap[String(f.OS_AnteriorLookupId)] || null) : null;
+      const antTitle = f.OS_AnteriorLookupId == null ? "—"
+        : ((ant && (ant.fields || {}).Title) || ("OS #" + f.OS_AnteriorLookupId));
+      const antKmFinal = ant ? (ant.fields || {}).KM_Final : null;
+      const podeHerdar = !ehNumOS(f.KM_Inicial) && f.OS_AnteriorLookupId != null && ehNumOS(antKmFinal);
+      const herdado = f.KM_Herdado === true;
+      const rompida = f.Cadeia_KM_Rompida === true;
+      const cadeia = rompida ? "cadeia rompida"
+        : (herdado ? "KM herdado da OS anterior"
+        : (f.OS_AnteriorLookupId != null ? "cadeia definida (KM não herdado)" : "sem cadeia"));
+      const corCadeia = rompida ? "#F85149" : (herdado ? "#22B573" : "#8b949e");
+      return `
+        <div class="grupo">KM (cadeia entre OS)</div>
+        <dl>
+          <dt>OS anterior</dt><dd>${esc(antTitle)}</dd>
+          <dt>Líder eletricista</dt><dd>${esc(liderNomeDe(f))}</dd>
+          <dt>KM inicial</dt><dd>${esc(celNum(f.KM_Inicial, 1))}${herdado ? ' <span class="ro">herdado</span>' : ""}</dd>
+          <dt>KM final</dt><dd>${esc(celNum(f.KM_Final, 1))}</dd>
+          <dt>Cadeia</dt><dd><span class="badge" style="border-color:${corCadeia};color:${corCadeia}">${esc(cadeia)}</span></dd>
+          ${ehNumOS(f.KM_Divergencia_Pct) ? `<dt>Divergência de KM</dt><dd>${esc(celNum(f.KM_Divergencia_Pct, 2))} %</dd>` : ""}
+          ${f.Alerta_KM_Divergente === true ? `<dt>Alerta</dt><dd><span class="badge" style="border-color:#F85149;color:#F85149">KM divergente (&gt;20%)</span></dd>` : ""}
+          ${rompida && temTexto(f.Justificativa_Rompimento_KM) ? `<dt>Justificativa do rompimento</dt><dd>${esc(f.Justificativa_Rompimento_KM)}</dd>` : ""}
+          ${rompida && urlOk(f.Foto_Rompimento_KM_URL) ? `<dt>Foto do rompimento</dt><dd>${linkSeguro(f.Foto_Rompimento_KM_URL, "abrir foto")}</dd>` : ""}
+          ${f.OS_Logistica === true ? `<dt>Tipo</dt><dd><span class="badge" style="border-color:#A371F7;color:#A371F7">OS de logística</span></dd>` : ""}
+        </dl>
+        <div class="ed-btns" style="margin-top:8px">
+          <button id="kmHerdar" class="sec" ${podeHerdar ? "" : "hidden"}>Herdar KM da OS anterior</button>
+          <button id="kmRomper" class="sec" ${herdado ? "" : "hidden"}>Romper cadeia</button>
+        </div>
+        <div id="kmRompForm" class="ed" hidden>
+          <label>Justificativa do rompimento (obrigatória) <textarea id="kmRompJust"></textarea></label>
+          <!-- captura da foto pelo celular é integração pendente — hoje cola-se a URL -->
+          <label>URL da foto (opcional) <input type="url" id="kmRompFoto" placeholder="https://..." /></label>
+          <div class="ed-btns">
+            <button id="kmRompConfirmar">Confirmar rompimento</button>
+            <button id="kmRompCancelar" class="sec">Cancelar</button>
+          </div>
+        </div>
+        <div id="kmMsg" class="ed-msg"></div>`;
+    }
+
+    function ligarKM(o) {
+      const h = $("kmHerdar"), r = $("kmRomper");
+      if (!h || !r) return;
+      h.onclick = () => herdarKM(o);
+      r.onclick = () => { $("kmRompForm").hidden = false; r.hidden = true; };
+      $("kmRompCancelar").onclick = () => {
+        $("kmRompForm").hidden = true;
+        if ((o.fields || {}).KM_Herdado === true) r.hidden = false;
+      };
+      $("kmRompConfirmar").onclick = () => romperCadeia(o);
+    }
+
+    let kmOcupado = false;
+    async function herdarKM(o) {
+      if (kmOcupado) return;
+      const msg = $("kmMsg");
+      const f = o.fields || {};
+      const ant = f.OS_AnteriorLookupId != null ? itemMap[String(f.OS_AnteriorLookupId)] : null;
+      const kmAnt = ant ? (ant.fields || {}).KM_Final : null;
+      if (!ehNumOS(kmAnt)) { msg.className = "ed-msg err"; msg.textContent = "A OS anterior não tem KM final numérico."; return; }
+      try {
+        kmOcupado = true;
+        $("kmHerdar").disabled = true;
+        msg.className = "ed-msg"; msg.textContent = "Gravando herança de KM...";
+        // herança: KM_Inicial congelado do KM_Final da OS anterior; KM_Herdado
+        // bloqueia a edição manual (só Romper cadeia desbloqueia)
+        await EG.patchItemFields("OrdensDeServico", o.id, { KM_Inicial: Number(kmAnt), KM_Herdado: true });
+        const novo = await relerOS(o.id);
+        openDrawer(novo);
+        setStatus("OS " + (((novo.fields || {}).Title) || o.id) + ": KM inicial herdado da OS anterior (" + celNum(kmAnt, 1) + ").");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+        if ($("kmHerdar")) $("kmHerdar").disabled = false;
+      } finally { kmOcupado = false; }
+    }
+
+    async function romperCadeia(o) {
+      if (kmOcupado) return;
+      const msg = $("kmMsg");
+      const f = o.fields || {};
+      const just = ($("kmRompJust").value || "").trim();
+      const foto = ($("kmRompFoto").value || "").trim();
+      if (!just) {
+        msg.className = "ed-msg err"; msg.textContent = "Justificativa é obrigatória para romper a cadeia.";
+        $("kmRompJust").focus();
+        return;
+      }
+      const btns = [$("kmRompConfirmar"), $("kmRompCancelar")];
+      try {
+        kmOcupado = true;
+        btns.forEach(b => { if (b) b.disabled = true; });
+        msg.className = "ed-msg"; msg.textContent = "Gravando rompimento...";
+        // 1) marca o rompimento na própria OS — KM_Herdado=false desbloqueia KM_Inicial
+        const campos = { Cadeia_KM_Rompida: true, KM_Herdado: false, Justificativa_Rompimento_KM: just };
+        if (foto) campos.Foto_Rompimento_KM_URL = foto; // vazio fica FORA do payload (nunca gravar "" por cima)
+        await EG.patchItemFields("OrdensDeServico", o.id, campos);
+        // 2) cria a OS de logística de retorno à base: o rompimento significa que
+        // o veículo saiu do fluxo previsto — o retorno vira OS própria, encadeada
+        // nesta (OS_Anterior aponta para a OS rompida).
+        msg.textContent = "Criando OS de logística de retorno...";
+        const camposLog = {
+          Title: "LOG-" + (f.Title || o.id) + "-RETORNO",
+          OS_Logistica: true,
+          Descricao: "OS de logística criada automaticamente pelo rompimento da cadeia de KM da OS " +
+                     (f.Title || o.id) + " — retorno do veículo à base. Justificativa do rompimento: " + just,
+          OS_AnteriorLookupId: Number(o.id)
+        };
+        // lookups só entram se existirem na OS de origem (nunca enviar vazio)
+        if (f.ClienteLookupId != null) camposLog.ClienteLookupId = Number(f.ClienteLookupId);
+        if (f.TecnicoLookupId != null) camposLog.TecnicoLookupId = Number(f.TecnicoLookupId);
+        // Status NÃO vai no create: fica o default da lista (o dono do campo é o 1A)
+        const criado = await EG.createItem("OrdensDeServico", camposLog);
+        // relê a OS criada com fields expandidos e a coloca na tabela local
+        let criadoFull = criado;
+        try {
+          const sid = await EG.resolveSite();
+          criadoFull = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + criado.id + "?expand=fields");
+        } catch (e2) { console.warn("OS de logística criada, mas a releitura falhou:", e2.message); }
+        if (criadoFull && criadoFull.id) { itemMap[criadoFull.id] = criadoFull; todas.unshift(criadoFull); }
+        const novo = await relerOS(o.id);
+        openDrawer(novo);
+        setStatus("Cadeia de KM rompida na OS " + (f.Title || o.id) + " — criada a OS de logística " +
+                  ((((criadoFull || {}).fields || {}).Title) || camposLog.Title) + ".");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha: " + e.message;
+        btns.forEach(b => { if (b) b.disabled = false; });
+      } finally { kmOcupado = false; }
+    }
+
+    /* ==================================================================
+       FRENTE B — FECHAMENTO DA OS (ação explícita, padrão decidirVeiculo
+       de fechamentos.html)
+
+       *** CONFLITO DE DONO DE CAMPO — LEIA ANTES DE MEXER ***
+       Status pertence ao cenário Make "1A" no mapa de dono de campo
+       (CAMPOS_1A), assim como DataConclusao. Este fechamento só é seguro
+       porque o 1A está PAUSADO (estado atual do projeto) — com o 1A ativo,
+       o valor gravado aqui seria sobrescrito silenciosamente no ciclo
+       seguinte do sync. Conflito registrado em docs/SPEC-MODULO-OS-MEI.md
+       §3.4. NÃO remova Status/DataConclusao de CAMPOS_1A: o editor genérico
+       (salvarOS) continua proibido de tocá-los; o "Concluir OS" é ação
+       explícita à parte, com pré-requisitos verificados aqui.
+       ================================================================== */
+    function reqFechamento(f) {
+      const fotos = contarFotos(f.Fotos_Evidencia);
+      return { laudo: temTexto(f.Laudo_URL), fotos, fotosOk: fotos >= 2, assinatura: temTexto(f.Assinatura_URL) };
+    }
+    function faltasFechamento(r) {
+      const faltas = [];
+      if (!r.laudo) faltas.push("laudo (Laudo_URL)");
+      if (!r.fotosOk) faltas.push("fotos de evidência (" + r.fotos + " de 2 mínimas em Fotos_Evidencia)");
+      if (!r.assinatura) faltas.push("assinatura do cliente (Assinatura_URL)");
+      return faltas;
+    }
+    function blocoFechamento(f) {
+      const r = reqFechamento(f);
+      const statusFinal = f.Status === "Concluída" || f.Status === "Cancelada";
+      const faltas = faltasFechamento(r);
+      const tudoOk = faltas.length === 0;
+      const item = (ok, txt) => `<li class="${ok ? "ok" : "falta"}">${ok ? "✔" : "✘"} ${esc(txt)}</li>`;
+      return `
+        <div class="grupo">Fechamento</div>
+        <ul class="chk">
+          ${item(r.laudo, "Laudo anexado (Laudo_URL)")}
+          ${item(r.fotosOk, "Fotos de evidência: " + r.fotos + " (mínimo 2)")}
+          ${item(r.assinatura, "Assinatura do cliente (Assinatura_URL)")}
+        </ul>
+        <div style="margin-top:6px">${[linkSeguro(f.Laudo_URL, "abrir laudo"), linkSeguro(f.Assinatura_URL, "abrir assinatura")].filter(Boolean).join(" &nbsp; ")}</div>
+        <div class="ed" style="margin-top:8px">
+          <label>URL do laudo <input type="url" id="fcLaudo" placeholder="https://..." /></label>
+          <label>URL da assinatura <input type="url" id="fcAssin" placeholder="https://..." /></label>
+          <div class="ed-btns">
+            <button id="fcSalvarLinks" class="sec">Salvar links</button>
+            <button id="fcConcluir" ${(tudoOk && !statusFinal) ? "" : "disabled"}>Concluir OS</button>
+          </div>
+          <div id="fcMsg" class="ed-msg">${statusFinal
+            ? esc("OS já está “" + f.Status + "” — conclusão desabilitada.")
+            : (tudoOk ? "" : esc("Falta para concluir: " + faltas.join("; ") + "."))}</div>
+        </div>`;
+    }
+
+    function ligarFechamento(o) {
+      if (!$("fcSalvarLinks")) return;
+      const f = o.fields || {};
+      // valores atuais via .value (nada de valor de usuário interpolado em atributo)
+      $("fcLaudo").value = f.Laudo_URL ?? "";
+      $("fcAssin").value = f.Assinatura_URL ?? "";
+      $("fcSalvarLinks").onclick = () => salvarLinksFechamento(o);
+      $("fcConcluir").onclick = () => concluirOS(o);
+    }
+
+    let fcOcupado = false;
+    async function salvarLinksFechamento(o) {
+      if (fcOcupado) return;
+      const msg = $("fcMsg");
+      const f = o.fields || {};
+      // PATCH mínimo: só o que mudou. Input esvaziado NÃO grava "" por cima —
+      // apagar laudo/assinatura não é fluxo desta tela.
+      const campos = {};
+      const laudo = $("fcLaudo").value.trim();
+      const assin = $("fcAssin").value.trim();
+      if (laudo !== "" && laudo !== String(f.Laudo_URL ?? "")) campos.Laudo_URL = laudo;
+      if (assin !== "" && assin !== String(f.Assinatura_URL ?? "")) campos.Assinatura_URL = assin;
+      if (!Object.keys(campos).length) {
+        msg.className = "ed-msg"; msg.textContent = "Nada para gravar (campo esvaziado não apaga o valor atual).";
+        return;
+      }
+      try {
+        fcOcupado = true;
+        msg.className = "ed-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("OrdensDeServico", o.id, campos);
+        const novo = await relerOS(o.id); // releitura do servidor — nunca o eco local
+        openDrawer(novo);
+        setStatus("OS " + (((novo.fields || {}).Title) || o.id) + ": " + Object.keys(campos).join(", ") + " atualizado(s).");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+      } finally { fcOcupado = false; }
+    }
+
+    async function concluirOS(o) {
+      if (fcOcupado) return;
+      const msg = $("fcMsg");
+      const f = o.fields || {};
+      // revalida com o estado em memória — o botão pode ter ficado habilitado com dados velhos
+      const faltas = faltasFechamento(reqFechamento(f));
+      if (f.Status === "Concluída" || f.Status === "Cancelada") {
+        msg.className = "ed-msg err"; msg.textContent = "OS já está “" + f.Status + "”."; return;
+      }
+      if (faltas.length) {
+        msg.className = "ed-msg err"; msg.textContent = "Não é possível concluir. Falta: " + faltas.join("; ") + ".";
+        return;
+      }
+      try {
+        fcOcupado = true;
+        $("fcConcluir").disabled = true;
+        msg.className = "ed-msg"; msg.textContent = "Concluindo OS...";
+        // PATCH explícito (padrão decidirVeiculo) — ver o comentário de conflito
+        // de dono de campo no topo desta Frente B: Status e DataConclusao são do
+        // 1A; esta escrita só existe porque o 1A está pausado.
+        await EG.patchItemFields("OrdensDeServico", o.id, {
+          Status: "Concluída",
+          DataConclusao: new Date().toISOString()
+        });
+        const novo = await relerOS(o.id);
+        openDrawer(novo);
+        setStatus("OS " + (((novo.fields || {}).Title) || o.id) + " concluída.");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao concluir: " + e.message;
+        if ($("fcConcluir")) $("fcConcluir").disabled = false;
+      } finally { fcOcupado = false; }
+    }
+
+    /* ==================================================================
+       FRENTE C — EQUIPE DA OS (lista OS_Equipe — entrada individual)
+
+       GATILHO FINANCEIRO: Elegivel_Financeiro = Selfie_URL preenchida E
+       Diario_Preenchido. É recalculado e gravado a CADA salvamento da linha;
+       a medição (fora desta tela) só puxa horas de linha elegível que também
+       tenha De_Acordo_Lider. Nada aqui soma dinheiro — só marca elegibilidade.
+       ================================================================== */
+    function blocoEquipe() {
+      return `
+        <div class="grupo">Equipe</div>
+        ${equipeCarregada ? "" : '<div class="ed-msg err">Lista OS_Equipe não carregou — recarregue a página para gerenciar a equipe.</div>'}
+        <div id="eqLista"></div>
+        <div class="ed" style="margin-top:10px">
+          <div class="ed-grid">
+            <label>Adicionar técnico <select id="eqAddTec"></select></label>
+            <label>Função <select id="eqAddFuncao"></select></label>
+          </div>
+          <div class="ed-btns"><button id="eqAddBtn" class="sec">Adicionar à equipe</button></div>
+          <div id="eqMsg" class="ed-msg"></div>
+        </div>`;
+    }
+
+    function ligarEquipe(o) {
+      if (!$("eqLista")) return;
+      popularSelectTecnicos($("eqAddTec"), null, "(escolha o técnico)");
+      popularChoiceDe($("eqAddFuncao"), choiceEq.Funcao, null, "(escolha a função)");
+      const add = $("eqAddBtn");
+      add.disabled = !equipeCarregada; // sem a lista carregada não arriscamos criar duplicata
+      add.onclick = () => addMembroEquipe(o);
+      renderEquipe(o);
+    }
+
+    function renderEquipe(o) {
+      const cont = $("eqLista");
+      if (!cont) return;
+      const linhas = equipe.filter(r => String((r.fields || {}).OSLookupId ?? "") === String(o.id));
+      if (!linhas.length) {
+        cont.innerHTML = equipeCarregada ? '<div class="ed-msg">Nenhum membro na equipe desta OS.</div>' : "";
+        return;
+      }
+      cont.innerHTML = linhas.map(r => {
+        const f = r.fields || {};
+        const nome = f.TecnicoLookupId != null
+          ? (nomeTecnico[f.TecnicoLookupId] || ("técnico #" + f.TecnicoLookupId))
+          : (f.Title || "—");
+        const eleg = f.Elegivel_Financeiro === true;
+        const acordo = f.De_Acordo_Lider === true;
+        const corEleg = eleg ? "#22B573" : "#8b949e";
+        return `
+        <div class="eq-row" data-eqid="${esc(r.id)}">
+          <div class="eq-top">${esc(nome)}
+            <span class="badge" style="border-color:${corEleg};color:${corEleg}">${eleg ? "elegível financeiro" : "não elegível"}</span>
+            ${acordo ? '<span class="badge" style="border-color:#22B573;color:#22B573">de acordo do líder</span>' : ""}
+          </div>
+          <div class="ed" style="margin-top:8px">
+            <div class="ed-grid">
+              <label>Função <select data-f="Funcao"></select></label>
+              <label>Horas trabalhadas <input type="number" step="0.01" data-f="Horas" /></label>
+              <label>Check-in <input type="datetime-local" data-f="Checkin" /></label>
+              <label>Check-out <input type="datetime-local" data-f="Checkout" /></label>
+            </div>
+            <label style="flex-direction:row;align-items:center;gap:8px"><input type="checkbox" data-f="EPI" style="width:auto" /> EPI checklist OK</label>
+            ${f.EPI_Checklist_JSON ? `<details><summary class="raw-toggle">ver EPI JSON</summary><pre>${esc(f.EPI_Checklist_JSON)}</pre></details>` : ""}
+            <label>Diário técnico <textarea data-f="Diario"></textarea></label>
+            <div class="ed-msg">Selfie: ${urlOk(f.Selfie_URL) ? linkSeguro(f.Selfie_URL, "abrir selfie")
+              : (temTexto(f.Selfie_URL) ? esc(String(f.Selfie_URL)) : "pendente — captura mobile é integração futura")}</div>
+            ${acordo ? `<div class="ed-msg">De acordo em ${esc(fmtDT(f.De_Acordo_Lider_Em) || "—")} por ${esc(f.De_Acordo_Lider_Por || "—")}${ehNumOS(f.Valor_Hora_Snapshot) ? " · valor-hora congelado: " + esc(EG.BRL(Number(f.Valor_Hora_Snapshot))) : ""}</div>` : ""}
+            <div class="ed-btns">
+              <button data-f="Salvar" class="sec">Salvar linha</button>
+              <button data-f="Acordo" ${acordo ? "disabled" : ""}>De acordo do líder</button>
+            </div>
+            <div class="ed-msg" data-f="Msg"></div>
+          </div>
+        </div>`;
+      }).join("");
+
+      // valores + listeners via .value/.checked — nada de valor de usuário em atributo HTML
+      linhas.forEach(r => {
+        const row = cont.querySelector('[data-eqid="' + CSS.escape(String(r.id)) + '"]');
+        if (!row) return;
+        const f = r.fields || {};
+        const q = (k) => row.querySelector('[data-f="' + k + '"]');
+        popularChoiceDe(q("Funcao"), choiceEq.Funcao, f.Funcao);
+        q("Horas").value = ehNumOS(f.Horas_Trabalhadas) ? String(Number(f.Horas_Trabalhadas)) : "";
+        q("Checkin").value = toDTLocal(f.Checkin_Hora);
+        q("Checkout").value = toDTLocal(f.Checkout_Hora);
+        q("EPI").checked = f.EPI_Checklist_OK === true;
+        q("Diario").value = f.Diario_Tecnico ?? "";
+        // horas = checkout − checkin em horas (2 casas) quando ambos existem;
+        // o valor calculado é sugestão preenchida — o campo segue editável à mão
+        const recalc = () => {
+          const a = q("Checkin").value, b = q("Checkout").value;
+          if (!a || !b) return;
+          const h = (new Date(b) - new Date(a)) / 3600000;
+          if (isFinite(h) && h >= 0) q("Horas").value = h.toFixed(2);
+        };
+        q("Checkin").addEventListener("change", recalc);
+        q("Checkout").addEventListener("change", recalc);
+        q("Salvar").onclick = () => salvarLinhaEquipe(o, r.id);
+        q("Acordo").onclick = () => deAcordoLider(o, r.id);
+      });
+    }
+
+    // relê a linha de OS_Equipe do servidor (nunca confiar no eco local)
+    async function relerLinhaEquipe(id) {
+      const sid = await EG.resolveSite();
+      const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OS_Equipe") + "/items/" + id + "?expand=fields");
+      const i = equipe.findIndex(x => String(x.id) === String(id));
+      if (i > -1) equipe[i] = novo; else equipe.push(novo);
+      return novo;
+    }
+
+    let eqOcupado = false;
+    async function salvarLinhaEquipe(o, eqId) {
+      if (eqOcupado) return;
+      const r = equipe.find(x => String(x.id) === String(eqId));
+      const row = $("eqLista") && $("eqLista").querySelector('[data-eqid="' + CSS.escape(String(eqId)) + '"]');
+      if (!r || !row) return;
+      const q = (k) => row.querySelector('[data-f="' + k + '"]');
+      const msg = q("Msg");
+      const f = r.fields || {};
+      const campos = {};
+
+      // Função (choice) — select desabilitado (choices não carregados) não grava;
+      // "" não apaga a função atual
+      const selF = q("Funcao");
+      if (selF && !selF.disabled) {
+        const v = selF.value;
+        if (v !== "" && v !== String(f.Funcao ?? "")) campos.Funcao = v;
+      }
+      // check-in/out: datetime-local -> ISO. Limpar o input APAGA o horário no
+      // servidor (null) — limpeza INTENCIONAL: é o jeito de corrigir um
+      // check-in/checkout registrado por engano.
+      const dtCampo = (k, campo) => {
+        const el = q(k); if (!el) return;
+        const antes = toDTLocal(f[campo]);
+        if (antes !== el.value) campos[campo] = el.value === "" ? null : new Date(el.value).toISOString();
+      };
+      dtCampo("Checkin", "Checkin_Hora");
+      dtCampo("Checkout", "Checkout_Hora");
+      // EPI
+      if (q("EPI").checked !== (f.EPI_Checklist_OK === true)) campos.EPI_Checklist_OK = q("EPI").checked;
+      // Diário + Diario_Preenchido automático (true se texto não vazio). Apagar o
+      // texto zera o diário e derruba Diario_Preenchido — limpeza intencional.
+      const diario = q("Diario").value;
+      if (diario !== String(f.Diario_Tecnico ?? "")) campos.Diario_Tecnico = diario;
+      const diarioPreenchido = diario.trim() !== "";
+      if (diarioPreenchido !== (f.Diario_Preenchido === true)) campos.Diario_Preenchido = diarioPreenchido;
+      // horas trabalhadas — não-numérico é tratado como vazio (nunca vira 0 silencioso)
+      const hv = q("Horas").value;
+      const hAntes = ehNumOS(f.Horas_Trabalhadas) ? String(Number(f.Horas_Trabalhadas)) : "";
+      const hAgora = (hv === "" || !isFinite(Number(hv))) ? "" : String(Number(hv));
+      if (hAntes !== hAgora) campos.Horas_Trabalhadas = hAgora === "" ? null : Number(hAgora);
+      // GATILHO FINANCEIRO (ver comentário no topo da Frente C): elegibilidade
+      // recalculada a cada salvamento — selfie preenchida E diário preenchido.
+      const eleg = temTexto(f.Selfie_URL) && diarioPreenchido;
+      if (eleg !== (f.Elegivel_Financeiro === true)) campos.Elegivel_Financeiro = eleg;
+
+      if (!Object.keys(campos).length) { msg.className = "ed-msg"; msg.textContent = "Nada foi alterado."; return; }
+      try {
+        eqOcupado = true;
+        msg.className = "ed-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("OS_Equipe", r.id, campos);
+        await relerLinhaEquipe(r.id); // releitura do servidor — nunca o eco local
+        renderEquipe(o);
+        setStatus("Equipe da OS " + (((o.fields || {}).Title) || o.id) + ": linha atualizada (" + Object.keys(campos).join(", ") + ").");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+      } finally { eqOcupado = false; }
+    }
+
+    async function deAcordoLider(o, eqId) {
+      if (eqOcupado) return;
+      const r = equipe.find(x => String(x.id) === String(eqId));
+      const row = $("eqLista") && $("eqLista").querySelector('[data-eqid="' + CSS.escape(String(eqId)) + '"]');
+      if (!r || !row) return;
+      const q = (k) => row.querySelector('[data-f="' + k + '"]');
+      const msg = q("Msg");
+      const f = r.fields || {};
+      if (f.De_Acordo_Lider === true) { msg.className = "ed-msg"; msg.textContent = "De acordo já registrado."; return; }
+      const nome = f.TecnicoLookupId != null ? (nomeTecnico[f.TecnicoLookupId] || ("técnico #" + f.TecnicoLookupId)) : (f.Title || r.id);
+      try {
+        eqOcupado = true;
+        q("Acordo").disabled = true;
+        msg.className = "ed-msg"; msg.textContent = "Gravando de acordo...";
+        const u = await EG.me(); // nome (email): dois homônimos ficariam indistinguíveis na auditoria
+        const campos = {
+          De_Acordo_Lider: true,
+          De_Acordo_Lider_Em: new Date().toISOString(),
+          De_Acordo_Lider_Por: (u.nome || "(usuário não identificado)") + (u.email ? " (" + u.email + ")" : "")
+        };
+        // SNAPSHOT do valor-hora: congela o Valor_Hora_Contratado de HOJE na linha.
+        // Sem o snapshot, um reajuste futuro em TecnicosMEI mudaria RETROATIVAMENTE
+        // o valor de medições já acordadas — o de acordo fecha o preço junto.
+        const tec = tecnicosOS.find(t => String(t.id) === String(f.TecnicoLookupId));
+        const vh = tec ? (tec.fields || {}).Valor_Hora_Contratado : null;
+        let avisoVh = "";
+        if (ehNumOS(vh)) campos.Valor_Hora_Snapshot = Number(vh);
+        else avisoVh = " ATENÇÃO: técnico sem Valor_Hora_Contratado — snapshot NÃO gravado (cadastre o valor-hora em TecnicosMEI).";
+        await EG.patchItemFields("OS_Equipe", r.id, campos);
+        await relerLinhaEquipe(r.id); // releitura do servidor — nunca o eco local
+        renderEquipe(o);
+        setStatus("De acordo do líder registrado na linha de " + nome + "." + avisoVh, avisoVh ? "err" : "");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+        if (q("Acordo")) q("Acordo").disabled = false;
+      } finally { eqOcupado = false; }
+    }
+
+    async function addMembroEquipe(o) {
+      if (eqOcupado) return;
+      const msg = $("eqMsg");
+      const tecId = $("eqAddTec").value;
+      const func = $("eqAddFuncao").value;
+      if (!tecId) { msg.className = "ed-msg err"; msg.textContent = "Escolha o técnico."; return; }
+      if (!func) { msg.className = "ed-msg err"; msg.textContent = "Escolha a função."; return; }
+      const f = o.fields || {};
+      const ja = equipe.some(r => String((r.fields || {}).OSLookupId ?? "") === String(o.id) &&
+                                  String((r.fields || {}).TecnicoLookupId ?? "") === String(tecId));
+      if (ja) { msg.className = "ed-msg err"; msg.textContent = "Este técnico já está na equipe desta OS."; return; }
+      const nomeTec = nomeTecnico[tecId] || ("técnico #" + tecId);
+      try {
+        eqOcupado = true;
+        $("eqAddBtn").disabled = true;
+        msg.className = "ed-msg"; msg.textContent = "Criando linha de equipe...";
+        const criado = await EG.createItem("OS_Equipe", {
+          Title: (f.Title || ("OS #" + o.id)) + " · " + nomeTec,
+          OSLookupId: Number(o.id),
+          TecnicoLookupId: Number(tecId),
+          Funcao: func
+        });
+        await relerLinhaEquipe(criado.id); // entra no cache já com fields expandidos
+        renderEquipe(o);
+        $("eqAddTec").value = ""; $("eqAddFuncao").value = "";
+        msg.className = "ed-msg"; msg.textContent = "";
+        setStatus("Técnico " + nomeTec + " adicionado à equipe da OS " + (f.Title || o.id) + ".");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao criar: " + e.message;
+      } finally {
+        eqOcupado = false;
+        if ($("eqAddBtn")) $("eqAddBtn").disabled = !equipeCarregada;
       }
     }
 
