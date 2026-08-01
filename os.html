@@ -53,6 +53,8 @@
       <a href="dashboard.html">Dashboard</a>
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -306,9 +308,12 @@
        cenário 1A (ver CAMPOS_1A acima) ficam fora, e ainda há uma trava
        em salvarOS() contra regressão futura.
        ================================================================== */
-    // yyyy-mm-dd LOCAL para o input date (mesma lógica da dKey de fechamentos.html)
+    // yyyy-mm-dd LOCAL para o input date (mesma lógica da dKey de fechamentos.html).
+    // Data-pura (meia-noite UTC, típico de Date only) usa o próprio AAAA-MM-DD do ISO —
+    // convertê-la para local mostraria o dia ANTERIOR em Brasília.
     const toDateInput = (s) => {
       if (!s) return ""; const d = new Date(s); if (isNaN(d.getTime())) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
       const p = (n) => String(n).padStart(2, "0");
       return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
     };

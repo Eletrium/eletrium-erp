@@ -83,6 +83,8 @@
       <a href="dashboard.html" class="active">Dashboard</a>
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -186,7 +188,12 @@
     const num = (v) => { const n = (typeof v === "number") ? v : (v == null || v === "" ? 0 : Number(v)); return Number.isFinite(n) ? n : 0; };
     const custoOS = (f) => num(f.Custo_MO_Realizado) + num(f.Custo_EPI_OS) + num(f.Custo_Ferr_OS);
     const receitaOS = (f) => num(f.ValorOS);
-    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+    // Data-pura (meia-noite UTC, típico de campo Date only) vira meia-noite LOCAL:
+    // senão a OS concluída em "01/07" cairia no mês de junho em Brasília.
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
     const mIdx = (d) => d.getFullYear() * 12 + d.getMonth();           // índice absoluto de mês
     const mLabel = (i) => MESES[((i % 12) + 12) % 12] + "/" + String(Math.floor(i / 12) % 100).padStart(2, "0");
     // margem% segura: retorna null quando a receita é 0 (nunca Infinity/NaN)

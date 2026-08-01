@@ -46,6 +46,8 @@
       <a href="dashboard.html">Dashboard</a>
       <a href="habilitacoes.html" class="active">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -108,7 +110,12 @@
     let quals = [], tecnicos = [], exigencias = [], nomeTecnico = {}, qualMap = {};
 
     /* ===== helpers de data — blindados contra nulo/inválido ===== */
-    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+    // Data-pura (meia-noite UTC, típico de campo Date only) vira meia-noite LOCAL:
+    // senão um vencimento "12/06" contaria como 11/06 em Brasília (1 dia a menos).
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
     const hoje0 = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
     // Normaliza AS DUAS pontas para meia-noite: senão a contagem varia com a hora do dia
     // e uma certificação que vence "em 30 dias" cairia ora em atenção, ora em válida.

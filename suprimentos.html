@@ -59,6 +59,8 @@
       <a href="dashboard.html">Dashboard</a>
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -171,10 +173,13 @@
     const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
     const fmtPct = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
     const brl = (v) => v == null ? "—" : EG.BRL(Number(v));
-    // ISO do Graph -> valor de <input type=date> na data LOCAL (mesma data que EG.fmtDate exibe)
+    // ISO do Graph -> valor de <input type=date> na data LOCAL (mesma data que EG.fmtDate exibe).
+    // Data-pura (meia-noite UTC, típico de Date only) usa o próprio AAAA-MM-DD do ISO —
+    // convertê-la para local mostraria o dia ANTERIOR em Brasília.
     const isoParaInputDate = (s) => {
       if (!s) return "";
       const d = new Date(s); if (isNaN(d.getTime())) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
       const p = (n) => String(n).padStart(2, "0");
       return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
     };
@@ -197,7 +202,7 @@
       $("secOrc").hidden = !orc; $("secPrd").hidden = orc;
     });
 
-    /* ---------- carga (somente leitura) ---------- */
+    /* ---------- carga (leitura; a única escrita é a edição do orçamento no drawer) ---------- */
     const soft = (p, rot) => p.catch(e => { console.warn(rot + ": " + e.message); return []; });
 
     $("btnLoad").onclick = async () => {

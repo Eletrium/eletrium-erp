@@ -83,7 +83,18 @@ window.EG = (function () {
 
   // helpers de formatação
   const BRL = (n) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-  const fmtDate = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d) ? s : d.toLocaleDateString("pt-BR"); };
+  // Campo *Date only* do SharePoint volta do Graph como "AAAA-MM-DDT00:00:00Z".
+  // new Date() interpreta meia-noite UTC; em Brasília (UTC-3) isso é 21:00 do dia
+  // ANTERIOR — a tela exibiria/filtraria 1 dia a menos. Meia-noite UTC exata é
+  // tratada como data-pura e formatada em UTC (timestamps reais quase nunca caem
+  // exatamente em 00:00:00Z; para eles o comportamento local continua).
+  const ehDataPura = (s) => /T00:00(:00(\.0+)?)?(Z|\+00:00)$/.test(String(s));
+  const fmtDate = (s) => {
+    if (!s) return null;
+    const d = new Date(s);
+    if (isNaN(d)) return s;
+    return d.toLocaleDateString("pt-BR", ehDataPura(s) ? { timeZone: "UTC" } : undefined);
+  };
 
   // ---------------------------------------------------------------------------
   // Validação de rótulos de Choice hard-coded (guarda contra falha SILENCIOSA).
@@ -150,5 +161,5 @@ window.EG = (function () {
     el.innerHTML = html; el.hidden = false;
   }
 
-  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, validarChoices, renderAvisoChoices, renderAvisosChoices };
+  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, ehDataPura, validarChoices, renderAvisoChoices, renderAvisosChoices };
 })();

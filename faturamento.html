@@ -96,6 +96,7 @@
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
       <a href="faturamento.html" class="active">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -361,10 +362,13 @@
     const brlN = (v) => v == null ? "—" : EG.BRL(Number(v));
     const fmtPct = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
     const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
-    // ISO do Graph -> valor de <input type=date> na data LOCAL (mesma data que EG.fmtDate exibe)
+    // ISO do Graph -> valor de <input type=date> na data LOCAL (mesma data que EG.fmtDate exibe).
+    // Data-pura (meia-noite UTC, típico de Date only) usa o próprio AAAA-MM-DD do ISO —
+    // convertê-la para local mostraria o dia ANTERIOR em Brasília.
     const isoParaInputDate = (s) => {
       if (!s) return "";
       const d = new Date(s); if (isNaN(d.getTime())) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
       const p = (n) => String(n).padStart(2, "0");
       return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
     };
@@ -396,7 +400,7 @@
       $("secNfe").hidden = t !== "nfe";
     });
 
-    /* ---------- carga (SOMENTE LEITURA) ---------- */
+    /* ---------- carga (leitura; a única escrita é a edição do orçamento no drawer) ---------- */
     // uma lista que falha não derruba a tela inteira
     const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ": " + e.message); return []; });
 

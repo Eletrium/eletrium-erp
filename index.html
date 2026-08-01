@@ -74,6 +74,8 @@
       <a href="dashboard.html">Dashboard</a>
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
@@ -100,7 +102,7 @@
     };
     const GRAPH = "https://graph.microsoft.com/v1.0";
     const BRL = (n) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-    const fmtDate = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d) ? s : d.toLocaleDateString("pt-BR"); };
+    const fmtDate = EG.fmtDate; // central: trata date-only (meia-noite UTC) sem perder 1 dia no fuso
     // ==================================================
 
     const $ = (id) => document.getElementById(id);
