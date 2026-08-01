@@ -1,0 +1,1004 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Checklist</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <!--
+    ==========================================================================
+    CHECKLIST — execução guiada (técnico) + editor da árvore (gestor)
+
+    ⚠️ MAPA DE DONO DE CAMPO (ler antes de mexer):
+
+      Perguntas_Checklist (a ÁRVORE de perguntas)
+        - escrita AQUI, na aba "Editor (gestor)";
+        - também é sincronizada pelos cenários Make 1E/1E-B (SP→GS), hoje
+          PARADOS. Eles só LEEM o SharePoint e espelham no Google Sheets,
+          então não disputam escrita com esta tela — mas se um dia o sentido
+          inverter (GS→SP), este editor passa a ter concorrente.
+
+      OS_Respostas (as RESPOSTAS dadas em campo)
+        - escrita AQUI, na aba "Execução" (web);
+        - o cenário Make 1F (GS→SP, hoje INATIVO — fonte é o PWA de campo)
+          também grava nesta lista quando ativo. Quando o 1F reativar
+          haverá DOIS escritores de respostas: o PWA (via 1F) e esta tela.
+          Eles CONVIVEM porque o 1F só faz APPEND de linhas vindas do GS
+          (nunca edita/deleta), e esta tela também só faz append — a
+          leitura resolve a "resposta vigente" pegando a MAIS RECENTE por
+          Pergunta_ID. RISCO registrado: se PWA e web responderem a mesma
+          pergunta da mesma OS, as duas linhas ficam na trilha e a vigente
+          passa a ser a de Timestamp maior — comportamento intencional
+          (trilha de auditoria preservada), mas pode surpreender quem
+          espera 1 linha por pergunta.
+
+    REGRAS DE ESCRITA desta tela:
+      - Execução: só CREATE em OS_Respostas (append). NUNCA edita resposta:
+        "Corrigir" cria uma NOVA linha — a trilha é preservada e a leitura
+        considera a mais recente por Pergunta_ID.
+      - Editor: CREATE/PATCH em Perguntas_Checklist. Desativar = Ativo:false;
+        NUNCA deletar — respostas antigas referenciam a pergunta por
+        Pergunta_ID e apagar quebraria o histórico.
+      - PATCH mínimo (só campos alterados vs snapshot) + releitura do
+        servidor após gravar (padrão clientes.html).
+
+    LIMITES CONHECIDOS:
+      - Foto: aqui cola-se a URL da foto (validada http/https). Captura pela
+        câmera / EXIF de localização é integração futura do PWA mobile.
+      - Pergunta_Pai / Condicao_Exibicao existem no schema mas a exibição
+        condicional ainda NÃO é aplicada aqui (todas as perguntas ativas
+        aparecem) — é o mesmo estado do PWA; implementar junto.
+      - EG.listItems traz até 500 itens por lista (sem paginação). Para
+        OS_Respostas, que só cresce, isso vira limite real com o tempo.
+    ==========================================================================
+  -->
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    select, input[type=text], input[type=number], input[type=url] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit;
+    }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .toolbar .hint.right { margin-left: auto; }
+
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+    .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
+    .tab:hover { color: #e6edf3; }
+    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+
+    /* ===== aba Execução ===== */
+    .fase { background: #161b22; border: 1px solid #30363d; border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
+    .fase-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 16px; border-bottom: 1px solid #21262d; }
+    .fase-head .t { font-weight: 600; font-size: .98rem; }
+    .fase-head .cadeado { font-size: 1rem; }
+    .fase-head .prog-txt { color: #8b949e; font-size: .8rem; margin-left: auto; white-space: nowrap; }
+    .prog { flex: 0 0 160px; height: 8px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
+    .prog > div { height: 100%; background: #1f6feb; transition: width .2s; }
+    .fase.completa .prog > div { background: #22B573; }
+    .fase-body { padding: 12px 16px; }
+    /* fase bloqueada: cadeado + cinza — nada clicável até liberar */
+    .fase.bloq { opacity: .45; }
+    .fase.bloq .fase-body { pointer-events: none; filter: grayscale(1); }
+
+    .perg { border: 1px solid #21262d; border-radius: 8px; padding: 12px 14px; margin-bottom: 10px; background: #0d1117; }
+    .perg .pt { font-size: .92rem; margin-bottom: 8px; }
+    .perg .pt .ord { color: #8b949e; font-size: .78rem; margin-right: 6px; }
+    .chip { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 0 7px; font-size: .7rem; color: #8b949e; margin-left: 6px; white-space: nowrap; }
+    .chip.req { border-color: #f0883e55; color: #F0883E; }
+    .chip.par { border-color: #a371f755; color: #A371F7; }
+    .chip.nc  { border-color: #f8514955; color: #F85149; }
+
+    .ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .ctl input[type=text], .ctl input[type=url] { flex: 1 1 220px; }
+    .ctl input[type=number] { width: 130px; }
+    .ctl .un { color: #8b949e; font-size: .84rem; }
+    .btn-sn { min-width: 70px; }
+    .btn-sn.sel { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+    .foto-linha { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+    .foto-linha input { flex: 1 1 260px; }
+
+    .alerta-par { color: #F85149; font-size: .8rem; border: 1px solid #f8514955; background: #f8514918;
+                  border-radius: 6px; padding: 6px 10px; margin-top: 8px; }
+    .perg-msg { font-size: .78rem; color: #8b949e; margin-top: 6px; min-height: 1em; }
+    .perg-msg.err { color: #F85149; }
+
+    /* resposta já gravada (retomada de sessão) — travada, só "Corrigir" cria nova */
+    .resp { border-left: 3px solid #22B573; background: #161b22; border-radius: 6px; padding: 8px 12px; margin-top: 4px; }
+    .resp.alerta { border-left-color: #F85149; }
+    .resp .rv { font-size: .9rem; }
+    .resp .rm { color: #8b949e; font-size: .76rem; margin-top: 3px; }
+    .resp .anterior { color: #8b949e; font-size: .76rem; }
+
+    .concluido { border: 1px solid #22b57355; background: #22b57318; border-radius: 8px;
+                 padding: 12px 16px; margin: 0 0 14px; font-size: .9rem; line-height: 1.5; color: #7ee2a8; }
+    .concluido strong { color: #e6edf3; }
+
+    /* ===== aba Editor ===== */
+    td.dim { color: #8b949e; }
+    td.n { text-align: right; white-space: nowrap; }
+    .badge-inativa { border-color: #8b949e !important; color: #8b949e !important; }
+    tr.inativa td { opacity: .55; }
+
+    /* form do drawer (padrão clientes.html) */
+    .form { display: flex; flex-direction: column; gap: 12px; }
+    .f { display: flex; flex-direction: column; gap: 5px; }
+    .f label { color: #8b949e; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    .f label .req { color: #F85149; }
+    .f input, .f select, .f textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
+    }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f textarea { min-height: 70px; resize: vertical; }
+    .f .err { color: #F85149; font-size: .76rem; }
+    .f .hint { color: #8b949e; font-size: .74rem; line-height: 1.4; }
+    .f.chk { flex-direction: row; align-items: center; gap: 8px; }
+    .f.chk label { text-transform: none; letter-spacing: 0; font-size: .88rem; color: #e6edf3; }
+    .f-grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em;
+               border-bottom: 1px solid #21262d; padding-bottom: 4px; margin-top: 10px; }
+    .bloco-par { border: 1px dashed #a371f755; border-radius: 8px; padding: 10px 12px;
+                 display: flex; flex-direction: column; gap: 12px; }
+    .form-acoes { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .form-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .form-msg.err { color: #F85149; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html" class="active">Checklist</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="tabs" id="tabs" hidden>
+      <button class="tab active" data-sec="exec" id="tabExec">Execução</button>
+      <button class="tab" data-sec="edit" id="tabEdit">Editor (gestor)</button>
+    </div>
+
+    <!-- ======================= 1. EXECUÇÃO ======================= -->
+    <section id="sec_exec" hidden>
+      <div class="toolbar">
+        <label for="osSel">Ordem de serviço</label>
+        <select id="osSel"><option value="">(selecione a OS)</option></select>
+        <span class="hint right" id="execContador"></span>
+      </div>
+      <div id="execArea"><div class="empty">Selecione uma OS para iniciar o checklist.</div></div>
+    </section>
+
+    <!-- ======================= 2. EDITOR (GESTOR) ======================= -->
+    <section id="sec_edit" hidden>
+      <div class="toolbar">
+        <button id="btnNova">＋ Nova pergunta</button>
+        <label for="efFase">Fase</label>
+        <select id="efFase"><option value="">(Todas)</option></select>
+        <label for="efDisc">Disciplina</label>
+        <select id="efDisc"><option value="">(Todas)</option></select>
+        <button class="sec" id="efLimpar">Limpar</button>
+        <span class="hint right" id="editContador"></span>
+      </div>
+      <table id="eTbl" hidden>
+        <thead><tr>
+          <th>Ordem</th><th>Fase</th><th>Disciplina</th><th>Texto</th><th>Tipo</th>
+          <th>Obrigatória</th><th>Parâm. técnico</th><th>Ativo</th>
+        </tr></thead>
+        <tbody id="eTbody"></tbody>
+      </table>
+      <div class="empty" id="eEmpty" hidden></div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ===================== helpers gerais ===================== */
+    const num = (v) => { const n = Number(v); return isFinite(n) ? n : 0; };
+    const ehNum = (v) => v != null && v !== "" && isFinite(Number(v));
+    const fmtN = (v, casas) => num(v).toLocaleString("pt-BR", { maximumFractionDigits: casas == null ? 2 : casas });
+    // sem acento/caixa, para casar Choice de forma tolerante (só para CLASSIFICAR, nunca para gravar)
+    const RE_DIACRITICOS = new RegExp("[\\u0300-\\u036f]", "g");
+    const normalizar = (s) => String(s ?? "").normalize("NFD").replace(RE_DIACRITICOS, "").toLowerCase().trim();
+
+    // data-pura vira meia-noite LOCAL (mesma blindagem de fechamentos.html)
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
+    const fmtDT = (s) => { const d = parseD(s); return d ? d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : (s || null); };
+
+    // só http/https passa (nada de javascript:) — mesma régua de fechamentos.html
+    const urlSeguro = (v) => {
+      if (!v) return null;
+      const s = String(v).trim();
+      return /^https?:\/\//i.test(s) ? s : null;
+    };
+
+    /* ==================================================================
+       FASES — os 3 painéis sequenciais da execução.
+       Os rótulos abaixo são o FALLBACK (batem com o schema declarado:
+       Pré-Execução | Execução | Pós-Execução; default Execução). Em runtime
+       o select do editor usa os choices REAIS de EG.listColumns e
+       EG.validarChoices denuncia divergência no aviso amarelo.
+       ================================================================== */
+    const FASES = ["Pré-Execução", "Execução", "Pós-Execução"];
+    const FASE_DEFAULT = "Execução";
+
+    // classifica a fase de uma pergunta de forma tolerante a acento/caixa;
+    // sem fase (ou fase irreconhecível) cai no default do schema: Execução
+    function faseDe(f) {
+      const v = f && f.Fase_Execucao;
+      if (FASES.includes(v)) return v;
+      const n = normalizar(v);
+      if (n.startsWith("pre")) return FASES[0];
+      if (n.startsWith("pos")) return FASES[2];
+      return FASE_DEFAULT;
+    }
+
+    /* ==================================================================
+       Tipo_Resposta — os valores do Choice NÃO são hard-codeados: vêm de
+       EG.listColumns("Perguntas_Checklist") em runtime. A classificação
+       abaixo decide COMO renderizar cada valor (heurística tolerante a
+       acento); valor que não casa com nada vira input de texto COM AVISO —
+       nunca silencioso.
+       ================================================================== */
+    function classificarTipo(tipo) {
+      const n = normalizar(tipo);
+      if (!n) return "desconhecido";
+      if (n.includes("sim") && (n.includes("nao") || n.includes("não"))) return "simnao";
+      if (/bool/.test(n)) return "simnao";
+      if (/(num|medic|inteir|decim|quantidad|valor)/.test(n)) return "numero";
+      if (/(text|abert|observ|descri|livre)/.test(n)) return "texto";
+      if (/foto/.test(n)) return "texto"; // resposta "foto" = URL colada (captura é integração futura)
+      return "desconhecido";
+    }
+
+    /* ============================== estado ============================== */
+    let perguntas = [], respostas = [], disciplinas = [], oss = [], clientes = [];
+    let mapPerg = {}, discNome = {}, cliNome = {}, mapOS = {};
+    let carregado = false;
+    let usuarioNome = "", usuarioEmail = "";
+    let osSelId = "";           // OS selecionada na aba Execução
+    let corrigindo = {};        // pid -> true (modo "Corrigir": mostra controles mesmo já respondida)
+    let gravandoResp = false;   // trava anti duplo-clique da execução
+    let snapshot = null;        // dirty tracking do form do editor
+    let gravandoForm = false;
+
+    // choices reais de Perguntas_Checklist (Tipo_Resposta é 100% dinâmico)
+    const CHOICES = { Tipo_Resposta: [], Fase_Execucao: FASES.slice() };
+    let choicesOk = false;
+    async function carregarChoices() {
+      if (choicesOk) return;
+      try {
+        const cols = await EG.listColumns("Perguntas_Checklist");
+        ["Tipo_Resposta", "Fase_Execucao"].forEach(n => {
+          const col = (cols || []).find(c => c.name === n);
+          if (col && col.choice && Array.isArray(col.choice.choices) && col.choice.choices.length)
+            CHOICES[n] = col.choice.choices;
+        });
+        choicesOk = true;
+      } catch (e) { console.warn("[checklist] listColumns falhou, Fase usa fallback e Tipo fica vazio:", e.message); }
+      // guarda contra rótulo divergente: só Fase_Execucao tem fallback hard-coded
+      EG.validarChoices("Perguntas_Checklist", "Fase_Execucao", FASES)
+        .then(v => EG.renderAvisosChoices($("choiceWarn"), [{ v, rotulo: "Fase_Execucao (Perguntas_Checklist)" }]))
+        .catch(() => {});
+    }
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); usuarioNome = u.nome; usuarioEmail = u.email || ""; $("user").textContent = "👤 " + u.nome; }
+      catch { usuarioNome = EG.getAccount().username; usuarioEmail = ""; $("user").textContent = "👤 " + usuarioNome; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    /* ============================== abas ============================== */
+    let secAtual = "exec";
+    document.querySelectorAll(".tab").forEach(b => { b.onclick = () => mostrarSec(b.dataset.sec); });
+    function mostrarSec(id) {
+      secAtual = id;
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.sec === id));
+      ["exec", "edit"].forEach(s => { $("sec_" + s).hidden = !carregado || (s !== id); });
+    }
+
+    /* ============================== carga ============================== */
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando checklist...");
+        carregarChoices(); // em paralelo — editor usa fallback até chegar
+        const [pe, re, di, os, cl] = await Promise.all([
+          soft(EG.listItems("Perguntas_Checklist"), "Perguntas_Checklist"),
+          soft(EG.listItems("OS_Respostas"), "OS_Respostas"),
+          soft(EG.listItems("Disciplinas_Checklist"), "Disciplinas_Checklist"),
+          soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
+          soft(EG.listItems("Clientes"), "Clientes")
+        ]);
+        setDados(pe, re, di, os, cl);
+        carregado = true;
+        $("tabs").hidden = false;
+        montarFiltros();
+        renderExec();
+        renderEdit();
+        mostrarSec(secAtual);
+        setStatus("OK — " + perguntas.length + " pergunta(s), " + respostas.length + " resposta(s), " +
+                  disciplinas.length + " disciplina(s), " + oss.length + " OS.");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // separado da carga para poder ser exercitado com dados falsos (window.CHK.setDados)
+    function setDados(pe, re, di, os, cl) {
+      perguntas = pe || []; respostas = re || []; disciplinas = di || []; oss = os || []; clientes = cl || [];
+      mapPerg = {}; perguntas.forEach(p => { mapPerg[p.id] = p; });
+      discNome = {}; disciplinas.forEach(d => { discNome[d.id] = (d.fields || {}).Title; });
+      cliNome = {}; clientes.forEach(c => { cliNome[c.id] = (c.fields || {}).Title; });
+      mapOS = {}; oss.forEach(o => { mapOS[o.id] = o; });
+    }
+
+    function montarFiltros() {
+      // OS não canceladas (classificação tolerante: qualquer status contendo "cancel")
+      const validas = oss.filter(o => !normalizar((o.fields || {}).Status).includes("cancel"));
+      $("osSel").innerHTML = '<option value="">(selecione a OS)</option>' + validas.map(o => {
+        const f = o.fields || {};
+        const cli = f.ClienteLookupId != null ? (cliNome[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : null;
+        const rot = [f.Title || ("OS #" + o.id), cli, f.Status].filter(Boolean).join(" — ");
+        return '<option value="' + esc(o.id) + '"' + (String(o.id) === String(osSelId) ? " selected" : "") + '>' + esc(rot) + "</option>";
+      }).join("");
+
+      $("efFase").innerHTML = '<option value="">(Todas)</option>' + CHOICES.Fase_Execucao.map(f =>
+        '<option value="' + esc(f) + '">' + esc(f) + "</option>").join("");
+      $("efDisc").innerHTML = '<option value="">(Todas)</option>' + disciplinas.map(d =>
+        '<option value="' + esc(d.id) + '">' + esc((d.fields || {}).Title || ("disciplina #" + d.id)) + "</option>").join("");
+    }
+
+    /* ==================================================================
+       1. EXECUÇÃO — checklist guiado em 3 FASES BLOQUEANTES
+
+       REGRA CENTRAL: as fases são painéis sequenciais. A fase N+1 fica
+       visualmente bloqueada (cadeado + cinza, sem interação) até TODAS as
+       perguntas Obrigatoria=true da fase N terem resposta gravada. Fase sem
+       perguntas obrigatórias não bloqueia a seguinte. Uma vez que uma fase
+       bloqueia, todas as posteriores ficam bloqueadas em cascata.
+       ================================================================== */
+    const ordFase = (f) => { const i = FASES.indexOf(faseDe(f)); return i < 0 ? 99 : i; };
+    const ordExib = (f) => ehNum(f.Ord_Exib) ? num(f.Ord_Exib) : 9999;
+
+    function perguntasAtivas() {
+      return perguntas
+        .filter(p => (p.fields || {}).Ativo === true)
+        .slice()
+        .sort((a, b) => {
+          const fa = a.fields || {}, fb = b.fields || {};
+          const d = ordFase(fa) - ordFase(fb);
+          if (d !== 0) return d;
+          const e = ordExib(fa) - ordExib(fb);
+          if (e !== 0) return e;
+          return num(a.id) - num(b.id);
+        });
+    }
+
+    function respostasDaOS() {
+      return respostas.filter(r => String((r.fields || {}).OSLookupId ?? "") === String(osSelId));
+    }
+
+    // resposta VIGENTE por pergunta = a mais recente por Pergunta_ID
+    // (Timestamp maior; empate resolve pelo id maior). "Corrigir" cria linha
+    // nova, então a trilha inteira fica na lista — só a vigente aparece aqui.
+    function ultimaPorPergunta() {
+      const m = {};
+      respostasDaOS().forEach(r => {
+        const pid = String((r.fields || {}).Pergunta_ID ?? "");
+        if (!pid) return;
+        const atual = m[pid];
+        if (!atual) { m[pid] = r; return; }
+        const ta = parseD((atual.fields || {}).Timestamp), tb = parseD((r.fields || {}).Timestamp);
+        const va = ta ? ta.getTime() : 0, vb = tb ? tb.getTime() : 0;
+        if (vb > va || (vb === va && num(r.id) > num(atual.id))) m[pid] = r;
+      });
+      return m;
+    }
+
+    /* régua do PARÂMETRO TÉCNICO: acima de Valor_Nominal * (1 + tol/100) é alerta.
+       Exemplo clássico: corrente medida acima da nominal do equipamento. */
+    function checarParametro(f, valor) {
+      if (!ehNum(f.Valor_Nominal) || !ehNum(valor)) return { alerta: false, msg: "" };
+      const tol = ehNum(f.Tolerancia_Pct) ? num(f.Tolerancia_Pct) : 0;
+      const limite = num(f.Valor_Nominal) * (1 + tol / 100);
+      if (num(valor) <= limite) return { alerta: false, msg: "" };
+      const un = f.Unidade_Medida ? " " + f.Unidade_Medida : "";
+      return {
+        alerta: true,
+        msg: "⚠ acima do nominal (" + fmtN(valor) + un + " > " + fmtN(f.Valor_Nominal) + un +
+             (tol ? " +" + fmtN(tol) + "%" : "") + ")"
+      };
+    }
+
+    function htmlResposta(r, p) {
+      const rf = r.fields || {};
+      const pf = p.fields || {};
+      const alerta = rf.Alerta_Parametro === true;
+      const partes = [];
+      if (rf.Resposta_Dada != null && rf.Resposta_Dada !== "") partes.push(esc(rf.Resposta_Dada));
+      if (ehNum(rf.Valor_Medido)) partes.push(esc(fmtN(rf.Valor_Medido) + (pf.Unidade_Medida ? " " + pf.Unidade_Medida : "")));
+      const foto = urlSeguro(rf.Foto_URL);
+      return "<div class='resp" + (alerta ? " alerta" : "") + "'>" +
+        "<div class='rv'>" + (partes.join(" · ") || "<span class='anterior'>(sem valor)</span>") +
+          (alerta ? " <span class='chip nc'>alerta de parâmetro</span>" : "") +
+          (rf.Gerou_NC === true ? " <span class='chip nc'>NC</span>" : "") +
+        "</div>" +
+        (foto ? "<div class='rm'><a class='lnk' href='" + esc(foto) + "' target='_blank' rel='noopener' style='color:#58a6ff;text-decoration:none'>foto ↗</a></div>" : "") +
+        "<div class='rm'>por " + esc(rf.Tecnico || "?") + " em " + esc(fmtDT(rf.Timestamp) || "?") + "</div>" +
+        "</div>";
+    }
+
+    function htmlControles(p) {
+      const f = p.fields || {};
+      const pid = esc(p.id);
+      let ctl = "";
+      let aviso = "";
+      if (f.Parametro_Tecnico === true) {
+        // parâmetro técnico: sempre numérico + unidade, com checagem EM TEMPO REAL no input
+        ctl = "<div class='ctl'>" +
+          "<input type='number' step='any' id='q_val_" + pid + "' data-keep='1' data-param='" + pid + "' placeholder='valor medido' />" +
+          (f.Unidade_Medida ? "<span class='un'>" + esc(f.Unidade_Medida) + "</span>" : "") +
+          "<button data-salvar='" + pid + "'>Salvar</button></div>" +
+          "<div class='alerta-par' id='q_par_" + pid + "' hidden></div>";
+      } else {
+        const cls = classificarTipo(f.Tipo_Resposta);
+        if (cls === "simnao") {
+          ctl = "<div class='ctl'>" +
+            "<button class='btn-sn' data-sn='" + pid + "' data-v='Sim'>Sim</button>" +
+            "<button class='btn-sn sec' data-sn='" + pid + "' data-v='Não'>Não</button></div>";
+        } else if (cls === "numero") {
+          ctl = "<div class='ctl'>" +
+            "<input type='number' step='any' id='q_val_" + pid + "' data-keep='1' placeholder='valor' />" +
+            (f.Unidade_Medida ? "<span class='un'>" + esc(f.Unidade_Medida) + "</span>" : "") +
+            "<button data-salvar='" + pid + "'>Salvar</button></div>";
+        } else {
+          if (cls === "desconhecido")
+            aviso = "<div class='perg-msg'>tipo de resposta " + (f.Tipo_Resposta ? "“" + esc(f.Tipo_Resposta) + "” desconhecido" : "não definido") + " — tratando como texto</div>";
+          ctl = "<div class='ctl'>" +
+            "<input type='text' id='q_val_" + pid + "' data-keep='1' maxlength='2000' placeholder='resposta' />" +
+            "<button data-salvar='" + pid + "'>Salvar</button></div>";
+        }
+      }
+      // foto obrigatória: aqui cola-se a URL (captura mobile/EXIF é integração futura do PWA)
+      const foto = f.Foto_Obrigatoria === true
+        ? "<div class='foto-linha'><span class='un'>📷</span>" +
+          "<input type='url' id='q_foto_" + pid + "' data-keep='1' placeholder='URL da foto (obrigatória)' /></div>"
+        : "";
+      return aviso + ctl + foto + "<div class='perg-msg' id='q_msg_" + pid + "'></div>";
+    }
+
+    function renderExec() {
+      const area = $("execArea");
+      if (!osSelId || !mapOS[osSelId]) {
+        area.innerHTML = "<div class='empty'>Selecione uma OS para iniciar o checklist.</div>";
+        $("execContador").textContent = "";
+        return;
+      }
+      const pergs = perguntasAtivas();
+      if (!pergs.length) {
+        area.innerHTML = "<div class='empty'>Nenhuma pergunta ativa em Perguntas_Checklist. Cadastre na aba Editor (gestor).</div>";
+        $("execContador").textContent = "";
+        return;
+      }
+      const ult = ultimaPorPergunta();
+
+      let bloqueio = false;      // vira true quando uma fase deixa obrigatória pendente (cascata)
+      let totalResp = 0;
+      const paineis = FASES.map((fase, idx) => {
+        const daFase = pergs.filter(p => faseDe(p.fields) === fase);
+        const respondidas = daFase.filter(p => ult[String(p.id)]).length;
+        totalResp += respondidas;
+        const obrigPend = daFase.filter(p => (p.fields || {}).Obrigatoria === true && !ult[String(p.id)]).length;
+        const bloqueada = bloqueio;
+        if (obrigPend > 0) bloqueio = true;   // esta fase trava as seguintes
+
+        const completa = daFase.length > 0 && respondidas === daFase.length;
+        const pct = daFase.length ? Math.round(100 * respondidas / daFase.length) : 0;
+
+        const corpo = !daFase.length
+          ? "<div class='empty'>Nenhuma pergunta nesta fase.</div>"
+          : daFase.map(p => {
+              const f = p.fields || {};
+              const r = ult[String(p.id)];
+              const chips =
+                (f.Obrigatoria === true ? "<span class='chip req'>obrigatória</span>" : "") +
+                (f.Parametro_Tecnico === true ? "<span class='chip par'>parâmetro técnico</span>" : "") +
+                (f.Foto_Obrigatoria === true ? "<span class='chip'>foto</span>" : "");
+              const cab = "<div class='pt'><span class='ord'>#" + esc(ehNum(f.Ord_Exib) ? f.Ord_Exib : p.id) + "</span>" +
+                          esc(f.Texto_Pergunta || f.Title || "(sem texto)") + chips + "</div>";
+              let corpoP;
+              if (r && !corrigindo[p.id]) {
+                // já respondida: aparece preenchida/travada; "Corrigir" cria NOVA linha (trilha preservada)
+                corpoP = htmlResposta(r, p) +
+                  "<div class='ctl' style='margin-top:8px'><button class='sec' data-corrigir='" + esc(p.id) + "'>Corrigir</button></div>";
+              } else {
+                corpoP = (r ? "<div class='resp'><div class='anterior'>resposta anterior: " +
+                              esc((r.fields || {}).Resposta_Dada ?? "(sem valor)") + " — por " + esc((r.fields || {}).Tecnico || "?") +
+                              " em " + esc(fmtDT((r.fields || {}).Timestamp) || "?") + ". A correção cria uma NOVA resposta; a trilha é preservada.</div></div>" : "") +
+                         htmlControles(p);
+              }
+              return "<div class='perg' data-pid='" + esc(p.id) + "'>" + cab + corpoP + "</div>";
+            }).join("");
+
+        // cabeçalho especial quando a ÚLTIMA fase é concluída: resumo do checklist
+        let banner = "";
+        if (idx === FASES.length - 1 && !bloqueada && !bloqueio && completa) {
+          const vigentes = Object.values(ult);
+          const alertas = vigentes.filter(r => (r.fields || {}).Alerta_Parametro === true).length;
+          const ncs = vigentes.filter(r => (r.fields || {}).Gerou_NC === true).length;
+          banner = "<div class='concluido'><strong>✅ Checklist concluído.</strong> " +
+            vigentes.length + " resposta(s) vigente(s), " + alertas + " alerta(s) de parâmetro, " + ncs + " NC(s) gerada(s)." +
+            "</div>";
+        }
+
+        return "<div class='fase" + (bloqueada ? " bloq" : "") + (completa ? " completa" : "") + "'>" +
+          "<div class='fase-head'>" +
+            (bloqueada ? "<span class='cadeado'>🔒</span>" : (completa ? "<span class='cadeado'>✅</span>" : "")) +
+            "<span class='t'>Fase " + (idx + 1) + " — " + esc(fase) + "</span>" +
+            "<div class='prog'><div style='width:" + pct + "%'></div></div>" +
+            "<span class='prog-txt'>" + respondidas + "/" + daFase.length + " respondidas" +
+              (bloqueada ? " · bloqueada — conclua as obrigatórias da fase anterior" :
+               (obrigPend > 0 ? " · " + obrigPend + " obrigatória(s) pendente(s)" : "")) + "</span>" +
+          "</div>" +
+          "<div class='fase-body'>" + banner + corpo + "</div>" +
+        "</div>";
+      });
+
+      area.innerHTML = paineis.join("");
+      $("execContador").textContent = totalResp + " de " + pergs.length + " pergunta(s) respondida(s)";
+    }
+
+    // re-render preservando o que estava digitado nas perguntas ainda não gravadas
+    function renderExecKeep() {
+      const keep = {};
+      $("execArea").querySelectorAll("input[data-keep]").forEach(i => { if (i.value !== "") keep[i.id] = i.value; });
+      renderExec();
+      Object.keys(keep).forEach(id => {
+        const el = document.getElementById(id);
+        if (el && el.value === "") { el.value = keep[id]; if (el.dataset.param) checarParamInput(el); }
+      });
+    }
+
+    // troca de OS: relê OS_Respostas do servidor (outra pessoa/PWA pode ter gravado)
+    $("osSel").addEventListener("change", async () => {
+      osSelId = $("osSel").value;
+      corrigindo = {};
+      if (!osSelId) { renderExec(); return; }
+      try {
+        setStatus("Carregando respostas da OS...");
+        respostas = await soft(EG.listItems("OS_Respostas"), "OS_Respostas");
+        setStatus("OK — " + respostasDaOS().length + " resposta(s) desta OS.");
+      } catch (e) { setStatus("Falha ao recarregar respostas: " + e.message, "err"); }
+      renderExec();
+    });
+
+    // checagem EM TEMPO REAL do parâmetro técnico (evento input, antes de gravar)
+    function checarParamInput(el) {
+      const pid = el.dataset.param;
+      const p = mapPerg[pid]; if (!p) return;
+      const box = $("q_par_" + pid); if (!box) return;
+      const v = el.value === "" ? null : Number(String(el.value).replace(",", "."));
+      const r = checarParametro(p.fields || {}, v);
+      box.hidden = !r.alerta;
+      box.textContent = r.msg;
+    }
+    $("execArea").addEventListener("input", (e) => {
+      if (e.target && e.target.dataset && e.target.dataset.param) checarParamInput(e.target);
+    });
+
+    // um só handler delegado para salvar / sim-não / corrigir (sobrevive ao re-render)
+    $("execArea").addEventListener("click", (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      if (b.dataset.corrigir) {
+        corrigindo[b.dataset.corrigir] = true;
+        renderExecKeep();
+        return;
+      }
+      if (b.dataset.sn) { salvarResposta(b.dataset.sn, b.dataset.v); return; }
+      if (b.dataset.salvar) {
+        const pid = b.dataset.salvar;
+        const el = $("q_val_" + pid);
+        salvarResposta(pid, el ? el.value.trim() : "");
+      }
+    });
+
+    /* gravação por pergunta: SEMPRE createItem (append). Pergunta já
+       respondida não vira PATCH — "Corrigir" cria linha nova e a leitura
+       pega a mais recente por Pergunta_ID (trilha de auditoria preservada,
+       e é o mesmo contrato do Make 1F quando reativar). */
+    async function salvarResposta(pid, valorBruto) {
+      if (gravandoResp) return;
+      const p = mapPerg[pid]; if (!p) return;
+      const f = p.fields || {};
+      const os = mapOS[osSelId];
+      const msg = $("q_msg_" + pid);
+      const falha = (m) => { if (msg) { msg.className = "perg-msg err"; msg.textContent = m; } };
+      if (!os) { falha("Selecione uma OS antes de responder."); return; }
+
+      const ehParam = f.Parametro_Tecnico === true;
+      const ehNumero = ehParam || classificarTipo(f.Tipo_Resposta) === "numero";
+
+      let valorMedido = null, alerta = false;
+      let respostaDada = String(valorBruto ?? "").trim();
+      if (ehNumero) {
+        if (respostaDada === "") { falha("Informe o valor numérico."); return; }
+        const n = Number(respostaDada.replace(",", "."));
+        if (!isFinite(n)) { falha("Valor numérico inválido."); return; }
+        respostaDada = String(n);
+        if (ehParam) {
+          valorMedido = n;
+          alerta = checarParametro(f, n).alerta;
+        }
+      } else if (respostaDada === "") { falha("Informe a resposta."); return; }
+
+      let fotoUrl = null;
+      if (f.Foto_Obrigatoria === true) {
+        const el = $("q_foto_" + pid);
+        fotoUrl = urlSeguro(el ? el.value.trim() : "");
+        if (!fotoUrl) { falha("Foto obrigatória: cole a URL da foto (http/https)."); if (el) el.focus(); return; }
+      }
+
+      // payload: só chaves com valor (padrão nova-proposta); os campos de
+      // parâmetro só entram quando a pergunta É de parâmetro técnico —
+      // Alerta_Parametro=false é informação afirmativa nesse caso.
+      const campos = {
+        Title: "OS " + ((os.fields || {}).Title || os.id) + " · P" + p.id,
+        OSLookupId: Number(osSelId),
+        Pergunta_ID: String(p.id),
+        Texto_Pergunta: f.Texto_Pergunta || f.Title || "",
+        Resposta_Dada: respostaDada,
+        Fase_Execucao: faseDe(f),
+        Tecnico: (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : ""),
+        Timestamp: new Date().toISOString()
+      };
+      if (fotoUrl) campos.Foto_URL = fotoUrl;
+      if (ehParam) {
+        campos.Valor_Medido = valorMedido;
+        campos.Alerta_Parametro = alerta;
+        campos.Gerou_NC = alerta;   // alerta de parâmetro gera não-conformidade
+      }
+
+      try {
+        gravandoResp = true;
+        if (msg) { msg.className = "perg-msg"; msg.textContent = "Gravando..."; }
+        const novo = await EG.createItem("OS_Respostas", campos);
+        const id = novo && novo.id;
+        if (!id) throw new Error("o Graph não devolveu o id da resposta criada");
+        // relê do servidor em vez de confiar no eco local (padrão do repo)
+        const sid = await EG.resolveSite();
+        const atual = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OS_Respostas") + "/items/" + id + "?expand=fields");
+        respostas.push(atual);
+        corrigindo[pid] = false;
+        renderExecKeep();
+        setStatus("Resposta gravada — P" + pid + (alerta ? " (com ALERTA de parâmetro)" : "") + ".");
+      } catch (e) {
+        falha("Falha ao gravar: " + e.message);
+      } finally {
+        gravandoResp = false;
+      }
+    }
+
+    /* ==================================================================
+       2. EDITOR (GESTOR) — CRUD da árvore de perguntas
+       Desativar pergunta = Ativo:false. NUNCA deletar: OS_Respostas
+       referencia a pergunta por Pergunta_ID e o histórico quebraria.
+       ================================================================== */
+    function filtrarEdit() {
+      const ff = $("efFase").value, fd = $("efDisc").value;
+      return perguntas.filter(p => {
+        const f = p.fields || {};
+        if (ff && faseDe(f) !== ff) return false;
+        if (fd && String(f.DisciplinaLookupId ?? "") !== String(fd)) return false;
+        return true;
+      });
+    }
+    function renderEdit() {
+      const lista = filtrarEdit().slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        const d = ordFase(fa) - ordFase(fb);
+        if (d !== 0) return d;
+        const e = ordExib(fa) - ordExib(fb);
+        if (e !== 0) return e;
+        return num(a.id) - num(b.id);
+      });
+      $("editContador").textContent = lista.length + " de " + perguntas.length + " pergunta(s)";
+      if (!lista.length) {
+        $("eTbody").innerHTML = ""; $("eTbl").hidden = true; $("eEmpty").hidden = false;
+        $("eEmpty").textContent = perguntas.length
+          ? "Nenhuma pergunta corresponde aos filtros."
+          : "Nenhuma pergunta cadastrada em Perguntas_Checklist. Use “Nova pergunta”.";
+        return;
+      }
+      $("eEmpty").hidden = true; $("eTbl").hidden = false;
+      const simNao = (v) => v === true ? "Sim" : (v === false ? "Não" : "—");
+      $("eTbody").innerHTML = lista.map(p => {
+        const f = p.fields || {};
+        const inativa = f.Ativo === false;
+        const disc = f.DisciplinaLookupId != null ? (discNome[f.DisciplinaLookupId] || ("disciplina #" + f.DisciplinaLookupId)) : "—";
+        return "<tr data-eid='" + esc(p.id) + "'" + (inativa ? " class='inativa'" : "") + ">" +
+          "<td class='n'>" + esc(ehNum(f.Ord_Exib) ? fmtN(f.Ord_Exib, 0) : "—") + "</td>" +
+          "<td class='dim'>" + esc(faseDe(f)) + "</td>" +
+          "<td class='dim'>" + esc(disc) + "</td>" +
+          "<td>" + esc(f.Texto_Pergunta || f.Title || "—") + "</td>" +
+          "<td class='dim'>" + esc(f.Tipo_Resposta || "—") + "</td>" +
+          "<td class='dim'>" + esc(simNao(f.Obrigatoria)) + "</td>" +
+          "<td class='dim'>" + esc(simNao(f.Parametro_Tecnico)) +
+            (f.Parametro_Tecnico === true && ehNum(f.Valor_Nominal)
+              ? " <span class='chip par'>" + esc(fmtN(f.Valor_Nominal) + (f.Unidade_Medida ? " " + f.Unidade_Medida : "") +
+                (ehNum(f.Tolerancia_Pct) ? " ±" + fmtN(f.Tolerancia_Pct) + "%" : "")) + "</span>" : "") + "</td>" +
+          "<td>" + (inativa ? "<span class='badge badge-inativa'>inativa</span>" : esc(simNao(f.Ativo))) + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+    ["efFase", "efDisc"].forEach(id => $(id).addEventListener("change", renderEdit));
+    $("efLimpar").onclick = () => { $("efFase").value = ""; $("efDisc").value = ""; renderEdit(); };
+    $("eTbody").addEventListener("click", (e) => {
+      const tr = e.target.closest("tr[data-eid]");
+      if (tr && mapPerg[tr.dataset.eid]) abrirForm(mapPerg[tr.dataset.eid]);
+    });
+    $("btnNova").onclick = () => abrirForm(null);
+
+    /* ================= drawer: FORMULÁRIO (criar/editar pergunta) =================
+       Padrão clientes.html: snapshot inicial, dirty tracking, PATCH mínimo,
+       releitura do servidor após gravar. */
+
+    // valor atual entra no select mesmo fora da lista de choices (valor legado):
+    // sem isso o select cairia em "" e o Salvar apagaria o valor em silêncio.
+    const optsChoice = (lista, sel, vazio) => {
+      const l = lista || [];
+      const fora = sel != null && sel !== "" && !l.includes(sel);
+      return [(vazio === false ? "" : '<option value=""></option>')]
+        .concat(l.map(o => '<option value="' + esc(o) + '"' + (o === sel ? " selected" : "") + ">" + esc(o) + "</option>"))
+        .concat(fora ? ['<option value="' + esc(sel) + '" selected>' + esc(sel) + " (valor atual — fora da lista)</option>"] : [])
+        .join("");
+    };
+
+    // definição dos campos do form; item==null -> criação
+    function abrirForm(item) {
+      const f = item ? (item.fields || {}) : null;
+      snapshot = {};
+      const v = (n, def) => {
+        if (!f) return def == null ? "" : def;
+        return f[n] == null ? "" : String(f[n]);
+      };
+      const vb = (n, def) => {
+        if (!f) return def === true ? "true" : "false";
+        return f[n] === true ? "true" : "false";
+      };
+      // snapshot em strings ("true"/"false" para bool) — base do dirty tracking
+      snapshot.Texto_Pergunta = v("Texto_Pergunta");
+      snapshot.Disciplina = f && f.DisciplinaLookupId != null ? String(f.DisciplinaLookupId) : "";
+      snapshot.Fase_Execucao = f ? (f.Fase_Execucao == null ? "" : String(f.Fase_Execucao)) : FASE_DEFAULT;
+      snapshot.Tipo_Resposta = v("Tipo_Resposta");
+      snapshot.Nivel = v("Nivel");
+      snapshot.Ord_Exib = v("Ord_Exib");
+      snapshot.Obrigatoria = vb("Obrigatoria");
+      snapshot.Foto_Obrigatoria = vb("Foto_Obrigatoria");
+      snapshot.Ativo = vb("Ativo", true);           // nova pergunta nasce ativa
+      snapshot.Parametro_Tecnico = vb("Parametro_Tecnico");
+      snapshot.Unidade_Medida = v("Unidade_Medida");
+      snapshot.Valor_Nominal = v("Valor_Nominal");
+      snapshot.Tolerancia_Pct = v("Tolerancia_Pct");
+
+      const chk = (id, rotulo, val, hint) =>
+        "<div class='f chk'><input type='checkbox' id='" + id + "'" + (val === "true" ? " checked" : "") + " />" +
+        "<label for='" + id + "'>" + esc(rotulo) + "</label>" +
+        (hint ? "<span class='hint'>" + esc(hint) + "</span>" : "") + "</div>";
+
+      const semTipos = !CHOICES.Tipo_Resposta.length;
+      const parAberto = snapshot.Parametro_Tecnico === "true";
+
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" +
+          (item ? "Editar — " + esc(f.Texto_Pergunta || f.Title || ("pergunta #" + item.id)) : "Nova pergunta") +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'><form class='form' id='formP' autocomplete='off' onsubmit='return false'>" +
+          "<div class='f-grupo'>Pergunta</div>" +
+          "<div class='f'><label for='p_Texto_Pergunta'>Texto da pergunta <span class='req'>*</span></label>" +
+            "<textarea id='p_Texto_Pergunta'>" + esc(snapshot.Texto_Pergunta) + "</textarea>" +
+            "<span class='hint'>o Título (Title) é gerado automaticamente a partir deste texto (truncado)</span>" +
+            "<span class='err' id='e_Texto_Pergunta'></span></div>" +
+          "<div class='f'><label for='p_Disciplina'>Disciplina</label>" +
+            "<select id='p_Disciplina'><option value=''></option>" +
+              disciplinas.map(d => "<option value='" + esc(d.id) + "'" +
+                (String(d.id) === snapshot.Disciplina ? " selected" : "") + ">" +
+                esc((d.fields || {}).Title || ("disciplina #" + d.id)) + "</option>").join("") +
+              (snapshot.Disciplina && !disciplinas.some(d => String(d.id) === snapshot.Disciplina)
+                ? "<option value='" + esc(snapshot.Disciplina) + "' selected>disciplina #" + esc(snapshot.Disciplina) + " (fora da lista)</option>" : "") +
+            "</select></div>" +
+          "<div class='f'><label for='p_Fase_Execucao'>Fase de execução</label>" +
+            "<select id='p_Fase_Execucao'>" + optsChoice(CHOICES.Fase_Execucao, snapshot.Fase_Execucao || FASE_DEFAULT) + "</select></div>" +
+          "<div class='f'><label for='p_Tipo_Resposta'>Tipo de resposta</label>" +
+            "<select id='p_Tipo_Resposta'>" + optsChoice(CHOICES.Tipo_Resposta, snapshot.Tipo_Resposta) + "</select>" +
+            (semTipos ? "<span class='hint'>⚠️ os choices reais de Tipo_Resposta ainda não foram carregados do SharePoint (listColumns) — recarregue antes de salvar um tipo</span>" : "") +
+            "</div>" +
+          "<div class='f'><label for='p_Nivel'>Nível</label><input type='number' step='1' id='p_Nivel' value='" + esc(snapshot.Nivel) + "' /></div>" +
+          "<div class='f'><label for='p_Ord_Exib'>Ordem de exibição</label><input type='number' step='1' id='p_Ord_Exib' value='" + esc(snapshot.Ord_Exib) + "' /></div>" +
+          "<div class='f-grupo'>Comportamento</div>" +
+          chk("p_Obrigatoria", "Obrigatória (bloqueia a fase seguinte enquanto não respondida)", snapshot.Obrigatoria) +
+          chk("p_Foto_Obrigatoria", "Foto obrigatória (URL na execução)", snapshot.Foto_Obrigatoria) +
+          chk("p_Ativo", "Ativa", snapshot.Ativo, "desativar = Ativo:false; perguntas nunca são deletadas (histórico de respostas referencia o ID)") +
+          "<div class='f-grupo'>Parâmetro técnico</div>" +
+          chk("p_Parametro_Tecnico", "Pergunta de parâmetro técnico (medição numérica com régua)", snapshot.Parametro_Tecnico) +
+          "<div class='bloco-par' id='blocoPar'" + (parAberto ? "" : " hidden") + ">" +
+            "<div class='f'><label for='p_Unidade_Medida'>Unidade de medida</label>" +
+              "<input type='text' id='p_Unidade_Medida' maxlength='50' value='" + esc(snapshot.Unidade_Medida) + "' placeholder='ex.: A, V, °C, bar' /></div>" +
+            "<div class='f'><label for='p_Valor_Nominal'>Valor nominal</label>" +
+              "<input type='number' step='any' id='p_Valor_Nominal' value='" + esc(snapshot.Valor_Nominal) + "' />" +
+              "<span class='hint'>medição acima de nominal × (1 + tolerância/100) gera alerta e NC na execução</span></div>" +
+            "<div class='f'><label for='p_Tolerancia_Pct'>Tolerância (%)</label>" +
+              "<input type='number' step='any' id='p_Tolerancia_Pct' value='" + esc(snapshot.Tolerancia_Pct) + "' /></div>" +
+          "</div>" +
+          "<div class='form-acoes'>" +
+            "<button type='button' id='btnSalvarP'>" + (item ? "Salvar alterações" : "Criar pergunta") + "</button>" +
+            "<button type='button' class='sec' id='btnCancelarP'>Cancelar</button>" +
+          "</div>" +
+          "<div class='form-msg' id='formMsgP'></div>" +
+        "</form></div>";
+
+      $("dc").onclick = closeDrawer;
+      $("btnCancelarP").onclick = closeDrawer;
+      $("btnSalvarP").onclick = () => salvarPergunta(item);
+      $("p_Parametro_Tecnico").addEventListener("change", () => {
+        $("blocoPar").hidden = !$("p_Parametro_Tecnico").checked;
+      });
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+    $("overlay").onclick = closeDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+    // Title = Texto_Pergunta truncado (limite prático de 255 do SharePoint; 80 mantém legível na lista)
+    const tituloDe = (texto) => { const t = String(texto).trim(); return t.length > 80 ? t.slice(0, 77) + "..." : t; };
+
+    // lê o form em strings, na mesma convenção do snapshot
+    function lerForm() {
+      const t = (id) => { const el = $(id); return el ? el.value.trim() : ""; };
+      const b = (id) => { const el = $(id); return el && el.checked ? "true" : "false"; };
+      return {
+        Texto_Pergunta: t("p_Texto_Pergunta"),
+        Disciplina: t("p_Disciplina"),
+        Fase_Execucao: t("p_Fase_Execucao"),
+        Tipo_Resposta: t("p_Tipo_Resposta"),
+        Nivel: t("p_Nivel"),
+        Ord_Exib: t("p_Ord_Exib"),
+        Obrigatoria: b("p_Obrigatoria"),
+        Foto_Obrigatoria: b("p_Foto_Obrigatoria"),
+        Ativo: b("p_Ativo"),
+        Parametro_Tecnico: b("p_Parametro_Tecnico"),
+        Unidade_Medida: t("p_Unidade_Medida"),
+        Valor_Nominal: t("p_Valor_Nominal"),
+        Tolerancia_Pct: t("p_Tolerancia_Pct")
+      };
+    }
+
+    // converte um valor de FORM (string) para o payload do Graph
+    function paraGraph(nome, v) {
+      if (["Obrigatoria", "Foto_Obrigatoria", "Ativo", "Parametro_Tecnico"].includes(nome)) return v === "true";
+      if (["Nivel", "Ord_Exib", "Valor_Nominal", "Tolerancia_Pct"].includes(nome)) {
+        if (v === "") return null;
+        const n = Number(String(v).replace(",", "."));
+        return isFinite(n) ? n : null;
+      }
+      if (nome === "Disciplina") return v === "" ? null : Number(v);   // vira DisciplinaLookupId
+      return v === "" ? null : v;
+    }
+    const nomeGraph = (n) => n === "Disciplina" ? "DisciplinaLookupId" : n;
+
+    async function salvarPergunta(item) {
+      if (gravandoForm) return;
+      const msg = $("formMsgP");
+      const vals = lerForm();
+      $("e_Texto_Pergunta").textContent = "";
+      if (!vals.Texto_Pergunta) {
+        $("e_Texto_Pergunta").textContent = "obrigatório";
+        $("p_Texto_Pergunta").focus();
+        msg.className = "form-msg err"; msg.textContent = "Corrija os campos destacados.";
+        return;
+      }
+      try {
+        gravandoForm = true; $("btnSalvarP").disabled = true;
+        msg.className = "form-msg"; msg.textContent = "Gravando...";
+
+        let id;
+        if (!item) {
+          // CRIAÇÃO — só chaves COM valor (padrão nova-proposta); booleans vão
+          // sempre: são escolha explícita do gestor via checkbox, não "branco".
+          const payload = { Title: tituloDe(vals.Texto_Pergunta) };
+          Object.keys(vals).forEach(n => {
+            const g = paraGraph(n, vals[n]);
+            if (g === null) return;
+            payload[nomeGraph(n)] = g;
+          });
+          const novo = await EG.createItem("Perguntas_Checklist", payload);
+          id = novo && novo.id;
+          if (!id) throw new Error("o Graph não devolveu o id da pergunta criada");
+        } else {
+          // EDIÇÃO — dirty tracking: PATCH apenas do que mudou vs snapshot;
+          // campo esvaziado de propósito vai como null (limpa no SharePoint).
+          const mudados = {};
+          Object.keys(vals).forEach(n => {
+            if (vals[n] === (snapshot ? snapshot[n] : "")) return;
+            mudados[nomeGraph(n)] = paraGraph(n, vals[n]);
+          });
+          if (vals.Texto_Pergunta !== snapshot.Texto_Pergunta) mudados.Title = tituloDe(vals.Texto_Pergunta);
+          if (!Object.keys(mudados).length) { msg.textContent = "Nada foi alterado."; return; }
+          await EG.patchItemFields("Perguntas_Checklist", item.id, mudados);
+          id = item.id;
+        }
+
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const sid = await EG.resolveSite();
+        const atual = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Perguntas_Checklist") + "/items/" + id + "?expand=fields");
+        const idx = perguntas.findIndex(p => p.id === atual.id);
+        if (idx > -1) perguntas[idx] = atual; else perguntas.unshift(atual);
+        mapPerg[atual.id] = atual;
+        renderEdit();
+        renderExec();   // a árvore mudou — a execução reflete na hora
+        closeDrawer();
+        setStatus((item ? "Pergunta atualizada" : "Pergunta criada") + " — " +
+                  (((atual.fields || {}).Texto_Pergunta) || ("#" + id)) + ".");
+      } catch (e) {
+        msg.className = "form-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+      } finally {
+        gravandoForm = false;
+        const b = $("btnSalvarP"); if (b) b.disabled = false;
+      }
+    }
+
+    /* Exposto para exercitar a lógica sem login (dados falsos):
+       CHK.setDados([...],[...],[...],[...],[...]); CHK.setOS("3"); CHK.renderExec(); */
+    window.CHK = {
+      setDados, montarFiltros, renderExec, renderEdit, mostrarSec,
+      faseDe, classificarTipo, checarParametro, ultimaPorPergunta, perguntasAtivas,
+      tituloDe, paraGraph, urlSeguro,
+      setOS: (id) => { osSelId = String(id); },
+      forcarCarregado: (v) => { carregado = v !== false; },
+      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
