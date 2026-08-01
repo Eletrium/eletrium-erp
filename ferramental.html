@@ -1,0 +1,1260 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Ferramental</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <!--
+    ==========================================================================
+    FERRAMENTAL — catálogo, patrimônio, vínculos serviço×ferramenta e
+    checklist de início de dia / desmobilização por OS.
+
+    MAPA DE DONO DE CAMPO (quem escreve onde):
+      Ferramentas_Catalogo          -> SÓ esta tela escreve (criar/editar).
+      Ferramentas_Patrimonio        -> SÓ esta tela escreve:
+        - cadastro/edição no drawer da aba Patrimônio;
+        - o checklist da aba Início/Desmob escreve Status_Ferramenta,
+          Alocada_ParaLookupId, OS_AtualLookupId e Desmob_Checklist_JSON.
+      Servico_Ferramenta_Obrigatoria-> SÓ esta tela escreve (criar/editar).
+      OrdensDeServico               -> SOMENTE LEITURA aqui (Title, Status,
+        Tecnico, Tipo_OS_Completo, Cliente). Quem escreve OS é a tela de OS
+        e as automações — esta tela nunca faz PATCH nessa lista.
+      TecnicosMEI / Clientes        -> somente leitura (rótulos de lookup).
+
+    TRAVA DE CALIBRAÇÃO (regra central desta tela — ver calibracao()):
+      item de patrimônio cujo CATÁLOGO tem Requer_Calibracao = true e cuja
+      Data_Vencimento_Calibracao está VAZIA ou é ANTERIOR a hoje está com
+      "CALIBRAÇÃO VENCIDA". Consequências:
+        1) badge vermelho na tabela de patrimônio e no drawer;
+        2) o item aparece DESABILITADO (com o motivo) no checklist de início
+           de dia — não pode ser confirmado para nenhuma OS;
+        3) o formulário de patrimônio BLOQUEIA gravar Status "Alocada" para
+           um item nessa condição (aviso no próprio campo).
+      Vencimento IGUAL a hoje ainda vale (vence ao fim do dia). Datas são
+      DateOnly do SharePoint (meia-noite UTC) — comparação via EG.ehDataPura
+      + data LOCAL, senão em Brasília (UTC-3) tudo viraria "1 dia antes".
+
+    VÍNCULOS SERVIÇO×FERRAMENTA — sem exclusão e sem soft-delete:
+      o padrão do repo é nunca deletar itens, e a lista
+      Servico_Ferramenta_Obrigatoria NÃO tem campo Ativo. Decisão: a aba só
+      CRIA e LISTA; para corrigir um vínculo errado o gestor EDITA o item
+      existente no drawer (troca tipo de OS, ferramenta ou exigência) em vez
+      de criar outro e abandonar o antigo.
+
+      Tipo_OS_Completo_Valor é TEXT de propósito: o select da UI é populado
+      dinamicamente dos choices de OrdensDeServico.Tipo_OS_Completo (via
+      EG.listColumns) para não hardcodar rótulo; um valor legado gravado que
+      saiu da lista de choices continua selecionável no select (opção "valor
+      atual — fora da lista"), nunca é apagado em silêncio.
+
+    DESMOBILIZAÇÃO — exceção consciente à regra "não gravar vazio":
+      confirmar a devolução grava Desmob_Checklist_JSON, Status_Ferramenta =
+      "Disponível" E LIMPA OS_AtualLookupId = null e Alocada_ParaLookupId =
+      null. A limpeza é INTENCIONAL: ferramenta devolvida não tem OS nem
+      portador; manter o lookup antigo mentiria na tabela e no próximo
+      início de dia (o item pareceria preso à OS anterior).
+
+    QR_Code: campo texto com o payload impresso na etiqueta do item.
+      A LEITURA por câmera (conferência de patrimônio via QR no mobile) é
+      integração FUTURA — aqui o campo só é cadastrado/exibido.
+    ==========================================================================
+  -->
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    select, input[type=text], input[type=date], input[type=number] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit;
+    }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .toolbar .hint.right { margin-left: auto; }
+
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+    .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
+    .tab:hover { color: #e6edf3; }
+    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+
+    .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+    td .badge { white-space: nowrap; margin-top: 0; }
+    td.dim { color: #8b949e; }
+    td.n { text-align: right; white-space: nowrap; }
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+
+    .aviso-ro { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
+                border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
+    .aviso-ro strong { color: #e6edf3; }
+
+    /* badge da trava de calibração */
+    .venc { display: inline-block; border: 1px solid #F85149; color: #F85149; background: #F8514918;
+            border-radius: 6px; padding: 1px 8px; font-size: .72rem; font-weight: 600; white-space: nowrap; }
+
+    /* formulário do drawer (padrão clientes.html) */
+    .form { display: flex; flex-direction: column; gap: 12px; }
+    .f { display: flex; flex-direction: column; gap: 5px; }
+    .f label { color: #8b949e; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+    .f label .req { color: #F85149; }
+    .f input, .f select, .f textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
+      border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
+    }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f textarea { min-height: 70px; resize: vertical; }
+    .f .err { color: #F85149; font-size: .76rem; }
+    .f .hint { color: #8b949e; font-size: .74rem; line-height: 1.4; }
+    .f-grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em;
+               border-bottom: 1px solid #21262d; padding-bottom: 4px; margin-top: 10px; }
+    .form-acoes { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .form-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .form-msg.err { color: #F85149; }
+    .drawer-head .acs { display: flex; gap: 8px; align-items: center; }
+
+    /* aba 4 — checklist */
+    .os-info { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; font-size: .88rem; line-height: 1.6; }
+    .os-info .k { color: #8b949e; }
+    .fer-bloco { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; }
+    .fer-bloco .cab { display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: .92rem; margin-bottom: 8px; }
+    .fer-item { display: flex; gap: 8px; align-items: baseline; padding: 4px 2px; font-size: .86rem; }
+    .fer-item.off { color: #8b949e; }
+    .fer-item .motivo { color: #F85149; font-size: .76rem; }
+    .fer-item .motivo.neutro { color: #8b949e; }
+    .fer-item .serie { color: #8b949e; font-size: .78rem; }
+    .fer-vazio { color: #8b949e; font-size: .82rem; padding: 4px 2px; }
+    .painel { border-radius: 8px; padding: 12px 14px; font-weight: 700; font-size: .95rem; margin: 14px 0 10px; }
+    .painel.ok { border: 1px solid #22B57366; background: #22B57318; color: #3fb950; }
+    .painel.bloq { border: 1px solid #F8514966; background: #F8514918; color: #F85149; }
+    .painel .det { font-weight: 400; font-size: .8rem; margin-top: 4px; }
+    .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; margin-top: 6px; }
+    .acao-msg.err { color: #F85149; }
+    .desmob-item { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px 14px; margin-bottom: 8px;
+                   display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: .86rem; }
+    .desmob-item .cod { font-weight: 600; }
+    .desmob-item .cat { color: #8b949e; }
+    .desmob-item input[type=text] { flex: 1; min-width: 180px; }
+    .desmob-item label.ok { display: flex; gap: 6px; align-items: center; color: #e6edf3; font-size: .84rem; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html" class="active">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html">Checklist</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="tabs" id="tabs" hidden>
+      <button class="tab active" data-sec="cat" id="tabCat">Catálogo</button>
+      <button class="tab" data-sec="pat" id="tabPat">Patrimônio</button>
+      <button class="tab" data-sec="vin" id="tabVin">Vínculos serviço×ferramenta</button>
+      <button class="tab" data-sec="dia" id="tabDia">Início de dia / Desmobilização</button>
+      <span class="hint right" style="align-self:center"><span class="ro">OrdensDeServico é só leitura aqui</span></span>
+    </div>
+
+    <!-- ============================ 1. CATÁLOGO ============================ -->
+    <section id="sec_cat" hidden>
+      <div class="toolbar">
+        <button id="cNovo">＋ Nova ferramenta no catálogo</button>
+        <span class="hint right" id="cContador"></span>
+      </div>
+      <table id="cTbl" hidden>
+        <thead><tr>
+          <th>Nome / modelo</th><th>Categoria</th><th>Requer calibração</th>
+          <th>Periodicidade (meses)</th><th>Descrição</th>
+        </tr></thead>
+        <tbody id="cTbody"></tbody>
+      </table>
+      <div class="empty" id="cEmpty" hidden></div>
+    </section>
+
+    <!-- =========================== 2. PATRIMÔNIO =========================== -->
+    <section id="sec_pat" hidden>
+      <div class="toolbar">
+        <button id="pNovo">＋ Novo item de patrimônio</button>
+        <label for="pStatus">Status</label>
+        <select id="pStatus"><option value="">(Todos)</option></select>
+        <label><input type="checkbox" id="pSoVenc" /> só calibração vencida</label>
+        <span class="hint right" id="pContador"></span>
+      </div>
+      <table id="pTbl" hidden>
+        <thead><tr>
+          <th>Código</th><th>Catálogo</th><th>Nº de série</th><th>Status</th>
+          <th>Alocada para</th><th>OS atual</th><th>Venc. calibração</th>
+        </tr></thead>
+        <tbody id="pTbody"></tbody>
+      </table>
+      <div class="empty" id="pEmpty" hidden></div>
+    </section>
+
+    <!-- ============================ 3. VÍNCULOS ============================ -->
+    <section id="sec_vin" hidden>
+      <div class="aviso-ro">
+        <strong>Sem exclusão de vínculo.</strong> O repo não deleta itens e a lista não tem campo
+        "Ativo" (sem soft-delete). Para corrigir um vínculo errado, clique na linha e <em>edite</em>
+        o vínculo existente no drawer (mudar tipo de OS, ferramenta ou exigência).
+      </div>
+      <div class="toolbar">
+        <button id="vNovo">＋ Novo vínculo</button>
+        <span class="hint right" id="vContador"></span>
+      </div>
+      <table id="vTbl" hidden>
+        <thead><tr>
+          <th>Tipo de OS</th><th>Ferramenta (catálogo)</th><th>Exigência</th>
+        </tr></thead>
+        <tbody id="vTbody"></tbody>
+      </table>
+      <div class="empty" id="vEmpty" hidden></div>
+    </section>
+
+    <!-- ============== 4. INÍCIO DE DIA / DESMOBILIZAÇÃO (por OS) ============== -->
+    <section id="sec_dia" hidden>
+      <div class="toolbar">
+        <label for="diaOS">OS</label>
+        <select id="diaOS" style="min-width:320px"><option value="">(escolha a OS)</option></select>
+        <span class="hint right" id="diaContador"></span>
+      </div>
+
+      <div id="diaVazio" class="empty">Escolha uma OS para montar o checklist de ferramentas.</div>
+
+      <div id="diaConteudo" hidden>
+        <div class="os-info" id="diaInfo"></div>
+
+        <div id="blkInicio">
+          <div class="secao">Início de dia <span>— checklist bloqueante: marque o item de patrimônio que o técnico está levando</span></div>
+          <div id="diaAviso" class="aviso-ro" hidden></div>
+          <div id="diaBlocos"></div>
+          <div id="diaPainel" class="painel bloq" hidden></div>
+          <div class="form-acoes">
+            <button id="btnInicio" disabled>Confirmar início de dia</button>
+          </div>
+          <div class="acao-msg" id="diaMsg"></div>
+        </div>
+
+        <div class="secao">Desmobilização <span>— devolução das ferramentas alocadas nesta OS</span></div>
+        <div id="desmobLista"></div>
+        <div class="form-acoes">
+          <button id="btnDesmob" class="sec" disabled>Confirmar devolução</button>
+        </div>
+        <div class="acao-msg" id="desmobMsg"></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ==================================================================
+       CHOICES — fallback hard-coded que bate com o schema das listas novas.
+       Em runtime os selects são repopulados com o que EG.listColumns
+       devolver; se o Graph falhar, o fallback segura a tela; e
+       EG.validarChoices denuncia divergência no aviso amarelo.
+
+       Tipo_OS_Completo NÃO tem fallback local de propósito: o select é
+       populado dos choices reais de OrdensDeServico.Tipo_OS_Completo (para
+       não hardcodar rótulo); se listColumns falhar, o plano B são os
+       valores DISTINTOS observados nas OS carregadas.
+       ================================================================== */
+    const FALLBACK_CHOICES = {
+      Categoria_Ferramenta: ["Medição", "Elétrica", "Manual", "Elevação", "EPC", "Outros"],
+      Status_Ferramenta: ["Disponível", "Alocada", "Em Manutenção", "Baixada"],
+      Exigencia: ["Obrigatória", "Recomendada"]
+    };
+    const CHOICES = { Tipo_OS_Completo: [] };
+    Object.keys(FALLBACK_CHOICES).forEach(n => { CHOICES[n] = FALLBACK_CHOICES[n].slice(); });
+
+    const COR_STATUS_FER = {
+      "Disponível": "#22B573", "Alocada": "#58A6FF", "Em Manutenção": "#D29922", "Baixada": "#8B949E"
+    };
+    const COR_EXIGENCIA = { "Obrigatória": "#F0883E", "Recomendada": "#58A6FF" };
+    const cor = (mapa, v) => mapa[v] || "#8b949e";
+
+    let choicesOk = false;
+    async function carregarChoices() {
+      if (choicesOk) return;
+      try {
+        const [colsCat, colsPat, colsVin, colsOS] = await Promise.all([
+          EG.listColumns("Ferramentas_Catalogo"),
+          EG.listColumns("Ferramentas_Patrimonio"),
+          EG.listColumns("Servico_Ferramenta_Obrigatoria"),
+          EG.listColumns("OrdensDeServico")
+        ]);
+        const pega = (cols, nome) => {
+          const col = (cols || []).find(c => c.name === nome);
+          return (col && col.choice && Array.isArray(col.choice.choices) && col.choice.choices.length) ? col.choice.choices : null;
+        };
+        CHOICES.Categoria_Ferramenta = pega(colsCat, "Categoria_Ferramenta") || CHOICES.Categoria_Ferramenta;
+        CHOICES.Status_Ferramenta = pega(colsPat, "Status_Ferramenta") || CHOICES.Status_Ferramenta;
+        CHOICES.Exigencia = pega(colsVin, "Exigencia") || CHOICES.Exigencia;
+        CHOICES.Tipo_OS_Completo = pega(colsOS, "Tipo_OS_Completo") || CHOICES.Tipo_OS_Completo;
+        choicesOk = true;
+      } catch (e) { console.warn("[ferramental] listColumns falhou, usando fallback:", e.message); }
+      // plano B para o tipo de OS: valores distintos observados nas OS carregadas
+      if (!CHOICES.Tipo_OS_Completo.length) {
+        CHOICES.Tipo_OS_Completo = [...new Set(oss.map(o => (o.fields || {}).Tipo_OS_Completo).filter(v => v != null && v !== ""))].sort();
+      }
+      // guarda de rótulos: divergência entre fallback e SharePoint vira aviso visível
+      Promise.all([
+        EG.validarChoices("Ferramentas_Catalogo", "Categoria_Ferramenta", FALLBACK_CHOICES.Categoria_Ferramenta).then(v => ({ v, rotulo: "Categoria (Ferramentas_Catalogo)" })),
+        EG.validarChoices("Ferramentas_Patrimonio", "Status_Ferramenta", FALLBACK_CHOICES.Status_Ferramenta).then(v => ({ v, rotulo: "Status (Ferramentas_Patrimonio)" })),
+        EG.validarChoices("Servico_Ferramenta_Obrigatoria", "Exigencia", FALLBACK_CHOICES.Exigencia).then(v => ({ v, rotulo: "Exigência (Servico_Ferramenta_Obrigatoria)" }))
+      ]).then(p => EG.renderAvisosChoices($("choiceWarn"), p)).catch(() => {});
+    }
+
+    /* ===================== helpers de data (DateOnly) =====================
+       Campo Date only volta do Graph como "AAAA-MM-DDT00:00:00Z" (meia-noite
+       UTC). new Date() disso em Brasília seria 21:00 do dia ANTERIOR;
+       parseD devolve a meia-noite LOCAL do mesmo dia (via EG.ehDataPura). */
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
+    const hoje0 = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+    const hojeKey = () => {
+      const d = new Date(); const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    // AAAA-MM-DD para <input type=date>; data-pura usa o próprio ISO (sem fuso)
+    const isoParaInput = (s) => {
+      if (!s) return "";
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    // meio-dia local -> ISO, mesma convenção de clientes/nova-proposta (não vira o dia no fuso)
+    const inputParaIso = (v) => v ? new Date(v + "T12:00:00").toISOString() : null;
+
+    const temValor = (v) => v != null && v !== "";
+    const ehNum = (v) => temValor(v) && isFinite(Number(v));
+    const cel = (v) => ehNum(v) ? Number(v).toLocaleString("pt-BR") : "—";
+    const simNao = (v) => v == null ? null : (v === true ? "Sim" : (v === false ? "Não" : String(v)));
+
+    /* ============================== estado ============================== */
+    let catalogo = [], patrimonio = [], vinculos = [], oss = [], tecnicos = [], clientes = [];
+    let mapCat = {}, mapPat = {}, mapVin = {}, mapOS = {};
+    let nomeTecnico = {}, nomeCliente = {};
+    let carregado = false;
+    let usuarioNome = "";   // vai para o "quem" do Desmob_Checklist_JSON
+    let usuarioEmail = "";  // junto do nome: dois homônimos ficariam indistinguíveis
+
+    const catNome = (id) => id == null ? "—" : (((mapCat[id] || {}).fields || {}).Title || ("catálogo #" + id));
+    const tecNome = (id) => id == null ? "—" : (nomeTecnico[id] || ("técnico #" + id));
+    const cliNome = (id) => id == null ? "—" : (nomeCliente[id] || ("cliente #" + id));
+    const osNome = (id) => id == null ? "—" : (((mapOS[id] || {}).fields || {}).Title || ("OS #" + id));
+
+    /* ==================================================================
+       TRAVA DE CALIBRAÇÃO — regra central (ver comentário no topo).
+       Devolve { requer, vencida, motivo }:
+         requer=false            -> catálogo não exige calibração, sempre ok;
+         vencida=true            -> NÃO pode ser alocada nem confirmada no
+                                    checklist de início de dia;
+         venc. vazio ou ilegível -> conta como vencida (direção segura:
+                                    sem prova de calibração = bloqueia).
+       Vencimento IGUAL a hoje ainda vale (d < hoje0() é estritamente antes).
+       ================================================================== */
+    function calibracao(f) {
+      const cat = f.CatalogoLookupId != null ? mapCat[f.CatalogoLookupId] : null;
+      const requer = !!cat && (cat.fields || {}).Requer_Calibracao === true;
+      if (!requer) return { requer: false, vencida: false, motivo: null };
+      const venc = f.Data_Vencimento_Calibracao;
+      if (!venc) return { requer: true, vencida: true, motivo: "exige calibração e não tem data de vencimento registrada" };
+      const d = parseD(venc);
+      if (!d) return { requer: true, vencida: true, motivo: "data de vencimento ilegível (" + venc + ")" };
+      if (d < hoje0()) return { requer: true, vencida: true, motivo: "calibração vencida em " + EG.fmtDate(venc) };
+      return { requer: true, vencida: false, motivo: null };
+    }
+    const badgeVenc = "<span class='venc'>CALIBRAÇÃO VENCIDA</span>";
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); usuarioNome = u.nome; usuarioEmail = u.email || ""; $("user").textContent = "👤 " + u.nome; }
+      catch { usuarioNome = EG.getAccount().username; usuarioEmail = ""; $("user").textContent = "👤 " + usuarioNome; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // uma lista que falha não derruba as outras abas
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    /* ============================== abas ============================== */
+    let secAtual = "cat";
+    document.querySelectorAll(".tab").forEach(b => { b.onclick = () => mostrarSec(b.dataset.sec); });
+    function mostrarSec(id) {
+      secAtual = id;
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.sec === id));
+      ["cat", "pat", "vin", "dia"].forEach(s => { $("sec_" + s).hidden = !carregado || (s !== id); });
+    }
+
+    /* ============================== carga ============================== */
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando ferramental...");
+        const [ca, pa, vi, os, te, cl] = await Promise.all([
+          soft(EG.listItems("Ferramentas_Catalogo"), "Ferramentas_Catalogo"),
+          soft(EG.listItems("Ferramentas_Patrimonio"), "Ferramentas_Patrimonio"),
+          soft(EG.listItems("Servico_Ferramenta_Obrigatoria"), "Servico_Ferramenta_Obrigatoria"),
+          soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
+          soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
+          soft(EG.listItems("Clientes"), "Clientes")
+        ]);
+        setDados(ca, pa, vi, os, te, cl);
+        await carregarChoices();   // depois de setDados: o plano B do tipo de OS usa as OS carregadas
+        carregado = true;
+        $("tabs").hidden = false;
+        montarFiltros();
+        renderTudo();
+        mostrarSec(secAtual);
+        setStatus("OK — " + catalogo.length + " no catálogo, " + patrimonio.length + " patrimônio(s), " +
+                  vinculos.length + " vínculo(s), " + oss.length + " OS.");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // separado da carga para poder ser exercitado com dados falsos (window.FER.setDados)
+    function setDados(ca, pa, vi, os, te, cl) {
+      catalogo = ca || []; patrimonio = pa || []; vinculos = vi || []; oss = os || [];
+      tecnicos = te || []; clientes = cl || [];
+      mapCat = {}; catalogo.forEach(i => { mapCat[i.id] = i; });
+      mapPat = {}; patrimonio.forEach(i => { mapPat[i.id] = i; });
+      mapVin = {}; vinculos.forEach(i => { mapVin[i.id] = i; });
+      mapOS = {}; oss.forEach(i => { mapOS[i.id] = i; });
+      nomeTecnico = {}; tecnicos.forEach(t => { nomeTecnico[t.id] = (t.fields || {}).Title; });
+      nomeCliente = {}; clientes.forEach(c => { nomeCliente[c.id] = (c.fields || {}).Title; });
+    }
+
+    // OS "encerrada" por heurística de rótulo (OrdensDeServico é só leitura aqui;
+    // não há enum local de Status para não hardcodar): concluída/cancelada/finalizada.
+    const ehEncerrada = (o) => /conclu|cancel|finaliz/i.test(String((o.fields || {}).Status || ""));
+
+    function montarFiltros() {
+      $("pStatus").innerHTML = '<option value="">(Todos)</option>' +
+        CHOICES.Status_Ferramenta.map(s => '<option value="' + esc(s) + '">' + esc(s) + "</option>").join("");
+      montarSelectOS();
+    }
+
+    /* select de OS da aba 4: OS NÃO encerrada (início de dia) + OS encerrada
+       que AINDA tem patrimônio alocado (senão não haveria como desmobilizar
+       ferramenta presa numa OS já concluída). */
+    function montarSelectOS() {
+      const comFerramenta = new Set(patrimonio.map(p => (p.fields || {}).OS_AtualLookupId).filter(v => v != null).map(String));
+      const elegiveis = oss.filter(o => !ehEncerrada(o) || comFerramenta.has(String(o.id)));
+      const atual = $("diaOS").value;
+      $("diaOS").innerHTML = '<option value="">(escolha a OS)</option>' + elegiveis.map(o => {
+        const f = o.fields || {};
+        const rot = [f.Title || ("OS #" + o.id),
+                     f.ClienteLookupId != null ? cliNome(f.ClienteLookupId) : null,
+                     f.Status || null].filter(Boolean).join(" — ");
+        return '<option value="' + esc(o.id) + '">' + esc(rot) + "</option>";
+      }).join("");
+      if (atual && mapOS[atual]) $("diaOS").value = atual;
+      $("diaContador").textContent = elegiveis.length + " OS elegível(is)";
+    }
+
+    function renderTudo() { renderCat(); renderPat(); renderVin(); renderDia(); atualizarAbas(); }
+    function atualizarAbas() {
+      $("tabCat").textContent = "Catálogo (" + catalogo.length + ")";
+      $("tabPat").textContent = "Patrimônio (" + patrimonio.length + ")";
+      $("tabVin").textContent = "Vínculos serviço×ferramenta (" + vinculos.length + ")";
+      $("tabDia").textContent = "Início de dia / Desmobilização";
+    }
+
+    /* ==================================================================
+       1. CATÁLOGO
+       ================================================================== */
+    function renderCat() {
+      $("cContador").textContent = catalogo.length + " ferramenta(s) no catálogo";
+      const lista = catalogo.slice().sort((a, b) =>
+        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      if (!lista.length) {
+        $("cTbody").innerHTML = ""; $("cTbl").hidden = true; $("cEmpty").hidden = false;
+        $("cEmpty").textContent = "Nenhuma ferramenta no catálogo (Ferramentas_Catalogo está vazia).";
+        return;
+      }
+      $("cEmpty").hidden = true; $("cTbl").hidden = false;
+      $("cTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const desc = String(f.Descricao || "");
+        return "<tr data-tipo='cat' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Title || "—") + "</td>" +
+          "<td class='dim'>" + esc(f.Categoria_Ferramenta || "—") + "</td>" +
+          "<td>" + esc(simNao(f.Requer_Calibracao) || "—") + "</td>" +
+          "<td class='n'>" + cel(f.Periodicidade_Calibracao_Meses) + "</td>" +
+          "<td class='dim'>" + esc(desc.length > 80 ? desc.slice(0, 80) + "…" : (desc || "—")) + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ==================================================================
+       2. PATRIMÔNIO
+       ================================================================== */
+    function renderPat() {
+      const fs = $("pStatus").value, soVenc = $("pSoVenc").checked;
+      const lista = patrimonio.filter(o => {
+        const f = o.fields || {};
+        if (fs && f.Status_Ferramenta !== fs) return false;
+        if (soVenc && !calibracao(f).vencida) return false;
+        return true;
+      }).sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      $("pContador").textContent = lista.length + " de " + patrimonio.length + " item(ns)";
+
+      if (!lista.length) {
+        $("pTbody").innerHTML = ""; $("pTbl").hidden = true; $("pEmpty").hidden = false;
+        $("pEmpty").textContent = patrimonio.length
+          ? "Nenhum item corresponde aos filtros."
+          : "Nenhum item de patrimônio (Ferramentas_Patrimonio está vazia).";
+        return;
+      }
+      $("pEmpty").hidden = true; $("pTbl").hidden = false;
+      $("pTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const c = cor(COR_STATUS_FER, f.Status_Ferramenta);
+        const cal = calibracao(f);
+        const venc = f.Data_Vencimento_Calibracao
+          ? esc(EG.fmtDate(f.Data_Vencimento_Calibracao))
+          : (cal.requer ? "<span class='dim'>sem data</span>" : "<span class='dim'>—</span>");
+        return "<tr data-tipo='pat' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Title || "—") + "</td>" +
+          "<td>" + esc(catNome(f.CatalogoLookupId)) + "</td>" +
+          "<td class='dim'>" + esc(f.Numero_Serie || "—") + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Status_Ferramenta || "—") + "</span></td>" +
+          "<td>" + esc(f.Alocada_ParaLookupId != null ? tecNome(f.Alocada_ParaLookupId) : "—") + "</td>" +
+          "<td>" + esc(f.OS_AtualLookupId != null ? osNome(f.OS_AtualLookupId) : "—") + "</td>" +
+          "<td>" + venc + (cal.vencida ? " " + badgeVenc : "") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+    ["pStatus", "pSoVenc"].forEach(id => $(id).addEventListener("change", renderPat));
+
+    /* ==================================================================
+       3. VÍNCULOS SERVIÇO×FERRAMENTA
+       ================================================================== */
+    function renderVin() {
+      $("vContador").textContent = vinculos.length + " vínculo(s)";
+      const lista = vinculos.slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        const d = String(fa.Tipo_OS_Completo_Valor || "").localeCompare(String(fb.Tipo_OS_Completo_Valor || ""), "pt-BR");
+        if (d !== 0) return d;
+        return String(catNome(fa.CatalogoLookupId)).localeCompare(String(catNome(fb.CatalogoLookupId)), "pt-BR");
+      });
+      if (!lista.length) {
+        $("vTbody").innerHTML = ""; $("vTbl").hidden = true; $("vEmpty").hidden = false;
+        $("vEmpty").textContent = "Nenhum vínculo cadastrado — sem vínculos, o checklist de início de dia não exige nada.";
+        return;
+      }
+      $("vEmpty").hidden = true; $("vTbl").hidden = false;
+      $("vTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const c = cor(COR_EXIGENCIA, f.Exigencia);
+        const tipoForaDaLista = temValor(f.Tipo_OS_Completo_Valor) && CHOICES.Tipo_OS_Completo.length &&
+                                !CHOICES.Tipo_OS_Completo.includes(f.Tipo_OS_Completo_Valor);
+        return "<tr data-tipo='vin' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Tipo_OS_Completo_Valor || "—") +
+            (tipoForaDaLista ? " <span class='ro'>valor legado — fora dos choices atuais de OS</span>" : "") + "</td>" +
+          "<td>" + esc(catNome(f.CatalogoLookupId)) + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Exigencia || "—") + "</span></td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ==================================================================
+       DRAWERS DE LEITURA (clique na linha) — Editar abre o formulário
+       ================================================================== */
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+
+    function abrirCatDrawer(o) {
+      const f = o.fields || {};
+      const usos = patrimonio.filter(p => String((p.fields || {}).CatalogoLookupId) === String(o.id)).length;
+      const corpo = "<dl>" +
+        linha("Nome / modelo", f.Title) +
+        linha("Categoria", f.Categoria_Ferramenta) +
+        linha("Requer calibração", simNao(f.Requer_Calibracao)) +
+        linha("Periodicidade (meses)", ehNum(f.Periodicidade_Calibracao_Meses) ? cel(f.Periodicidade_Calibracao_Meses) : null) +
+        linha("Descrição", f.Descricao) +
+        linha("Itens de patrimônio deste catálogo", String(usos)) +
+        "</dl>";
+      mostrarDrawer(f.Title || "Ferramenta", "catálogo", corpo, f, () => abrirForm("cat", o));
+    }
+
+    function abrirPatDrawer(o) {
+      const f = o.fields || {};
+      const cal = calibracao(f);
+      const corpo = "<dl>" +
+        linha("Código de patrimônio", f.Title) +
+        linha("Catálogo", f.CatalogoLookupId != null ? catNome(f.CatalogoLookupId) : null) +
+        linha("Nº de série", f.Numero_Serie) +
+        linha("Status", f.Status_Ferramenta) +
+        linha("Alocada para", f.Alocada_ParaLookupId != null ? tecNome(f.Alocada_ParaLookupId) : null) +
+        linha("OS atual", f.OS_AtualLookupId != null ? osNome(f.OS_AtualLookupId) : null) +
+        linha("Última calibração", EG.fmtDate(f.Data_Ultima_Calibracao)) +
+        linha("Vencimento da calibração", EG.fmtDate(f.Data_Vencimento_Calibracao)) +
+        linha("Certificado (URL)", f.Certificado_Calibracao_URL) +
+        // leitura por QR (câmera no mobile) é integração futura — aqui só exibimos o payload
+        linha("QR Code (payload)", f.QR_Code) +
+        "</dl>" +
+        (cal.vencida ? "<div style='margin:10px 0'>" + badgeVenc + " <span class='hint'>" + esc(cal.motivo) + " — bloqueada para alocação e para o checklist de início de dia.</span></div>" : "") +
+        (f.Desmob_Checklist_JSON
+          ? "<div class='f-grupo'>Última desmobilização</div><pre style='margin-top:8px'>" + esc(formatarJson(f.Desmob_Checklist_JSON)) + "</pre>"
+          : "");
+      mostrarDrawer(f.Title || "Patrimônio", f.Status_Ferramenta || "sem status", corpo, f, () => abrirForm("pat", o));
+    }
+    const formatarJson = (s) => { try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return String(s); } };
+
+    function abrirVinDrawer(o) {
+      const f = o.fields || {};
+      const corpo = "<dl>" +
+        linha("Tipo de OS", f.Tipo_OS_Completo_Valor) +
+        linha("Ferramenta (catálogo)", f.CatalogoLookupId != null ? catNome(f.CatalogoLookupId) : null) +
+        linha("Exigência", f.Exigencia) +
+        linha("Título", f.Title) +
+        "</dl>" +
+        "<div class='hint'>Vínculo não pode ser excluído (padrão do repo, sem soft-delete): para corrigir, edite este mesmo item.</div>";
+      mostrarDrawer(f.Title || "Vínculo", (f.Exigencia || "—"), corpo, f, () => abrirForm("vin", o));
+    }
+
+    function mostrarDrawer(titulo, sub, corpoHtml, fields, onEditar) {
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(titulo) +
+          (sub ? "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(sub) + "</div>" : "") +
+        "</div><div class='acs'><button id='de'>Editar ✏️</button><button class='x' id='dc'>Fechar ✕</button></div></div>" +
+        "<div class='drawer-body'>" + corpoHtml +
+          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
+          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
+        "</div>";
+      $("dc").onclick = fecharDrawer;
+      $("de").onclick = onEditar;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fecharDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    /* ==================================================================
+       FORMULÁRIOS (criar/editar) — padrão clientes.html: snapshot para
+       dirty tracking, POST só com chaves COM valor, PATCH só do que mudou
+       (campo esvaziado de propósito vai como null) e RELEITURA do servidor.
+       Lookup grava como <Campo>LookupId numérico (regra do Graph).
+       ================================================================== */
+    const fonteCatalogo = () => catalogo.slice()
+      .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"))
+      .map(c => ({ id: c.id, rotulo: ((c.fields || {}).Title || ("catálogo #" + c.id)) + ((c.fields || {}).Requer_Calibracao === true ? " (requer calibração)" : "") }));
+    const fonteTecnicos = () => tecnicos.slice()
+      .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"))
+      .map(t => ({ id: t.id, rotulo: (t.fields || {}).Title || ("técnico #" + t.id) }));
+    const fonteOS = () => oss.slice()
+      .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"))
+      .map(o => { const f = o.fields || {}; return { id: o.id, rotulo: [f.Title || ("OS #" + o.id), f.Status].filter(Boolean).join(" — ") }; });
+
+    const ENT = {
+      cat: {
+        lista: "Ferramentas_Catalogo", titulo: "ferramenta do catálogo",
+        campos: [
+          { n: "Title", rotulo: "Nome / modelo", req: true, ph: "ex.: Multímetro Fluke 117" },
+          { n: "Categoria_Ferramenta", rotulo: "Categoria", tipo: "choice", choices: "Categoria_Ferramenta" },
+          { n: "Requer_Calibracao", rotulo: "Requer calibração", tipo: "bool",
+            hint: "com 'Sim', TODO item de patrimônio deste catálogo sem calibração em dia fica bloqueado para alocação e para o início de dia" },
+          { n: "Periodicidade_Calibracao_Meses", rotulo: "Periodicidade da calibração (meses)", tipo: "number" },
+          { n: "Descricao", rotulo: "Descrição", tipo: "textarea" }
+        ],
+        aposLeitura: abrirCatDrawer
+      },
+      pat: {
+        lista: "Ferramentas_Patrimonio", titulo: "item de patrimônio",
+        campos: [
+          { n: "Title", rotulo: "Código de patrimônio", req: true, ph: "ex.: FER-0042" },
+          { n: "Catalogo", rotulo: "Ferramenta (catálogo)", tipo: "lookup", fonte: fonteCatalogo, req: true },
+          { n: "Numero_Serie", rotulo: "Nº de série" },
+          { n: "Status_Ferramenta", rotulo: "Status", tipo: "choice", choices: "Status_Ferramenta",
+            hint: "trava de calibração: item com calibração vencida não pode ser gravado como 'Alocada'. Alocação normal é feita pelo checklist de início de dia (aba 4)" },
+          { n: "Alocada_Para", rotulo: "Alocada para (técnico)", tipo: "lookup", fonte: fonteTecnicos,
+            hint: "normalmente preenchido/limpo pelo checklist de início de dia e pela desmobilização" },
+          { n: "OS_Atual", rotulo: "OS atual", tipo: "lookup", fonte: fonteOS,
+            hint: "normalmente preenchido/limpo pelo checklist de início de dia e pela desmobilização" },
+          { grupo: "Calibração" },
+          { n: "Data_Ultima_Calibracao", rotulo: "Data da última calibração", tipo: "date" },
+          { n: "Data_Vencimento_Calibracao", rotulo: "Vencimento da calibração", tipo: "date",
+            hint: "vazio ou anterior a hoje = CALIBRAÇÃO VENCIDA quando o catálogo exige calibração" },
+          { n: "Certificado_Calibracao_URL", rotulo: "Certificado de calibração (URL)" },
+          { grupo: "Identificação física" },
+          { n: "QR_Code", rotulo: "QR Code (payload da etiqueta)",
+            hint: "leitura por câmera no mobile é integração futura — aqui só se cadastra o payload impresso" }
+          // Desmob_Checklist_JSON fica FORA do formulário: é escrito só pela
+          // desmobilização (aba 4); editar à mão corromperia a trilha de devolução.
+        ],
+        valida: validarPat,
+        aposLeitura: abrirPatDrawer
+      },
+      vin: {
+        lista: "Servico_Ferramenta_Obrigatoria", titulo: "vínculo serviço×ferramenta",
+        campos: [
+          // TEXT de propósito — select dinâmico dos choices de OrdensDeServico.Tipo_OS_Completo
+          { n: "Tipo_OS_Completo_Valor", rotulo: "Tipo de OS", tipo: "choice", choices: "Tipo_OS_Completo", req: true,
+            hint: "opções vêm dos choices reais de OrdensDeServico.Tipo_OS_Completo; valor legado gravado fora da lista continua selecionável" },
+          { n: "Catalogo", rotulo: "Ferramenta (catálogo)", tipo: "lookup", fonte: fonteCatalogo, req: true },
+          { n: "Exigencia", rotulo: "Exigência", tipo: "choice", choices: "Exigencia", req: true,
+            hint: "Obrigatória bloqueia o início de dia; Recomendada só aparece no checklist" }
+        ],
+        aposLeitura: abrirVinDrawer
+      }
+    };
+    Object.keys(ENT).forEach(k => { ENT[k].dados = ENT[k].campos.filter(c => c.n); });
+
+    let snapshot = null, entAtual = null, itemAtual = null, gravando = false;
+
+    // O valor ATUAL entra no select mesmo fora da lista (valor legado ou
+    // fallback divergente) — senão o select cairia em "", o dirty tracking
+    // veria "alterado" e o Salvar gravaria null, apagando em silêncio.
+    const optsChoice = (nome, sel) => {
+      const lista = (CHOICES[nome] || []);
+      const fora = temValor(sel) && !lista.includes(sel);
+      return ['<option value=""></option>']
+        .concat(lista.map(o => "<option value='" + esc(o) + "'" + (o === sel ? " selected" : "") + ">" + esc(o) + "</option>"))
+        .concat(fora ? ["<option value='" + esc(sel) + "' selected>" + esc(sel) + " (valor atual — fora da lista)</option>"] : [])
+        .join("");
+    };
+    const optsLookup = (opcoes, sel) => {
+      const selS = sel == null ? "" : String(sel);
+      const fora = selS !== "" && !opcoes.some(o => String(o.id) === selS);
+      return ['<option value=""></option>']
+        .concat(opcoes.map(o => "<option value='" + esc(o.id) + "'" + (String(o.id) === selS ? " selected" : "") + ">" + esc(o.rotulo) + "</option>"))
+        .concat(fora ? ["<option value='" + esc(selS) + "' selected>item #" + esc(selS) + " (valor atual — fora da lista)</option>"] : [])
+        .join("");
+    };
+    const optsBool = (sel) =>
+      ['<option value=""></option>', "<option value='Sim'" + (sel === "Sim" ? " selected" : "") + ">Sim</option>",
+       "<option value='Não'" + (sel === "Não" ? " selected" : "") + ">Não</option>"].join("");
+
+    function valorInicial(c, f) {
+      if (!f) return "";
+      if (c.tipo === "lookup") { const v = f[c.n + "LookupId"]; return v == null ? "" : String(v); }
+      if (c.tipo === "date") return isoParaInput(f[c.n]);
+      if (c.tipo === "bool") return f[c.n] === true ? "Sim" : (f[c.n] === false ? "Não" : "");
+      return f[c.n] == null ? "" : String(f[c.n]);
+    }
+
+    function campoHtml(c, valor) {
+      const id = "c_" + c.n;
+      const rotulo = "<label for='" + id + "'>" + esc(c.rotulo) + (c.req ? " <span class='req'>*</span>" : "") + "</label>";
+      let controle;
+      if (c.tipo === "choice") controle = "<select id='" + id + "'>" + optsChoice(c.choices, valor) + "</select>";
+      else if (c.tipo === "lookup") controle = "<select id='" + id + "'>" + optsLookup(c.fonte(), valor) + "</select>";
+      else if (c.tipo === "bool") controle = "<select id='" + id + "'>" + optsBool(valor) + "</select>";
+      else if (c.tipo === "number") controle = "<input id='" + id + "' type='number' min='0' step='1' value='" + esc(valor) + "' />";
+      else if (c.tipo === "date") controle = "<input id='" + id + "' type='date' value='" + esc(valor) + "' />";
+      else if (c.tipo === "textarea") controle = "<textarea id='" + id + "'>" + esc(valor) + "</textarea>";
+      else controle = "<input id='" + id + "' type='text' maxlength='255' value='" + esc(valor) + "' placeholder='" + esc(c.ph || "") + "' />";
+      return "<div class='f'>" + rotulo + controle +
+        (c.hint ? "<span class='hint'>⚠️ " + esc(c.hint) + "</span>" : "") +
+        "<span class='err' id='e_" + c.n + "'></span></div>";
+    }
+
+    // item == null -> criação; item -> edição
+    function abrirForm(entKey, item) {
+      const ent = ENT[entKey];
+      const f = item ? (item.fields || {}) : null;
+      entAtual = entKey; itemAtual = item; snapshot = {};
+      const corpo = ent.campos.map(c => {
+        if (c.grupo) return "<div class='f-grupo'>" + esc(c.grupo) + "</div>";
+        const v = valorInicial(c, f);
+        snapshot[c.n] = v;
+        return campoHtml(c, v);
+      }).join("");
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" +
+          (item ? "Editar — " + esc((f && f.Title) || ("#" + item.id)) : "Novo " + esc(ent.titulo)) +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'><form class='form' id='formEnt' autocomplete='off' onsubmit='return false'>" +
+          corpo +
+          "<div class='form-acoes'>" +
+            "<button type='button' id='btnSalvar'>" + (item ? "Salvar alterações" : "Criar") + "</button>" +
+            "<button type='button' class='sec' id='btnCancelar'>Cancelar</button>" +
+          "</div>" +
+          "<div class='form-msg' id='formMsg'></div>" +
+        "</form></div>";
+      $("dc").onclick = fecharDrawer;
+      $("btnCancelar").onclick = () => item ? ent.aposLeitura(item) : fecharDrawer();
+      $("btnSalvar").onclick = () => salvar(entKey, item);
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+
+    const valorAtual = (c) => { const el = $("c_" + c.n); return el ? el.value.trim() : ""; };
+
+    /* validação específica do patrimônio — aplica a TRAVA DE CALIBRAÇÃO no
+       formulário: não deixa gravar Status "Alocada" para item cujo catálogo
+       exige calibração e cujo vencimento (no PRÓPRIO form) está vazio ou
+       passou. Usa os valores do form, não os do servidor: é o estado que
+       seria gravado que precisa ser válido. */
+    function validarPat(vals, falha) {
+      if (vals.Status_Ferramenta !== "Alocada") return;
+      const cat = vals.Catalogo ? mapCat[vals.Catalogo] : null;
+      const requer = !!cat && (cat.fields || {}).Requer_Calibracao === true;
+      if (!requer) return;
+      const venc = vals.Data_Vencimento_Calibracao; // AAAA-MM-DD do input — compara como string
+      if (!venc || venc < hojeKey())
+        falha("Status_Ferramenta", "trava de calibração: este catálogo exige calibração e o vencimento está " +
+          (venc ? "vencido (" + venc.split("-").reverse().join("/") + ")" : "vazio") + " — não pode ficar 'Alocada'.");
+    }
+
+    function validarForm(ent) {
+      ent.dados.forEach(c => { const e = $("e_" + c.n); if (e) e.textContent = ""; });
+      let primeiro = null;
+      const falha = (n, msg) => { const e = $("e_" + n); if (e) e.textContent = msg; if (!primeiro) primeiro = n; };
+      const vals = {};
+      ent.dados.forEach(c => { vals[c.n] = valorAtual(c); });
+      ent.dados.forEach(c => { if (c.req && !vals[c.n]) falha(c.n, "obrigatório"); });
+      ent.dados.forEach(c => {
+        if (c.tipo === "number" && vals[c.n] !== "" && !isFinite(Number(vals[c.n]))) falha(c.n, "número inválido");
+      });
+      if (ent.valida) ent.valida(vals, falha);
+      if (primeiro) {
+        const el = $("c_" + primeiro); if (el) el.focus();
+        $("formMsg").className = "form-msg err";
+        $("formMsg").textContent = "Corrija os campos destacados.";
+        return null;
+      }
+      return vals;
+    }
+
+    // converte valor de FORM (string) para o valor a gravar no Graph
+    function paraGraph(c, v) {
+      if (c.tipo === "lookup") return Number(v);            // <Campo>LookupId numérico
+      if (c.tipo === "date") return inputParaIso(v);
+      if (c.tipo === "bool") return v === "Sim";
+      if (c.tipo === "number") return Number(v);
+      return v;
+    }
+    const chaveGraph = (c) => c.tipo === "lookup" ? c.n + "LookupId" : c.n;
+
+    async function salvar(entKey, item) {
+      if (gravando) return;
+      const ent = ENT[entKey];
+      const vals = validarForm(ent);
+      if (!vals) return;
+      const msg = $("formMsg");
+      try {
+        gravando = true; $("btnSalvar").disabled = true;
+        msg.className = "form-msg"; msg.textContent = "Gravando...";
+
+        let id;
+        if (!item) {
+          // CRIAÇÃO — só entram chaves COM valor; branco não vira "" (padrão do repo)
+          const payload = {};
+          ent.dados.forEach(c => { const v = vals[c.n]; if (v === "") return; payload[chaveGraph(c)] = paraGraph(c, v); });
+          if (entKey === "vin") payload.Title = tituloVinculo(vals);
+          const novo = await EG.createItem(ent.lista, payload);
+          id = novo && novo.id;
+          if (!id) throw new Error("o Graph não devolveu o id do item criado");
+        } else {
+          // EDIÇÃO — dirty tracking: PATCH apenas do que mudou vs snapshot.
+          // Campo esvaziado de propósito vai como null (limpa no SharePoint).
+          const mudados = {};
+          ent.dados.forEach(c => {
+            const v = vals[c.n];
+            if (v === (snapshot ? snapshot[c.n] : "")) return;
+            mudados[chaveGraph(c)] = v === "" ? null : paraGraph(c, v);
+          });
+          // vínculo: Title acompanha tipo/ferramenta quando um dos dois muda,
+          // para a linha continuar se descrevendo sozinha em views do SharePoint
+          if (entKey === "vin" && (("Tipo_OS_Completo_Valor" in mudados) || ("CatalogoLookupId" in mudados)))
+            mudados.Title = tituloVinculo(vals);
+          if (!Object.keys(mudados).length) { msg.textContent = "Nada foi alterado."; return; }
+          await EG.patchItemFields(ent.lista, item.id, mudados);
+          id = item.id;
+        }
+
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const atual = await relerItem(ent.lista, id);
+        upsertEnt(entKey, atual);
+        renderTudo(); montarSelectOS();
+        ent.aposLeitura(atual);
+        setStatus((item ? "Atualizado" : "Criado") + " — " + (((atual.fields || {}).Title) || ("#" + id)) + ".");
+      } catch (e) {
+        msg.className = "form-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+      } finally {
+        gravando = false;
+        const b = $("btnSalvar"); if (b) b.disabled = false;
+      }
+    }
+
+    const tituloVinculo = (vals) => (vals.Tipo_OS_Completo_Valor || "?") + " × " + catNome(vals.Catalogo || null);
+
+    async function relerItem(lista, id) {
+      const sid = await EG.resolveSite();
+      return EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent(lista) + "/items/" + id + "?expand=fields");
+    }
+    function upsertEnt(entKey, novo) {
+      const arr = entKey === "cat" ? catalogo : (entKey === "pat" ? patrimonio : vinculos);
+      const mapa = entKey === "cat" ? mapCat : (entKey === "pat" ? mapPat : mapVin);
+      const i = arr.findIndex(x => x.id === novo.id);
+      if (i > -1) arr[i] = novo; else arr.unshift(novo);
+      mapa[novo.id] = novo;
+    }
+
+    $("cNovo").onclick = () => abrirForm("cat", null);
+    $("pNovo").onclick = () => abrirForm("pat", null);
+    $("vNovo").onclick = () => abrirForm("vin", null);
+
+    /* ==================================================================
+       4. INÍCIO DE DIA / DESMOBILIZAÇÃO (por OS)
+       ================================================================== */
+    let diaBlocosInfo = [];   // [{key, catId, exig, rotulo}] — metadados dos blocos renderizados
+    let gravandoDia = false;
+
+    $("diaOS").addEventListener("change", renderDia);
+
+    function renderDia() {
+      const osId = $("diaOS").value;
+      const os = osId ? mapOS[osId] : null;
+      $("diaVazio").hidden = !!os;
+      $("diaConteudo").hidden = !os;
+      $("diaMsg").textContent = ""; $("desmobMsg").textContent = "";
+      if (!os) return;
+      const f = os.fields || {};
+
+      $("diaInfo").innerHTML =
+        "<span class='k'>OS:</span> <strong>" + esc(f.Title || ("#" + os.id)) + "</strong>" +
+        " &nbsp;·&nbsp; <span class='k'>Cliente:</span> " + esc(f.ClienteLookupId != null ? cliNome(f.ClienteLookupId) : "—") +
+        " &nbsp;·&nbsp; <span class='k'>Técnico:</span> " + esc(f.TecnicoLookupId != null ? tecNome(f.TecnicoLookupId) : "—") +
+        " &nbsp;·&nbsp; <span class='k'>Tipo:</span> " + esc(f.Tipo_OS_Completo || "—") +
+        " &nbsp;·&nbsp; <span class='k'>Status:</span> " + esc(f.Status || "—");
+
+      // OS encerrada só desmobiliza — não faz sentido iniciar dia nela
+      $("blkInicio").hidden = ehEncerrada(os);
+      if (!ehEncerrada(os)) renderInicio(os);
+      renderDesmob(os);
+    }
+
+    function renderInicio(os) {
+      const f = os.fields || {};
+      const tipo = f.Tipo_OS_Completo;
+      const aviso = $("diaAviso");
+      diaBlocosInfo = [];
+
+      if (!temValor(tipo)) {
+        aviso.hidden = false;
+        aviso.innerHTML = "<strong>OS sem Tipo_OS_Completo.</strong> Sem o tipo não há como determinar as ferramentas obrigatórias — defina o tipo na tela de OS.";
+        $("diaBlocos").innerHTML = ""; $("diaPainel").hidden = true; $("btnInicio").disabled = true;
+        return;
+      }
+
+      // vínculos do tipo, deduplicados por catálogo — se o mesmo catálogo
+      // aparecer como Obrigatória E Recomendada, vale a mais forte (Obrigatória)
+      const doTipo = vinculos.filter(v => (v.fields || {}).Tipo_OS_Completo_Valor === tipo);
+      const porCat = {};
+      doTipo.forEach(v => {
+        const vf = v.fields || {};
+        if (vf.CatalogoLookupId == null) return;
+        const k = String(vf.CatalogoLookupId);
+        const exig = vf.Exigencia === "Obrigatória" ? "Obrigatória" : (vf.Exigencia || "Recomendada");
+        if (!porCat[k] || exig === "Obrigatória") porCat[k] = { catId: vf.CatalogoLookupId, exig: porCat[k] && porCat[k].exig === "Obrigatória" ? "Obrigatória" : exig };
+      });
+      const blocos = Object.values(porCat)
+        .sort((a, b) => (a.exig === b.exig ? String(catNome(a.catId)).localeCompare(String(catNome(b.catId)), "pt-BR") : (a.exig === "Obrigatória" ? -1 : 1)));
+
+      if (!blocos.length) {
+        aviso.hidden = false;
+        aviso.innerHTML = "<strong>Nenhum vínculo cadastrado para o tipo</strong> \"" + esc(tipo) + "\" — nada é exigido; cadastre os vínculos na aba 3 se este tipo de serviço requer ferramentas.";
+        $("diaBlocos").innerHTML = ""; $("diaPainel").hidden = true; $("btnInicio").disabled = true;
+        return;
+      }
+      aviso.hidden = true;
+
+      $("diaBlocos").innerHTML = blocos.map((b, idx) => {
+        const key = "b" + idx;
+        diaBlocosInfo.push({ key, catId: b.catId, exig: b.exig, rotulo: catNome(b.catId) });
+        const c = cor(COR_EXIGENCIA, b.exig);
+        // TODOS os itens do catálogo aparecem, mas só "Disponível" e com
+        // calibração em dia é selecionável — os demais ficam desabilitados
+        // com o MOTIVO na frente (transparência > esconder).
+        const itens = patrimonio.filter(p => String((p.fields || {}).CatalogoLookupId) === String(b.catId))
+          .sort((x, y) => String((x.fields || {}).Title || "").localeCompare(String((y.fields || {}).Title || ""), "pt-BR"));
+        const linhas = itens.map(p => {
+          const pf = p.fields || {};
+          const cal = calibracao(pf);
+          let motivo = null, neutro = false;
+          if (cal.vencida) motivo = cal.motivo;                     // trava de calibração
+          else if (pf.Status_Ferramenta !== "Disponível") {
+            motivo = (pf.Status_Ferramenta || "sem status") +
+              (pf.OS_AtualLookupId != null ? " em " + osNome(pf.OS_AtualLookupId) : "");
+            neutro = true;
+          }
+          const off = motivo != null;
+          return "<label class='fer-item" + (off ? " off" : "") + "'>" +
+            "<input type='radio' name='dsel_" + key + "' value='" + esc(p.id) + "'" + (off ? " disabled" : "") + " />" +
+            "<span>" + esc(pf.Title || ("item #" + p.id)) + "</span>" +
+            (pf.Numero_Serie ? "<span class='serie'>série " + esc(pf.Numero_Serie) + "</span>" : "") +
+            (cal.requer && !cal.vencida && pf.Data_Vencimento_Calibracao ? "<span class='serie'>calibração até " + esc(EG.fmtDate(pf.Data_Vencimento_Calibracao)) + "</span>" : "") +
+            (off ? "<span class='motivo" + (neutro ? " neutro" : "") + "'>" + esc(motivo) + "</span>" : "") +
+            "</label>";
+        }).join("");
+        // recomendada pode ficar sem item ("não levar"); obrigatória não tem
+        // essa opção — enquanto nada válido estiver marcado, o início fica bloqueado
+        const naoLevar = b.exig !== "Obrigatória"
+          ? "<label class='fer-item'><input type='radio' name='dsel_" + key + "' value='' checked /> <span class='dim'>não levar</span></label>"
+          : "";
+        return "<div class='fer-bloco'>" +
+          "<div class='cab'><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(b.exig) + "</span> " + esc(catNome(b.catId)) + "</div>" +
+          (itens.length ? linhas : "<div class='fer-vazio'>nenhum item de patrimônio cadastrado para este catálogo</div>") +
+          naoLevar +
+          "</div>";
+      }).join("");
+      checarInicio();
+    }
+
+    // recalcula o painel LIBERADO/BLOQUEADO a cada mudança de seleção
+    $("diaBlocos").addEventListener("change", checarInicio);
+    function checarInicio() {
+      const painel = $("diaPainel");
+      if (!diaBlocosInfo.length) { painel.hidden = true; $("btnInicio").disabled = true; return; }
+      const faltando = [];
+      diaBlocosInfo.forEach(b => {
+        if (b.exig !== "Obrigatória") return;
+        const sel = document.querySelector("input[name='dsel_" + b.key + "']:checked");
+        if (!sel || !sel.value) faltando.push(b.rotulo);
+      });
+      painel.hidden = false;
+      if (!faltando.length) {
+        painel.className = "painel ok";
+        painel.innerHTML = "✔ INÍCIO LIBERADO<div class='det'>toda ferramenta obrigatória tem um item válido marcado</div>";
+        $("btnInicio").disabled = false;
+      } else {
+        painel.className = "painel bloq";
+        painel.innerHTML = "✖ INÍCIO BLOQUEADO — falta " + faltando.length + " obrigatória(s)" +
+          "<div class='det'>" + esc(faltando.join(" · ")) + "</div>";
+        $("btnInicio").disabled = true;
+      }
+    }
+
+    /* Confirmar início de dia — grava nos itens de patrimônio MARCADOS:
+       Status_Ferramenta = "Alocada", Alocada_ParaLookupId = técnico da OS,
+       OS_AtualLookupId = OS. PATCH mínimo (só esses 3 campos) + releitura. */
+    $("btnInicio").onclick = confirmarInicio;
+    async function confirmarInicio() {
+      if (gravandoDia) return;
+      const msg = $("diaMsg");
+      const osId = $("diaOS").value;
+      const os = osId ? mapOS[osId] : null;
+      if (!os) return;
+      const f = os.fields || {};
+
+      // sem técnico não há para quem alocar — rastreabilidade quebraria
+      if (f.TecnicoLookupId == null) {
+        msg.className = "acao-msg err";
+        msg.textContent = "A OS não tem técnico definido — defina o técnico na tela de OS antes de confirmar o início.";
+        return;
+      }
+      // coleta seleções (obrigatórias + recomendadas marcadas)
+      const escolhidos = [];
+      for (const b of diaBlocosInfo) {
+        const sel = document.querySelector("input[name='dsel_" + b.key + "']:checked");
+        if (sel && sel.value) escolhidos.push({ patId: sel.value, rotulo: b.rotulo });
+        else if (b.exig === "Obrigatória") {
+          msg.className = "acao-msg err";
+          msg.textContent = "INÍCIO BLOQUEADO — falta marcar item para: " + b.rotulo;
+          return;
+        }
+      }
+      if (!escolhidos.length) { msg.className = "acao-msg err"; msg.textContent = "Nenhum item marcado."; return; }
+
+      // revalida a trava NO MOMENTO do confirmar (o estado pode ter mudado
+      // desde a renderização: outro usuário pode ter alocado o item)
+      for (const e of escolhidos) {
+        const p = mapPat[e.patId];
+        const pf = (p && p.fields) || {};
+        const cal = calibracao(pf);
+        if (cal.vencida) { msg.className = "acao-msg err"; msg.textContent = "Item " + (pf.Title || e.patId) + ": " + cal.motivo + "."; return; }
+        if (pf.Status_Ferramenta !== "Disponível") { msg.className = "acao-msg err"; msg.textContent = "Item " + (pf.Title || e.patId) + " não está mais Disponível (" + (pf.Status_Ferramenta || "sem status") + ")."; return; }
+      }
+
+      try {
+        gravandoDia = true; $("btnInicio").disabled = true;
+        msg.className = "acao-msg";
+        const gravados = [];
+        for (const e of escolhidos) {
+          msg.textContent = "Gravando " + (gravados.length + 1) + " de " + escolhidos.length + "...";
+          await EG.patchItemFields("Ferramentas_Patrimonio", e.patId, {
+            Status_Ferramenta: "Alocada",
+            Alocada_ParaLookupId: Number(f.TecnicoLookupId),
+            OS_AtualLookupId: Number(os.id)
+          });
+          gravados.push(e.patId);
+        }
+        // releitura de cada item gravado — a tela mostra o estado REAL
+        for (const id of gravados) upsertEnt("pat", await relerItem("Ferramentas_Patrimonio", id));
+        renderPat(); montarSelectOS(); renderDia();
+        setStatus("Início de dia confirmado — " + gravados.length + " ferramenta(s) alocada(s) para " + tecNome(f.TecnicoLookupId) + " na OS " + (f.Title || osId) + ".");
+      } catch (e) {
+        // re-render ANTES da mensagem: renderDia limpa diaMsg no topo,
+        // e a falha precisa continuar visível depois do refresh
+        try { renderPat(); renderDia(); } catch {}
+        msg.className = "acao-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message + " — os itens já gravados foram mantidos; recarregue e confira.";
+      } finally {
+        gravandoDia = false;
+      }
+    }
+
+    /* ------------------------- DESMOBILIZAÇÃO -------------------------
+       Lista os patrimônios com OS_Atual = OS selecionada; checklist de
+       devolução (Estado OK + observação por item). Confirmar grava, por item:
+         Desmob_Checklist_JSON  = registro {os, patrimonio, estado_ok,
+                                  observacao, quem, quando} (sobrescreve o
+                                  anterior — é a ÚLTIMA devolução do item);
+         Status_Ferramenta      = "Disponível";
+         OS_AtualLookupId       = null;   <- limpeza INTENCIONAL (exceção à
+         Alocada_ParaLookupId   = null;      regra de não gravar vazio: item
+                                             devolvido não tem OS nem portador)
+       ------------------------------------------------------------------ */
+    function renderDesmob(os) {
+      const itens = patrimonio.filter(p => String((p.fields || {}).OS_AtualLookupId) === String(os.id))
+        .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      if (!itens.length) {
+        $("desmobLista").innerHTML = "<div class='empty'>Nenhuma ferramenta alocada nesta OS.</div>";
+        $("btnDesmob").disabled = true;
+        return;
+      }
+      $("desmobLista").innerHTML = itens.map(p => {
+        const pf = p.fields || {};
+        return "<div class='desmob-item' data-pat='" + esc(p.id) + "'>" +
+          "<span class='cod'>" + esc(pf.Title || ("item #" + p.id)) + "</span>" +
+          "<span class='cat'>" + esc(catNome(pf.CatalogoLookupId)) + "</span>" +
+          "<span class='cat'>" + esc(pf.Alocada_ParaLookupId != null ? tecNome(pf.Alocada_ParaLookupId) : "—") + "</span>" +
+          // "Estado OK" já vem marcado (devolução normal); desmarcar = avaria,
+          // e a observação explica o que houve
+          "<label class='ok'><input type='checkbox' id='dok_" + esc(p.id) + "' checked /> Estado OK</label>" +
+          "<input type='text' id='dobs_" + esc(p.id) + "' maxlength='255' placeholder='observação (obrigatória se não estiver OK)' />" +
+          "</div>";
+      }).join("");
+      $("btnDesmob").disabled = false;
+    }
+
+    $("btnDesmob").onclick = confirmarDesmob;
+    async function confirmarDesmob() {
+      if (gravandoDia) return;
+      const msg = $("desmobMsg");
+      const osId = $("diaOS").value;
+      const os = osId ? mapOS[osId] : null;
+      if (!os) return;
+      const f = os.fields || {};
+      const els = [...document.querySelectorAll("#desmobLista .desmob-item")];
+      if (!els.length) return;
+
+      // item devolvido com avaria SEM observação seria um registro mudo —
+      // exige a observação para o "não OK" ter conteúdo
+      const itens = [];
+      for (const el of els) {
+        const id = el.dataset.pat;
+        const ok = $("dok_" + id).checked;
+        const obs = $("dobs_" + id).value.trim();
+        if (!ok && !obs) {
+          msg.className = "acao-msg err";
+          msg.textContent = "Item " + ((mapPat[id] && (mapPat[id].fields || {}).Title) || id) + " está marcado como NÃO OK — descreva o problema na observação.";
+          $("dobs_" + id).focus();
+          return;
+        }
+        itens.push({ id, ok, obs });
+      }
+
+      try {
+        gravandoDia = true; $("btnDesmob").disabled = true;
+        msg.className = "acao-msg";
+        const gravados = [];
+        for (const it of itens) {
+          msg.textContent = "Gravando devolução " + (gravados.length + 1) + " de " + itens.length + "...";
+          const pf = ((mapPat[it.id] || {}).fields || {});
+          const registro = {
+            os: { id: os.id, titulo: f.Title || null },
+            patrimonio: { id: it.id, codigo: pf.Title || null },
+            estado_ok: it.ok,
+            observacao: it.obs,
+            quem: (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : ""),
+            quando: new Date().toISOString()
+          };
+          await EG.patchItemFields("Ferramentas_Patrimonio", it.id, {
+            Desmob_Checklist_JSON: JSON.stringify(registro),
+            Status_Ferramenta: "Disponível",
+            OS_AtualLookupId: null,      // limpeza intencional — ver comentário acima
+            Alocada_ParaLookupId: null   // idem: devolvida = sem portador
+          });
+          gravados.push(it.id);
+        }
+        for (const id of gravados) upsertEnt("pat", await relerItem("Ferramentas_Patrimonio", id));
+        renderPat(); montarSelectOS(); renderDia();
+        setStatus("Desmobilização confirmada — " + gravados.length + " ferramenta(s) devolvida(s) da OS " + (f.Title || osId) + ".");
+      } catch (e) {
+        // re-render ANTES da mensagem (renderDia limpa desmobMsg no topo);
+        // na falha o botão volta — no sucesso quem decide é renderDesmob
+        // (lista vazia = botão desabilitado)
+        try { renderPat(); renderDia(); } catch {}
+        const b = $("btnDesmob"); if (b) b.disabled = false;
+        msg.className = "acao-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message + " — os itens já gravados foram mantidos; recarregue e confira.";
+      } finally {
+        gravandoDia = false;
+      }
+    }
+
+    /* ================= clique nas tabelas -> drawer de leitura ================= */
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      const el = e.target.closest("tr[data-tipo][data-id]");
+      if (!el) return;
+      const tipo = el.dataset.tipo, id = el.dataset.id;
+      if (tipo === "cat" && mapCat[id]) abrirCatDrawer(mapCat[id]);
+      else if (tipo === "pat" && mapPat[id]) abrirPatDrawer(mapPat[id]);
+      else if (tipo === "vin" && mapVin[id]) abrirVinDrawer(mapVin[id]);
+    });
+    $("overlay").onclick = fecharDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fecharDrawer(); });
+
+    /* Exposto para exercitar a lógica sem login (dados falsos):
+       FER.setDados([...], [...], [...], [...], [...], [...]); FER.forcarCarregado();
+       FER.montarFiltros(); FER.renderTudo(); FER.mostrarSec("dia"); */
+    window.FER = {
+      setDados, montarFiltros, montarSelectOS, renderTudo, mostrarSec,
+      calibracao, ehEncerrada, renderDia, checarInicio,
+      abrirForm, abrirCatDrawer, abrirPatDrawer, abrirVinDrawer,
+      confirmarInicio, confirmarDesmob,
+      CHOICES, parseD, hojeKey, isoParaInput, inputParaIso,
+      forcarCarregado: (v) => { carregado = v !== false; $("tabs").hidden = false; },
+      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
