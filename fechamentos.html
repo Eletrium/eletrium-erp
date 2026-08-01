@@ -44,7 +44,7 @@
 
     .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
 
-    /* aviso de "somente leitura" da seção Veículos (o Power Apps antigo gravava aqui) */
+    /* aviso da seção Veículos: a decisão (aprovar/rejeitar) é feita AQUI, no drawer */
     .aviso-ro { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
                 border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
     .aviso-ro strong { color: #e6edf3; }
@@ -82,6 +82,7 @@
       <a href="dashboard.html">Dashboard</a>
       <a href="habilitacoes.html">Habilitações</a>
       <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
       <a href="fechamentos.html" class="active">Fechamentos</a>
     </nav>
     <span class="user" id="user"></span>
@@ -97,7 +98,7 @@
       <button class="tab active" data-sec="fech" id="tabFech">Fechamento mensal</button>
       <button class="tab" data-sec="diar" id="tabDiar">Diárias</button>
       <button class="tab" data-sec="veic" id="tabVeic">Veículos</button>
-      <span class="hint right" style="align-self:center"><span class="ro">somente leitura</span></span>
+      <span class="hint right" style="align-self:center"><span class="ro">escrita: só a decisão de veículo</span></span>
     </div>
 
     <!-- ======================= 1. FECHAMENTO MENSAL ======================= -->
@@ -167,9 +168,10 @@
     <!-- ============================ 3. VEÍCULOS =========================== -->
     <section id="sec_veic" hidden>
       <div class="aviso-ro">
-        <strong>Somente leitura.</strong> A tela antiga do Power Apps (<em>Scr_Fechamentos_Tecnicos</em>) existia só para
-        <em>Aprovar</em> / <em>Rejeitar</em> veículo. Aqui os pendentes e o motivo de rejeição são <strong>exibidos</strong>,
-        mas a gravação não foi portada — aprovar/rejeitar continua pelo Power Apps ou pelo SharePoint até que a escrita seja liberada.
+        <strong>Aprovar / Rejeitar veículo é feito aqui.</strong> A função da tela antiga do Power Apps
+        (<em>Scr_Fechamentos_Tecnicos</em>) foi portada: clique no veículo (card pendente ou linha da tabela) e
+        decida no bloco <em>Decisão</em> do detalhe. Rejeição exige motivo. As abas de Fechamento mensal e
+        Diárias continuam somente leitura.
       </div>
 
       <div class="kpis">
@@ -270,7 +272,12 @@
     const celBRL = (v) => ehNum(v) ? brl(v) : "—";
     const simNao = (v) => v == null ? null : (v === true ? "Sim" : (v === false ? "Não" : String(v)));
 
-    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d.getTime()) ? null : d; };
+    // Data-pura (meia-noite UTC, típico de campo Date only) vira meia-noite LOCAL:
+    // sem isso, "12/06" viraria 21:00 de 11/06 em Brasília e o dKey/fmt errariam 1 dia.
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
     // chave AAAA-MM-DD derivada da data LOCAL, para o filtro casar com o que é exibido
     const dKey = (s) => {
       const d = parseD(s); if (!d) return null;
@@ -300,6 +307,7 @@
     let mapFech = {}, mapDiar = {}, mapVeic = {};
     let carregado = false;
     let usuarioNome = "";   // vai para Aprovado_Por ao decidir um veículo
+    let usuarioEmail = "";  // junto do nome: dois homônimos ficariam indistinguíveis na auditoria
 
     const tecNome = (lookupId) => lookupId == null ? "—" : (nomeTecnico[lookupId] || ("técnico #" + lookupId));
 
@@ -308,8 +316,8 @@
     async function onIn() {
       setStatus("Autenticado como " + EG.getAccount().username);
       $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
-      try { const u = await EG.me(); usuarioNome = u.nome; $("user").textContent = "👤 " + u.nome; }
-      catch { usuarioNome = EG.getAccount().username; $("user").textContent = "👤 " + usuarioNome; }
+      try { const u = await EG.me(); usuarioNome = u.nome; usuarioEmail = u.email || ""; $("user").textContent = "👤 " + u.nome; }
+      catch { usuarioNome = EG.getAccount().username; usuarioEmail = ""; $("user").textContent = "👤 " + usuarioNome; }
     }
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
@@ -541,7 +549,7 @@
     $("dLimpar").onclick = () => { ["dTecnico", "dStatus", "dDe", "dAte"].forEach(id => $(id).value = ""); renderDiar(); };
 
     /* ==================================================================
-       3. VEÍCULOS  (porta a tela do Power Apps — SEM as ações de gravação)
+       3. VEÍCULOS  (porta a tela do Power Apps, INCLUINDO aprovar/rejeitar — ver DECISÃO DE VEÍCULO abaixo)
        ================================================================== */
     function filtrarVeic() {
       const ft = $("vTecnico").value, fs = $("vStatus").value;
@@ -832,7 +840,9 @@
       }
       const campos = {
         Status_Aprovacao: decisao,
-        Aprovado_Por: usuarioNome || "(usuário não identificado)",
+        // nome + e-mail (campo é texto puro): só o displayName deixaria dois
+        // homônimos indistinguíveis na trilha de auditoria
+        Aprovado_Por: (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : ""),
         Data_Aprovacao: new Date().toISOString(),
         Alteracao_Pendente: false,
         // Aprovar LIMPA o motivo de propósito. É a exceção consciente à regra de
@@ -904,7 +914,7 @@
       blocoDecisao, ligarDecisao, decidirVeiculo,
       mesIdx, dKey, num, media, urlSeguro, fmtN, cel,
       forcarCarregado: (v) => { carregado = v !== false; },
-      setUsuario: (n) => { usuarioNome = n; }
+      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
     };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
