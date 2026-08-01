@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Medição Mensal (MEI)</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <!-- SheetJS para o "Espelho de Medição" (XLS). Se a CDN falhar, o botão é
+       desabilitado com explicação — a tela continua funcionando sem ele. -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
+    .kpi .k { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+    .kpi .sub { color: #8b949e; font-size: .74rem; margin-top: 2px; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    select, input[type=month] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit; color-scheme: dark;
+    }
+    .chk { display: inline-flex; align-items: center; gap: 6px; color: #8b949e; font-size: .82rem; cursor: pointer; }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .toolbar .hint.right { margin-left: auto; }
+
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+
+    .secao { margin: 26px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+
+    td .badge { white-space: nowrap; margin-top: 0; }
+    td.n { text-align: right; white-space: nowrap; }
+    td.dim { color: #8b949e; }
+
+    /* linha de grupo (técnico) e subtotal dentro da tabela do lote */
+    tr.grp td { background: #1c2129; font-weight: 600; border-top: 2px solid #30363d; }
+    tr.grp td span { color: #8b949e; font-weight: 400; font-size: .8rem; }
+    tr.sub td { background: #161b22; font-weight: 600; color: #e6edf3; border-bottom: 2px solid #30363d; }
+    tr.sub td.rot { text-align: right; color: #8b949e; font-weight: 400; font-size: .8rem; }
+
+    .badge.warn { border-color: #D29922; color: #D29922; }
+    .badge.err { border-color: #F85149; color: #F85149; }
+
+    /* aviso da regra do lote / prévia */
+    .aviso-ro { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
+                border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
+    .aviso-ro strong { color: #e6edf3; }
+    .aviso-previa { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
+                    border: 1px solid #d2992255; background: #d2992218; color: #e3b341; }
+
+    .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    a.lnk { color: #58a6ff; font-size: .8rem; text-decoration: none; white-space: nowrap; }
+    a.lnk:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html" class="active">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html">Checklist</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+
+  <main>
+    <div id="conteudo" hidden>
+      <div class="aviso-ro">
+        <strong>Painel de Medição Mensal (modelo MEI) — somente leitura.</strong>
+        As horas dos técnicos MEI em OS, valoradas pelo valor-hora contratado, formam o lote do mês.
+        O MEI confere o <em>Espelho de Medição</em> (XLS) e fatura contra ele. Elegibilidade e
+        “De Acordo do líder” são gravados na tela de OS — aqui nada é alterado.
+      </div>
+
+      <div class="kpis">
+        <div class="kpi"><div class="k">Técnicos no lote</div><div class="v" id="kTec">0</div><div class="sub">com linhas no período</div></div>
+        <div class="kpi"><div class="k">OS distintas</div><div class="v" id="kOs">0</div></div>
+        <div class="kpi"><div class="k">Total de horas</div><div class="v" id="kHoras">0</div><div class="sub">soma de Horas_Trabalhadas</div></div>
+        <div class="kpi"><div class="k">Valor do lote</div><div class="v" id="kValor" style="color:#3fb950">R$ 0,00</div><div class="sub">horas × valor-hora</div></div>
+        <div class="kpi"><div class="k">Fora do lote</div><div class="v" id="kFora" style="color:#F0883E">0</div><div class="sub">linhas do período excluídas</div></div>
+      </div>
+
+      <div class="toolbar">
+        <label for="mTecnico">Técnico MEI</label>
+        <select id="mTecnico"><option value="">(Todos)</option></select>
+        <label for="mMes">Período</label>
+        <input type="month" id="mMes" />
+        <label class="chk" for="mEleg"><input type="checkbox" id="mEleg" checked /> só linhas elegíveis</label>
+        <button id="btnXls" disabled title="Carregue os dados primeiro">Gerar Espelho de Medição (XLS)</button>
+        <span class="ro">somente leitura — De Acordo e elegibilidade são da tela de OS</span>
+        <span class="hint right" id="mContador"></span>
+      </div>
+
+      <div class="aviso-previa" id="avisoPrevia" hidden>
+        <strong>Modo prévia:</strong> o filtro “só linhas elegíveis” está desligado — a tabela inclui linhas
+        <em>sem</em> De Acordo do líder e/ou <em>não elegíveis</em> ao financeiro (marcadas por linha).
+        Estes números <strong>não</strong> são o lote oficial de medição.
+      </div>
+
+      <div class="secao" id="secLote">Lote de medição</div>
+      <table id="lTbl" hidden>
+        <thead><tr>
+          <th>OS</th><th>Cliente</th><th>Função</th><th>Check-in</th><th>Check-out</th>
+          <th>Horas</th><th>Valor-hora</th><th>Valor</th>
+        </tr></thead>
+        <tbody id="lTbody"></tbody>
+      </table>
+      <div class="empty" id="lEmpty" hidden></div>
+
+      <div class="secao" id="secFora" hidden>Fora do lote <span>— linhas do período que não entram na medição (nada some em silêncio)</span></div>
+      <table id="fTbl" hidden>
+        <thead><tr>
+          <th>Técnico</th><th>OS</th><th>Check-in</th><th>Horas</th><th>Motivo</th>
+        </tr></thead>
+        <tbody id="fTbody"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    /* ===================================================================
+       MEDIÇÃO MENSAL (modelo MEI) — tela SOMENTE LEITURA.
+
+       MAPA DE DONO DE CAMPO (quem escreve o quê — esta tela não escreve nada):
+       - OS_Equipe.Checkin_Hora / Checkout_Hora / Selfie_URL ......... app do técnico (PWA)
+       - OS_Equipe.EPI_Checklist_OK / Diario_Preenchido .............. app do técnico (PWA)
+       - OS_Equipe.De_Acordo_Lider / _Em / _Por ...................... tela de OS (líder)
+       - OS_Equipe.Elegivel_Financeiro / Horas_Trabalhadas ........... tela de OS / processo
+       - OS_Equipe.Valor_Hora_Snapshot ............................... processo de fechamento (congela o valor-hora)
+       - TecnicosMEI.Valor_Hora_Contratado / Status .................. cadastro de técnicos
+       Esta tela apenas LÊ, agrega e exporta o Espelho de Medição.
+
+       REGRA DO LOTE (fonte da verdade desta tela):
+       Entram na medição as linhas de OS_Equipe cuja data-base
+         (Checkin_Hora → fallback De_Acordo_Lider_Em → fallback Created)
+       cai no período escolhido E:
+         - Elegivel_Financeiro === true
+         - De_Acordo_Lider === true
+         - Horas_Trabalhadas numérico e > 0
+         - valor-hora determinável (Valor_Hora_Snapshot, senão o
+           Valor_Hora_Contratado ATUAL do técnico, com badge de aviso)
+       Linhas do período que NÃO cumprem algum critério vão para a seção
+       "Fora do lote" com o(s) motivo(s) — nada é descartado em silêncio.
+       O checkbox "só linhas elegíveis" desligado vira MODO PRÉVIA: as duas
+       primeiras condições são suspensas (a linha entra na tabela com badge),
+       mas "sem horas" e "sem valor-hora" continuam excluindo, porque sem
+       elas não existe valor calculável.
+       =================================================================== */
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ===================== helpers numéricos / de data =====================
+       num() sempre devolve número finito; ehNum() diz se o campo veio
+       preenchido E numérico. Um campo ausente vira "—" na tela, nunca um
+       "0" afirmativo que mentiria sobre o dado. (Mesmo padrão de fechamentos.html.) */
+    const num = (v) => {
+      if (typeof v === "number") return isFinite(v) ? v : 0;
+      if (v == null || v === "") return 0;
+      const n = Number(v);
+      return isFinite(n) ? n : 0;
+    };
+    const temValor = (v) => v != null && v !== "";
+    const ehNum = (v) => temValor(v) && isFinite(Number(v));
+    const fmtN = (v, casas) => num(v).toLocaleString("pt-BR", { minimumFractionDigits: casas || 0, maximumFractionDigits: casas || 0 });
+    const cel = (v, casas) => ehNum(v) ? fmtN(v, casas) : "—";
+    const brl = (v) => EG.BRL(num(v));
+    const celBRL = (v) => ehNum(v) ? brl(v) : "—";
+    const simNao = (v) => v == null ? null : (v === true ? "Sim" : (v === false ? "Não" : String(v)));
+
+    // Data-pura (meia-noite UTC, típico de campo Date only) vira meia-noite LOCAL:
+    // sem isso a data cairia 1 dia para trás em Brasília. Timestamps reais seguem locais.
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
+    // chave AAAA-MM derivada da data LOCAL — é o que casa com o <input type=month>
+    const mKey = (s) => {
+      const d = parseD(s); if (!d) return null;
+      return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+    };
+    const fmtDT = (s) => { const d = parseD(s); return d ? d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : (s || null); };
+    const fmtHora = (s) => { const d = parseD(s); return d ? d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : (s || null); };
+    // check-out no MESMO dia do check-in mostra só a hora; dia diferente mostra data+hora
+    const fmtCheckout = (inS, outS) => {
+      const di = parseD(inS), fo = parseD(outS);
+      if (!fo) return null;
+      if (di && di.toDateString() === fo.toDateString()) return fmtHora(outS);
+      return fmtDT(outS);
+    };
+    // rótulo humano do período ("agosto de 2026") a partir de "2026-08"
+    const rotuloPeriodo = (ym) => {
+      if (!ym || !/^\d{4}-\d{2}$/.test(ym)) return ym || "—";
+      const [a, m] = ym.split("-").map(Number);
+      return new Date(a, m - 1, 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" });
+    };
+
+    const urlSeguro = (v) => {
+      if (!v) return null;
+      const bruto = (typeof v === "object") ? (v.Url || v.url || null) : v;
+      if (!bruto) return null;
+      const s = String(bruto).trim();
+      return /^https?:\/\//i.test(s) ? s : null;
+    };
+    const link = (v, rotulo) => {
+      const u = urlSeguro(v);
+      return u ? "<a class='lnk' href='" + esc(u) + "' target='_blank' rel='noopener'>" + esc(rotulo) + " ↗</a>" : "";
+    };
+
+    /* ============================== estado ============================== */
+    let equipe = [], tecnicos = [], ordens = [], clientes = [];
+    let mapTec = {}, mapOS = {}, nomeCliente = {};
+    let mapReg = {};          // id da linha de OS_Equipe -> registro calculado (para o drawer)
+    let carregado = false;
+
+    const tecDe = (lookupId) => lookupId == null ? null : (mapTec[lookupId] || null);
+    const tecNome = (lookupId) => {
+      const t = tecDe(lookupId);
+      return t ? ((t.fields || {}).Title || ("técnico #" + lookupId)) : (lookupId == null ? "(sem técnico)" : ("técnico #" + lookupId));
+    };
+    const osDe = (lookupId) => lookupId == null ? null : (mapOS[lookupId] || null);
+    const osTitulo = (lookupId) => {
+      const o = osDe(lookupId);
+      return o ? ((o.fields || {}).Title || ("OS #" + lookupId)) : (lookupId == null ? "(sem OS)" : ("OS #" + lookupId));
+    };
+    const clienteDaOS = (osLookupId) => {
+      const o = osDe(osLookupId); if (!o) return null;
+      const cid = (o.fields || {}).ClienteLookupId;
+      return cid == null ? null : (nomeCliente[cid] || ("cliente #" + cid));
+    };
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; }
+      catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // uma lista que falha não derruba as outras
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    /* ============================== carga ============================== */
+    $("btnLoad").onclick = async () => {
+      try {
+        setStatus("Carregando medição...");
+        const [eq, te, os, cl] = await Promise.all([
+          soft(EG.listItems("OS_Equipe"), "OS_Equipe"),
+          soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
+          soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
+          soft(EG.listItems("Clientes"), "Clientes")
+        ]);
+        setDados(eq, te, os, cl);
+        carregado = true;
+        $("conteudo").hidden = false;
+        montarFiltros();
+        habilitarXls();
+        render();
+        setStatus("OK — " + equipe.length + " linha(s) de equipe, " + tecnicos.length + " técnico(s), " +
+                  ordens.length + " OS, " + clientes.length + " cliente(s).");
+      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+    };
+
+    // separado da carga para poder ser exercitado com dados falsos (window.MED.setDados)
+    function setDados(eq, te, os, cl) {
+      equipe = eq || []; tecnicos = te || []; ordens = os || []; clientes = cl || [];
+      mapTec = {}; tecnicos.forEach(t => { mapTec[t.id] = t; });
+      mapOS = {}; ordens.forEach(o => { mapOS[o.id] = o; });
+      nomeCliente = {}; clientes.forEach(c => { nomeCliente[c.id] = (c.fields || {}).Title; });
+    }
+
+    function montarFiltros() {
+      // técnicos ordenados por nome; Status entra no rótulo quando não for ativo
+      const ord = tecnicos.slice().sort((a, b) =>
+        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      $("mTecnico").innerHTML = '<option value="">(Todos)</option>' + ord.map(t => {
+        const f = t.fields || {};
+        const st = (f.Status && f.Status !== "Ativo") ? " [" + f.Status + "]" : "";
+        return '<option value="' + esc(t.id) + '">' + esc((f.Title || ("técnico #" + t.id)) + st) + "</option>";
+      }).join("");
+      // período default: mês atual (só na primeira montagem — não sobrescreve escolha do usuário)
+      if (!$("mMes").value) {
+        const h = new Date();
+        $("mMes").value = h.getFullYear() + "-" + String(h.getMonth() + 1).padStart(2, "0");
+      }
+    }
+
+    function habilitarXls() {
+      const b = $("btnXls");
+      if (typeof XLSX === "undefined") {
+        // CDN do SheetJS não carregou (offline / bloqueio): degrada sem quebrar
+        b.disabled = true;
+        b.title = "Biblioteca de planilha (SheetJS) não carregou da CDN — recarregue a página com internet para gerar o XLS.";
+        return;
+      }
+      b.disabled = !carregado;
+      b.title = carregado ? "Gera o Espelho de Medição do lote filtrado" : "Carregue os dados primeiro";
+    }
+
+    /* ==================================================================
+       CLASSIFICAÇÃO: período -> lote | fora do lote (com motivos)
+       ================================================================== */
+    // data-base da linha para o período: Checkin_Hora -> De_Acordo_Lider_Em -> Created.
+    // (Created vem em fields.Created via expand=fields; createdDateTime é o mesmo dado na raiz do item.)
+    const dataBase = (item) => {
+      const f = item.fields || {};
+      return f.Checkin_Hora || f.De_Acordo_Lider_Em || f.Created || item.createdDateTime || null;
+    };
+
+    // monta o registro calculado de uma linha (valor-hora, valor, motivos de exclusão)
+    function calcularLinha(item, soElegiveis) {
+      const f = item.fields || {};
+      const tec = tecDe(f.TecnicoLookupId);
+      const tf = tec ? (tec.fields || {}) : {};
+      const motivos = [];
+
+      // critérios do lote oficial (suspensos no modo prévia — a linha entra marcada)
+      const semDeAcordo = f.De_Acordo_Lider !== true;
+      const naoElegivel = f.Elegivel_Financeiro !== true;
+      if (soElegiveis) {
+        if (semDeAcordo) motivos.push("sem De Acordo do líder");
+        if (naoElegivel) {
+          const faltas = [];
+          if (!urlSeguro(f.Selfie_URL) && !temValor(f.Selfie_URL)) faltas.push("selfie");
+          if (f.Diario_Preenchido !== true) faltas.push("diário");
+          motivos.push(faltas.length ? "não elegível (sem " + faltas.join(" + ") + ")" : "não elegível ao financeiro");
+        }
+      }
+
+      // sem horas não há o que medir — vale também no modo prévia
+      const temHoras = ehNum(f.Horas_Trabalhadas) && num(f.Horas_Trabalhadas) > 0;
+      if (!temHoras) motivos.push("sem horas trabalhadas");
+
+      // valor-hora: snapshot congelado no fechamento; na falta dele, o valor
+      // ATUAL do contrato do técnico (com badge — pode divergir do vigente na época)
+      let vh = null, vhFonte = null;
+      if (ehNum(f.Valor_Hora_Snapshot)) { vh = num(f.Valor_Hora_Snapshot); vhFonte = "snapshot"; }
+      else if (ehNum(tf.Valor_Hora_Contratado)) { vh = num(tf.Valor_Hora_Contratado); vhFonte = "atual"; }
+      if (vh == null) motivos.push("sem valor-hora (nem snapshot nem contratado)");
+
+      const valor = (temHoras && vh != null) ? num(f.Horas_Trabalhadas) * vh : null;
+
+      return {
+        id: item.id, item, f,
+        tecId: f.TecnicoLookupId, tecNome: tecNome(f.TecnicoLookupId),
+        osId: f.OSLookupId, osTitle: osTitulo(f.OSLookupId), cliente: clienteDaOS(f.OSLookupId),
+        dataBase: dataBase(item),
+        horas: ehNum(f.Horas_Trabalhadas) ? num(f.Horas_Trabalhadas) : null,
+        vh, vhFonte, valor,
+        semDeAcordo, naoElegivel,
+        motivos
+      };
+    }
+
+    // devolve { lote: [regs], fora: [regs] } aplicando período + técnico + regra do lote
+    function classificar() {
+      const ym = $("mMes").value;
+      const ft = $("mTecnico").value;
+      const soElegiveis = $("mEleg").checked;
+      const lote = [], fora = [];
+      equipe.forEach(item => {
+        const f = item.fields || {};
+        if (ft && String(f.TecnicoLookupId ?? "") !== String(ft)) return;
+        const k = mKey(dataBase(item));
+        if (!ym || k !== ym) return;           // fora do período não aparece em lugar nenhum
+        const reg = calcularLinha(item, soElegiveis);
+        (reg.motivos.length ? fora : lote).push(reg);
+      });
+      const porTec = (a, b) => a.tecNome.localeCompare(b.tecNome, "pt-BR") ||
+        String(a.dataBase || "").localeCompare(String(b.dataBase || ""));
+      lote.sort(porTec); fora.sort(porTec);
+      return { lote, fora, ym, soElegiveis };
+    }
+
+    /* ============================== render ============================== */
+    function render() {
+      if (!carregado) return;
+      const { lote, fora, ym, soElegiveis } = classificar();
+      mapReg = {}; lote.concat(fora).forEach(r => { mapReg[r.id] = r; });
+
+      $("avisoPrevia").hidden = soElegiveis;
+      $("secLote").textContent = soElegiveis
+        ? "Lote de medição — " + rotuloPeriodo(ym)
+        : "Prévia (inclui não elegíveis) — " + rotuloPeriodo(ym);
+
+      // KPIs do lote filtrado
+      const tecSet = new Set(lote.map(r => String(r.tecId ?? "?")));
+      const osSet = new Set(lote.filter(r => r.osId != null).map(r => String(r.osId)));
+      const horas = lote.reduce((s, r) => s + num(r.horas), 0);
+      const valor = lote.reduce((s, r) => s + num(r.valor), 0);
+      $("kTec").textContent = tecSet.size;
+      $("kOs").textContent = osSet.size;
+      $("kHoras").textContent = fmtN(horas, 1) + " h";
+      $("kValor").textContent = brl(valor);
+      $("kFora").textContent = fora.length;
+      $("mContador").textContent = lote.length + " linha(s) no lote · " + fora.length + " fora · período " + rotuloPeriodo(ym);
+
+      renderLote(lote);
+      renderFora(fora);
+    }
+
+    function renderLote(lote) {
+      if (!lote.length) {
+        $("lTbody").innerHTML = ""; $("lTbl").hidden = true; $("lEmpty").hidden = false;
+        $("lEmpty").textContent = equipe.length
+          ? "Nenhuma linha de OS_Equipe entra no lote deste período com os filtros atuais. Veja a seção “Fora do lote” abaixo — se houver linhas lá, o motivo de cada exclusão está indicado."
+          : "Nenhuma linha registrada em OS_Equipe.";
+        return;
+      }
+      $("lEmpty").hidden = true; $("lTbl").hidden = false;
+
+      // agrupa por técnico preservando a ordenação (nome, depois data)
+      const grupos = [];
+      lote.forEach(r => {
+        const g = grupos[grupos.length - 1];
+        if (g && String(g.tecId) === String(r.tecId)) g.regs.push(r);
+        else grupos.push({ tecId: r.tecId, tecNome: r.tecNome, regs: [r] });
+      });
+
+      $("lTbody").innerHTML = grupos.map(g => {
+        const hSub = g.regs.reduce((s, r) => s + num(r.horas), 0);
+        const vSub = g.regs.reduce((s, r) => s + num(r.valor), 0);
+        const cab = "<tr class='grp'><td colspan='8'>" + esc(g.tecNome) +
+          " <span>· " + g.regs.length + " linha(s)</span></td></tr>";
+        const linhas = g.regs.map(r => {
+          const flags = [];
+          if (r.vhFonte === "atual") flags.push("<span class='badge warn'>valor atual (sem snapshot)</span>");
+          if (r.semDeAcordo) flags.push("<span class='badge err'>sem De Acordo</span>");
+          if (r.naoElegivel) flags.push("<span class='badge err'>não elegível</span>");
+          return "<tr data-id='" + esc(r.id) + "'>" +
+            "<td>" + esc(r.osTitle) + "</td>" +
+            "<td class='dim'>" + esc(r.cliente || "—") + "</td>" +
+            "<td class='dim'>" + esc(r.f.Funcao || "—") + "</td>" +
+            "<td>" + esc(fmtDT(r.f.Checkin_Hora) || "—") + "</td>" +
+            "<td>" + esc(fmtCheckout(r.f.Checkin_Hora, r.f.Checkout_Hora) || "—") + "</td>" +
+            "<td class='n'>" + cel(r.horas, 2) + "</td>" +
+            "<td class='n'>" + esc(celBRL(r.vh)) + (flags.length ? "<br>" + flags.join(" ") : "") + "</td>" +
+            "<td class='n'>" + esc(celBRL(r.valor)) + "</td>" +
+            "</tr>";
+        }).join("");
+        const sub = "<tr class='sub'><td colspan='5' class='rot'>subtotal de " + esc(g.tecNome) + "</td>" +
+          "<td class='n'>" + fmtN(hSub, 2) + "</td><td></td>" +
+          "<td class='n'>" + esc(brl(vSub)) + "</td></tr>";
+        return cab + linhas + sub;
+      }).join("");
+    }
+
+    function renderFora(fora) {
+      $("secFora").hidden = fora.length === 0;
+      if (!fora.length) { $("fTbody").innerHTML = ""; $("fTbl").hidden = true; return; }
+      $("fTbl").hidden = false;
+      $("fTbody").innerHTML = fora.map(r =>
+        "<tr data-id='" + esc(r.id) + "'>" +
+        "<td>" + esc(r.tecNome) + "</td>" +
+        "<td>" + esc(r.osTitle) + "</td>" +
+        "<td>" + esc(fmtDT(r.f.Checkin_Hora) || "—") + "</td>" +
+        "<td class='n'>" + cel(r.horas, 2) + "</td>" +
+        "<td class='dim'>" + esc(r.motivos.join(" · ")) + "</td>" +
+        "</tr>"
+      ).join("");
+    }
+
+    ["mTecnico", "mMes", "mEleg"].forEach(id => $(id).addEventListener("change", render));
+
+    /* ==================================================================
+       DRAWER de detalhe da linha (leitura)
+       ================================================================== */
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+    const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
+
+    function abrirDrawer(r) {
+      const f = r.f;
+      const corpo =
+        "<dl>" +
+          linha("Técnico", r.tecNome) +
+          linha("OS", r.osTitle) +
+          linha("Cliente", r.cliente) +
+          linha("Função", f.Funcao) +
+        "</dl>" +
+        grupo("Jornada") +
+        "<dl>" +
+          linha("Check-in", fmtDT(f.Checkin_Hora)) +
+          linha("Check-out", fmtDT(f.Checkout_Hora)) +
+          linha("Horas trabalhadas", ehNum(f.Horas_Trabalhadas) ? fmtN(f.Horas_Trabalhadas, 2) + " h" : null) +
+        "</dl>" +
+        grupo("Conformidade (gravada na tela de OS / app do técnico)") +
+        "<dl>" +
+          linha("EPI checklist OK", simNao(f.EPI_Checklist_OK)) +
+          linha("Diário preenchido", simNao(f.Diario_Preenchido)) +
+          linha("Elegível ao financeiro", simNao(f.Elegivel_Financeiro)) +
+          linha("De Acordo do líder", simNao(f.De_Acordo_Lider)) +
+          linha("De Acordo em", fmtDT(f.De_Acordo_Lider_Em)) +
+          linha("De Acordo por", f.De_Acordo_Lider_Por) +
+        "</dl>" +
+        (link(f.Selfie_URL, "Selfie") || "") +
+        grupo("Valoração") +
+        "<dl>" +
+          linha("Valor-hora (snapshot)", ehNum(f.Valor_Hora_Snapshot) ? brl(f.Valor_Hora_Snapshot) : null) +
+          (r.vhFonte === "atual" ? linha("Valor-hora usado (contrato ATUAL — sem snapshot)", brl(r.vh)) : "") +
+          (r.valor != null
+            ? "<dt class='tot'>Valor da linha</dt><dd class='tot'><strong>" + esc(brl(r.valor)) + "</strong></dd>"
+            : linha("Valor da linha", "— (não calculável)")) +
+        "</dl>" +
+        (r.motivos.length
+          ? grupo("Fora do lote — motivos") + "<dl>" + r.motivos.map(m => linha("•", m)).join("") + "</dl>"
+          : "");
+      const corBadge = r.motivos.length ? "#F0883E" : "#22B573";
+      const badge = r.motivos.length ? "Fora do lote" : "No lote";
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(r.osTitle) +
+          "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(r.tecNome) + "</div>" +
+          "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpo +
+          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
+          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre>" +
+        "</div>";
+      $("dc").onclick = fechar;
+      $("rt").onclick = () => { const p = $("rf"); p.hidden = !p.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      const el = e.target.closest("tr[data-id]");
+      if (!el) return;
+      const r = mapReg[el.dataset.id];
+      if (r) abrirDrawer(r);
+    });
+    $("overlay").onclick = fechar;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+
+    /* ==================================================================
+       ESPELHO DE MEDIÇÃO (XLS) — SheetJS
+       Uma aba "Resumo" + uma aba por técnico do lote.
+       ================================================================== */
+    // nome de aba válido no Excel: sem []:*?/\ e máx. 31 caracteres; único no workbook
+    function nomeAba(base, usados) {
+      let n = String(base || "Tecnico").replace(/[\[\]:*?\/\\]/g, " ").trim().slice(0, 31) || "Tecnico";
+      let cand = n, i = 2;
+      while (usados.has(cand.toLowerCase())) {
+        const suf = " (" + i + ")";
+        cand = n.slice(0, 31 - suf.length) + suf;
+        i++;
+      }
+      usados.add(cand.toLowerCase());
+      return cand;
+    }
+    const nomeArquivoSeguro = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+
+    $("btnXls").onclick = () => {
+      if (typeof XLSX === "undefined") return;   // botão já estaria desabilitado; guarda extra
+      const { lote, ym, soElegiveis } = classificar();
+      if (!lote.length) { setStatus("Nada a exportar: o lote do período está vazio.", "err"); return; }
+
+      const periodo = rotuloPeriodo(ym);
+      const gerado = new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+      const ftVal = $("mTecnico").value;
+      const ftNome = ftVal ? tecNome(ftVal) : null;
+
+      // agrupa por técnico (lote já vem ordenado por técnico)
+      const grupos = [];
+      lote.forEach(r => {
+        const g = grupos[grupos.length - 1];
+        if (g && String(g.tecId) === String(r.tecId)) g.regs.push(r);
+        else grupos.push({ tecId: r.tecId, tecNome: r.tecNome, regs: [r] });
+      });
+
+      const wb = XLSX.utils.book_new();
+      const usados = new Set();
+
+      // ---- aba Resumo ----
+      const resumo = [
+        ["Espelho de Medição — Eletrium ERP (modelo MEI)"],
+        ["Período", periodo],
+        ["Gerado em", gerado],
+        ["Filtro de técnico", ftNome || "(todos)"],
+        ["Modo", soElegiveis ? "lote oficial (só linhas elegíveis com De Acordo)" : "PRÉVIA — inclui linhas não elegíveis"],
+        [],
+        ["Técnico", "Linhas", "OS distintas", "Horas", "Valor total (R$)"]
+      ];
+      let totH = 0, totV = 0;
+      grupos.forEach(g => {
+        const h = g.regs.reduce((s, r) => s + num(r.horas), 0);
+        const v = g.regs.reduce((s, r) => s + num(r.valor), 0);
+        const osN = new Set(g.regs.filter(r => r.osId != null).map(r => String(r.osId))).size;
+        totH += h; totV += v;
+        resumo.push([g.tecNome, g.regs.length, osN, h, v]);
+      });
+      resumo.push(["TOTAL", lote.length, new Set(lote.filter(r => r.osId != null).map(r => String(r.osId))).size, totH, totV]);
+      const wsR = XLSX.utils.aoa_to_sheet(resumo);
+      wsR["!cols"] = [{ wch: 32 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 16 }];
+      XLSX.utils.book_append_sheet(wb, wsR, nomeAba("Resumo", usados));
+
+      // ---- uma aba por técnico ----
+      grupos.forEach(g => {
+        const aoa = [
+          ["Espelho de Medição — " + g.tecNome],
+          ["Período", periodo],
+          ["Gerado em", gerado],
+          [],
+          ["OS", "Cliente", "Função", "Check-in", "Check-out", "Horas", "Valor-hora (R$)", "Valor (R$)", "Observação"]
+        ];
+        let h = 0, v = 0;
+        g.regs.forEach(r => {
+          h += num(r.horas); v += num(r.valor);
+          aoa.push([
+            r.osTitle, r.cliente || "", r.f.Funcao || "",
+            fmtDT(r.f.Checkin_Hora) || "", fmtDT(r.f.Checkout_Hora) || "",
+            r.horas, r.vh, r.valor,
+            r.vhFonte === "atual" ? "valor-hora ATUAL do contrato (sem snapshot)" : ""
+          ]);
+        });
+        aoa.push([]);
+        aoa.push(["Subtotal", "", "", "", "", h, "", v, ""]);
+        const ws = XLSX.utils.aoa_to_sheet(aoa);
+        ws["!cols"] = [{ wch: 24 }, { wch: 22 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 36 }];
+        XLSX.utils.book_append_sheet(wb, ws, nomeAba(g.tecNome, usados));
+      });
+
+      const nomeArq = "Espelho_Medicao_" + (ym || "sem-periodo") +
+        (ftNome ? "_" + nomeArquivoSeguro(ftNome) : "") + ".xlsx";
+      XLSX.writeFile(wb, nomeArq);
+      setStatus("Espelho gerado: " + nomeArq + " (" + grupos.length + " técnico(s), " + lote.length + " linha(s)).");
+    };
+
+    /* Exposto para testar a lógica sem login (dados falsos):
+       MED.setDados([...], [...], [...], [...]); MED.forcarCarregado(); MED.montarFiltros(); MED.render(); */
+    window.MED = {
+      setDados, montarFiltros, render, classificar, calcularLinha, mKey, dataBase,
+      num, ehNum, cel, celBRL, nomeAba,
+      forcarCarregado: (v) => { carregado = v !== false; $("conteudo").hidden = !carregado; habilitarXls(); }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
