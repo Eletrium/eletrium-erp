@@ -6,6 +6,9 @@
   <title>Eletrium ERP — Ordens de Serviço</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
   <script src="graph.js"></script>
+  <!-- B2 — outbox offline (fila IndexedDB + idempotência client-side). Opt-in:
+       só os fluxos com Operation_ID desviam pra fila, e SÓ sem conexão. -->
+  <script src="outbox.js"></script>
   <link rel="stylesheet" href="app.css" />
   <style>
     /* estilos locais desta tela (não mexem em app.css, que é compartilhado) */
@@ -808,6 +811,19 @@
       return (r && r.value && r.value[0]) || null;
     }
 
+    // B2 — desvio para o outbox quando NÃO há rede: o create (que JÁ tem
+    // Operation_ID — unicidade server-side) é guardado na fila do outbox.js em
+    // vez de perdido; o transmissor entrega quando a conexão voltar. Usado
+    // APENAS por romperCadeia/criarRetificacao. Online e sem erro, o caminho
+    // atual segue idêntico (execução direta — nada passa pela fila).
+    async function enfileirarOffline(opId, fields, msg) {
+      const r = await OB.enfileirar({ operationId: opId, tipo: "createItem", lista: "OrdensDeServico", fields });
+      msg.className = "ed-msg";
+      msg.textContent = r.jaExistia
+        ? "Sem conexão — esta operação JÁ estava guardada na fila e será transmitida automaticamente."
+        : "Sem conexão — operação guardada na fila, será transmitida automaticamente.";
+    }
+
     // coloca uma OS recém-criada/encontrada na tabela local, relendo com
     // fields expandidos quando o eco do create vier magro
     async function entrarNaTabelaLocal(item, rotuloAviso) {
@@ -862,35 +878,58 @@
         let filha = null, filhaJaExistia = false;
         if (criarLog) {
           const opId = "LOGRET-" + o.id;
-          // (1) pré-cheque idempotente — re-clique após falha no PATCH cai aqui
-          msg.className = "ed-msg"; msg.textContent = "Verificando OS de logística existente...";
-          filha = await buscarPorOperationId(opId);
-          filhaJaExistia = !!filha;
-          if (!filha) {
-            // (2) criação COM Operation_ID (unicidade segura contra clique duplo)
-            msg.textContent = "Criando OS de logística de retorno...";
-            const camposLog = {
-              Title: "LOG-" + (f.Title || o.id) + "-RETORNO",
-              OS_Logistica: true,
-              Operation_ID: opId,
-              Descricao: "OS de logística de retorno à base criada (com confirmação) pelo rompimento da cadeia de KM da OS " +
-                         (f.Title || o.id) + ". Justificativa do rompimento: " + just,
-              OS_AnteriorLookupId: Number(o.id)
-            };
-            // lookups só entram se existirem na OS de origem (nunca enviar vazio)
-            if (f.ClienteLookupId != null) camposLog.ClienteLookupId = Number(f.ClienteLookupId);
-            if (f.TecnicoLookupId != null) camposLog.TecnicoLookupId = Number(f.TecnicoLookupId);
-            // Status NÃO vai no create: fica o default da lista (o dono do campo é o 1A)
-            try {
-              filha = await EG.createItem("OrdensDeServico", camposLog);
-            } catch (eCreate) {
-              // clique concorrente: o segundo create bate na UNICIDADE de
-              // Operation_ID — re-cheque; se a filha está lá, é "já criada",
-              // não é falha.
-              const ja = await buscarPorOperationId(opId).catch(() => null);
-              if (!ja) throw eCreate;
-              filha = ja; filhaJaExistia = true;
+          // B2 — payload montado ANTES de qualquer rede: é o MESMO objeto que
+          // vai direto ao Graph (caminho feliz) ou para a fila do outbox (offline).
+          const camposLog = {
+            Title: "LOG-" + (f.Title || o.id) + "-RETORNO",
+            OS_Logistica: true,
+            Operation_ID: opId,
+            Descricao: "OS de logística de retorno à base criada (com confirmação) pelo rompimento da cadeia de KM da OS " +
+                       (f.Title || o.id) + ". Justificativa do rompimento: " + just,
+            OS_AnteriorLookupId: Number(o.id)
+          };
+          // lookups só entram se existirem na OS de origem (nunca enviar vazio)
+          if (f.ClienteLookupId != null) camposLog.ClienteLookupId = Number(f.ClienteLookupId);
+          if (f.TecnicoLookupId != null) camposLog.TecnicoLookupId = Number(f.TecnicoLookupId);
+          // B2 — opt-in do outbox: SÓ offline declarado (ou erro de rede do
+          // fetch, no catch abaixo) desvia pra fila. Online e sem erro, o
+          // caminho atual segue INTACTO (pré-cheque + create + PATCH diretos).
+          if (navigator.onLine === false && window.OB) {
+            await enfileirarOffline(opId, camposLog, msg);
+            btns.forEach(b => { if (b) b.disabled = false; });
+            return; // o PATCH do rompimento também falharia offline. Quando a
+                    // filha confirmar, o re-clique do botão converge: o
+                    // pré-cheque (1) acha a filha, pula a criação e faz só o PATCH.
+          }
+          try {
+            // (1) pré-cheque idempotente — re-clique após falha no PATCH cai aqui
+            msg.className = "ed-msg"; msg.textContent = "Verificando OS de logística existente...";
+            filha = await buscarPorOperationId(opId);
+            filhaJaExistia = !!filha;
+            if (!filha) {
+              // (2) criação COM Operation_ID (unicidade segura contra clique duplo)
+              msg.textContent = "Criando OS de logística de retorno...";
+              // Status NÃO vai no create: fica o default da lista (o dono do campo é o 1A)
+              try {
+                filha = await EG.createItem("OrdensDeServico", camposLog);
+              } catch (eCreate) {
+                // clique concorrente: o segundo create bate na UNICIDADE de
+                // Operation_ID — re-cheque; se a filha está lá, é "já criada",
+                // não é falha.
+                const ja = await buscarPorOperationId(opId).catch(() => null);
+                if (!ja) throw eCreate;
+                filha = ja; filhaJaExistia = true;
+              }
             }
+          } catch (eRede) {
+            // B2 — queda de rede NO MEIO (fetch rejeita com TypeError, sem
+            // status HTTP): a operação NÃO se perde — vai para a fila do
+            // outbox e será transmitida quando a conexão voltar. Qualquer
+            // outro erro segue para o catch geral (comportamento atual).
+            if (!(window.OB && OB.ehErroDeRede(eRede))) throw eRede;
+            await enfileirarOffline(opId, camposLog, msg);
+            btns.forEach(b => { if (b) b.disabled = false; });
+            return;
           }
           filha = await entrarNaTabelaLocal(filha, "OS de logística");
         }
@@ -1131,34 +1170,53 @@
       try {
         rtfOcupado = true;
         btns.forEach(b => { if (b) b.disabled = true; });
-        // pré-cheque idempotente (mesmo padrão do C2): retificação já existe? mostra o número
-        msg.className = "ed-msg"; msg.textContent = "Verificando retificação existente...";
-        let filha = await buscarPorOperationId(opId);
-        let jaExistia = !!filha;
-        if (!filha) {
-          msg.textContent = "Criando OS de correção...";
-          const campos = {
-            Title: "RETIF-" + (f.Title || o.id),
-            Origem_OSLookupId: Number(o.id),
-            Motivo_Retorno: motivo,
-            Operation_ID: opId,
-            Descricao: "OS de correção da OS " + (f.Title || o.id) +
-                       " (concluída — imutável). Motivo da correção: " + motivo
-          };
-          // copiados quando existirem na origem (nunca enviar vazio)
-          if (f.ClienteLookupId != null) campos.ClienteLookupId = Number(f.ClienteLookupId);
-          if (f.TecnicoLookupId != null) campos.TecnicoLookupId = Number(f.TecnicoLookupId);
-          if (temTexto(f.Tipo_OS)) campos.Tipo_OS = f.Tipo_OS;
-          if (temTexto(f.Categoria)) campos.Categoria = f.Categoria;
-          try {
-            filha = await EG.createItem("OrdensDeServico", campos);
-          } catch (eCreate) {
-            // segunda tentativa concorrente falha na UNICIDADE de Operation_ID —
-            // re-cheque: se a retificação está lá, é "já existe", não é falha.
-            const ja = await buscarPorOperationId(opId).catch(() => null);
-            if (!ja) throw eCreate;
-            filha = ja; jaExistia = true;
+        // B2 — payload montado ANTES de qualquer rede: é o MESMO objeto que
+        // vai direto ao Graph (caminho feliz) ou para a fila do outbox (offline).
+        const campos = {
+          Title: "RETIF-" + (f.Title || o.id),
+          Origem_OSLookupId: Number(o.id),
+          Motivo_Retorno: motivo,
+          Operation_ID: opId,
+          Descricao: "OS de correção da OS " + (f.Title || o.id) +
+                     " (concluída — imutável). Motivo da correção: " + motivo
+        };
+        // copiados quando existirem na origem (nunca enviar vazio)
+        if (f.ClienteLookupId != null) campos.ClienteLookupId = Number(f.ClienteLookupId);
+        if (f.TecnicoLookupId != null) campos.TecnicoLookupId = Number(f.TecnicoLookupId);
+        if (temTexto(f.Tipo_OS)) campos.Tipo_OS = f.Tipo_OS;
+        if (temTexto(f.Categoria)) campos.Categoria = f.Categoria;
+        // B2 — opt-in do outbox: SÓ offline declarado (ou erro de rede do
+        // fetch, no catch abaixo) desvia pra fila. Online e sem erro, o
+        // caminho atual segue INTACTO. O finally re-habilita os botões.
+        if (navigator.onLine === false && window.OB) {
+          await enfileirarOffline(opId, campos, msg);
+          return;
+        }
+        let filha = null, jaExistia = false;
+        try {
+          // pré-cheque idempotente (mesmo padrão do C2): retificação já existe? mostra o número
+          msg.className = "ed-msg"; msg.textContent = "Verificando retificação existente...";
+          filha = await buscarPorOperationId(opId);
+          jaExistia = !!filha;
+          if (!filha) {
+            msg.textContent = "Criando OS de correção...";
+            try {
+              filha = await EG.createItem("OrdensDeServico", campos);
+            } catch (eCreate) {
+              // segunda tentativa concorrente falha na UNICIDADE de Operation_ID —
+              // re-cheque: se a retificação está lá, é "já existe", não é falha.
+              const ja = await buscarPorOperationId(opId).catch(() => null);
+              if (!ja) throw eCreate;
+              filha = ja; jaExistia = true;
+            }
           }
+        } catch (eRede) {
+          // B2 — queda de rede NO MEIO (fetch rejeita com TypeError): a
+          // operação NÃO se perde — vai para a fila do outbox. Qualquer outro
+          // erro segue para o catch geral (comportamento atual).
+          if (!(window.OB && OB.ehErroDeRede(eRede))) throw eRede;
+          await enfileirarOffline(opId, campos, msg);
+          return;
         }
         filha = await entrarNaTabelaLocal(filha, "OS de correção");
         indicadores(todas);
