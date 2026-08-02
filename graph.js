@@ -93,12 +93,13 @@ window.EG = (function () {
     return e;
   }
 
-  async function apiRequest(method, url, body) {
+  async function apiRequest(method, url, body, extraHeaders) {
     const full = url.startsWith("http") ? url : GRAPH + url;
     let t = await token();
     let tentativasThrottle = 0, renovou401 = false;
     for (;;) {
       const headers = { Authorization: "Bearer " + t, Accept: "application/json" };
+      if (extraHeaders) for (const k of Object.keys(extraHeaders)) headers[k] = extraHeaders[k];
       const opcoes = { method, headers };
       if (body !== undefined) { headers["Content-Type"] = "application/json"; opcoes.body = JSON.stringify(body); }
       const r = await fetch(full, opcoes);
@@ -125,7 +126,7 @@ window.EG = (function () {
   /** GET no Graph (url relativa ao v1.0 ou absoluta). Retorna o JSON da resposta. */
   const gget = (url) => apiRequest("GET", url);
   /** PATCH no Graph com corpo JSON. Retorna o JSON da resposta (ou null se vazia). */
-  const gpatch = (url, body) => apiRequest("PATCH", url, body);
+  const gpatch = (url, body, extraHeaders) => apiRequest("PATCH", url, body, extraHeaders);
   /** POST no Graph com corpo JSON. Retorna o JSON da resposta (ou null se vazia). */
   const gpost = (url, body) => apiRequest("POST", url, body);
 
@@ -171,10 +172,29 @@ window.EG = (function () {
     const sid = await resolveSite();
     return (await gget("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/columns")).value || [];
   }
+  // B3 (Roadmap OS v2.1): toda atualização é CONDICIONAL por ETag (If-Match).
+  // Lê o etag atual do item e envia o PATCH condicionado: se alguém gravou no
+  // meio, o Graph devolve 412 e NÓS NÃO SOBRESCREVEMOS — o erro instrui a
+  // reler. As telas já releem do servidor após gravar; em conflito, o catch
+  // existente mostra a mensagem e o usuário recarrega o item antes de reaplicar.
   async function patchItemFields(list, id, fields) {
     checarTravas(list, fields); // fail-closed: bloqueia ANTES de ir à rede (só com trava registrada)
     const sid = await resolveSite();
-    return gpatch("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items/" + id + "/fields", fields);
+    const base = "/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items/" + id;
+    let etag = null;
+    try {
+      const item = await gget(base + "?$select=id");
+      etag = item && item["@odata.etag"] ? item["@odata.etag"] : null;
+    } catch { /* sem etag (item inacessível?) — o PATCH abaixo falhará com o erro real */ }
+    try {
+      return await gpatch(base + "/fields", fields, etag ? { "If-Match": etag } : undefined);
+    } catch (e) {
+      if (e && e.status === 412) {
+        e.message = "conflito de edição: o item foi alterado por outra pessoa/processo depois que você o carregou — recarregue e reaplique a mudança (nada foi sobrescrito)";
+        e.conflitoEdicao = true;
+      }
+      throw e;
+    }
   }
   // Cria item. `fields` usa nomes INTERNOS; lookup vai como <Campo>LookupId
   // (ex.: ClienteLookupId: 3) — o Graph não aceita "Cliente" com objeto.
