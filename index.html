@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Eletrium ERP — Kanban de Propostas</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
   <script src="pipeline.js"></script>
   <style>
     :root { color-scheme: light dark; }
@@ -25,6 +26,12 @@
     .warn.hidden { display: none; }
     .warn code { background: #ffffff14; padding: 1px 5px; border-radius: 4px; }
 
+    /* --- Estados de tela (EG.renderEstado) --- */
+    .estado { margin: 8px 20px; font-size: .9rem; color: #8b949e; }
+    .estado .eg-estado-erro { color: #f85149; }
+    .estado .eg-estado-vazio { color: #8b949e; }
+    .estado .eg-estado-retry { margin-left: 8px; font-size: .82rem; padding: 4px 12px; background: transparent; color: #58a6ff; border: 1px solid #30363d; }
+
     /* --- Kanban --- */
     .board { display: flex; gap: 12px; overflow-x: auto; padding: 12px 20px 28px; align-items: flex-start; }
     .col { flex: 0 0 262px; max-width: 262px; background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 190px); }
@@ -40,6 +47,16 @@
     .card .num { font-weight: 600; font-size: .92rem; }
     .card .cli { color: #8b949e; font-size: .82rem; margin: 3px 0; }
     .card .val { color: #3fb950; font-weight: 600; font-size: .85rem; margin-top: 5px; }
+    /* operação (F5) nos cards */
+    .card .meta { font-size: .78rem; margin-top: 5px; color: #8b949e; word-break: break-word; }
+    .card .meta.prox.vencida { color: #f85149; font-weight: 600; }
+    .card .meta.prox.hoje { color: #f0883e; font-weight: 600; }
+    .card .meta.motivo { color: #f85149; }
+    .card .selo-sem-acao { display: inline-block; margin-top: 6px; font-size: .72rem; color: #e3b341; border: 1px solid #d2992255; background: #d2992218; border-radius: 999px; padding: 1px 8px; }
+    /* gravação otimista do drag & drop */
+    .card.salvando { opacity: .55; border-style: dashed; border-color: #58a6ff; pointer-events: none; }
+    .card.rollback-erro { border-color: #f85149; animation: pulsoErro 1.5s ease; }
+    @keyframes pulsoErro { 0% { box-shadow: 0 0 0 3px #f8514966; } 100% { box-shadow: 0 0 0 0 #f8514900; } }
     .empty { color: #484f58; font-size: .8rem; text-align: center; padding: 14px 0; }
     pre { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 320px; font-size: .78rem; margin: 0 20px 24px; }
     .err { color: #f85149; }
@@ -59,6 +76,26 @@
     .drawer-body dt { color: #8b949e; font-size: .82rem; }
     .drawer-body dd { margin: 0; font-size: .88rem; word-break: break-word; }
     .drawer-body .raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; margin-top: 10px; display: inline-block; }
+    /* bloco editável de operação (F5) no drawer */
+    .op-block { margin-top: 4px; border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #010409; }
+    .op-block .op-title { font-weight: 600; font-size: .85rem; }
+    .op-block label { display: block; font-size: .78rem; color: #8b949e; margin: 8px 0 3px; }
+    .op-block input, .op-block select { width: 100%; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 6px 8px; font-size: .88rem; font-family: inherit; }
+    .op-block button { margin-top: 12px; }
+    .op-msg { margin-top: 8px; font-size: .8rem; color: #8b949e; }
+    .op-msg.err { color: #f85149; }
+
+    /* --- Modais (motivo da perda / + Indicação) --- */
+    .modal-bg { position: fixed; inset: 0; background: #000a; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .modal-bg[hidden] { display: none; }
+    .modal { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; padding: 20px; width: 440px; max-width: 94vw; max-height: 90vh; overflow-y: auto; }
+    .modal h2 { margin: 0 0 4px; font-size: 1.05rem; }
+    .modal .modal-sub { margin: 0 0 10px; color: #8b949e; font-size: .84rem; }
+    .modal label { display: block; font-size: .82rem; color: #8b949e; margin: 10px 0 4px; }
+    .modal input, .modal select, .modal textarea { width: 100%; background: #010409; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; padding: 7px 9px; font-size: .9rem; font-family: inherit; }
+    .modal textarea { resize: vertical; }
+    .modal-erro { margin-top: 10px; color: #f85149; font-size: .84rem; }
+    .modal-acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
   </style>
 </head>
 <body>
@@ -84,100 +121,147 @@
     <span class="user" id="user"></span>
     <button id="btnLogin">Entrar</button>
     <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnIndicacao" class="sec" disabled>+ Indicação</button>
     <button id="btnJson" class="sec" disabled>JSON</button>
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
   <div id="etapaWarn" class="warn hidden"></div>
+  <div id="estado" class="estado" hidden></div>
   <div class="board" id="board"></div>
   <pre id="json" hidden></pre>
 
   <div class="overlay" id="overlay"></div>
   <aside class="drawer" id="drawer" aria-hidden="true"></aside>
 
+  <!-- Mini-modal: motivo da perda (obrigatório ao arrastar para "Perdido") -->
+  <div class="modal-bg" id="perdaBg" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="perdaTitulo">
+      <h2 id="perdaTitulo">Marcar como Perdido</h2>
+      <p class="modal-sub" id="perdaSub"></p>
+      <label for="perdaMotivo">Motivo da perda *</label>
+      <div id="perdaMotivoWrap"></div>
+      <label for="perdaConcorrente">Concorrente (opcional)</label>
+      <input id="perdaConcorrente" type="text" maxlength="255" />
+      <div class="modal-erro" id="perdaErro" hidden></div>
+      <div class="modal-acoes">
+        <button class="sec" id="perdaCancelar" type="button">Cancelar</button>
+        <button id="perdaConfirmar" type="button">Confirmar perda</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: + Indicação (F5) — registra lead manual na fila de auditoria -->
+  <div class="modal-bg" id="indBg" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="indTitulo">
+      <h2 id="indTitulo">+ Indicação</h2>
+      <p class="modal-sub">Entra na fila de auditoria de leads — não cria proposta.</p>
+      <label for="indRazao">Razão social / Nome *</label>
+      <input id="indRazao" type="text" maxlength="255" />
+      <label for="indDoc">CNPJ / CPF (opcional)</label>
+      <input id="indDoc" type="text" maxlength="20" />
+      <label for="indContato">Contato (opcional)</label>
+      <input id="indContato" type="text" maxlength="255" />
+      <label for="indObs">Observação (opcional)</label>
+      <textarea id="indObs" rows="3"></textarea>
+      <div class="modal-erro" id="indErro" hidden></div>
+      <div class="modal-acoes">
+        <button class="sec" id="indCancelar" type="button">Cancelar</button>
+        <button id="indConfirmar" type="button">Registrar indicação</button>
+      </div>
+    </div>
+  </div>
+
   <script>
-    // ===================== CONFIG =====================
-    const CONFIG = {
-      clientId: "f0c63078-fe75-4f7a-8f87-8783c12e7df8", // Eletrium ERP - Web App (delegado, SPA)
-      tenantId: "6b76ebcc-abef-462d-a0be-eebf5a9e434b",
-      siteHost: "gwtecheletrica.sharepoint.com",
-      sitePath: "/sites/EletriumERP",
-      scopes: ["User.Read", "Sites.ReadWrite.All"] // ReadWrite: necessário p/ arrastar-e-salvar (PATCH)
-    };
-    const GRAPH = "https://graph.microsoft.com/v1.0";
-    const BRL = (n) => (n ?? 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+    // ===================== BASE =====================
+    // Migração onda 2: auth/Graph centralizados no graph.js (EG.*). O CONFIG,
+    // MSAL, token() e fetch próprios que esta tela (a mais antiga do repo)
+    // carregava inline foram removidos — comportamento visível preservado.
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const BRL = EG.BRL;
     const fmtDate = EG.fmtDate; // central: trata date-only (meia-noite UTC) sem perder 1 dia no fuso
     // ==================================================
 
-    const $ = (id) => document.getElementById(id);
-    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
-    let account = null, msalApp = null, lastPayload = null, siteId = null;
-    window.currentUser = null;
+    let lastPayload = null;
     let propMap = {}, nomeClienteMap = {};
+    let etapaChoices = [];        // choices REAIS de Propostas.Etapa_Pipeline (fonte da verdade)
+    let motivoPerdaChoices = [];  // choices REAIS de Propostas.Motivo_Perda (select do modal/drawer)
+    let origemLeadFila = null;    // choices REAIS de Fila_Auditoria_Leads.Origem_Lead (cache lazy)
+    window.currentUser = null;    // compat: a versão antiga desta tela expunha isso
 
-    async function init() {
-      msalApp = new msal.PublicClientApplication({
-        auth: { clientId: CONFIG.clientId, authority: "https://login.microsoftonline.com/" + CONFIG.tenantId, redirectUri: window.location.origin },
-        cache: { cacheLocation: "sessionStorage" }
-      });
-      await msalApp.initialize();
-      const a = msalApp.getAllAccounts();
-      if (a.length) { account = a[0]; await onIn(); }
+    // Etapas fechadas: fora delas o card é "ativo" e mostra a operação (F5)
+    const ETAPAS_FECHADAS = ["Ganho", "Perdido"];
+
+    // ===================== AUTENTICAÇÃO (EG.*) =====================
+    async function boot() {
+      const logged = await EG.init();
+      if (logged) await onIn();
     }
-
     async function onIn() {
-      setStatus("Autenticado como " + account.username);
-      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnJson").disabled = false; $("btnLogout").disabled = false;
-      try {
-        const me = await gget("/me?$select=id,displayName,userPrincipalName,mail", await token());
-        window.currentUser = { id: me.id, nome: me.displayName, email: me.mail || me.userPrincipalName };
-        $("user").textContent = "👤 " + window.currentUser.nome;
-      } catch (e) { $("user").textContent = "👤 " + account.username + " (falha no /me)"; }
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true;
+      ["btnLoad", "btnIndicacao", "btnJson", "btnLogout"].forEach(id => $(id).disabled = false);
+      try { const u = await EG.me(); window.currentUser = u; $("user").textContent = "👤 " + u.nome; }
+      catch { $("user").textContent = "👤 " + EG.getAccount().username + " (falha no /me)"; }
     }
-
-    async function token() {
-      const req = { scopes: CONFIG.scopes, account };
-      try { return (await msalApp.acquireTokenSilent(req)).accessToken; }
-      catch { return (await msalApp.acquireTokenPopup(req)).accessToken; }
-    }
-    const gget = async (url, t) => (await fetch(url.startsWith("http") ? url : GRAPH + url, { headers: { Authorization: "Bearer " + t, Accept: "application/json" } })).json();
-
     $("btnLogin").onclick = async () => {
-      try { const r = await msalApp.loginPopup({ scopes: CONFIG.scopes }); account = r.account; msalApp.setActiveAccount(account); await onIn(); }
+      try { await EG.login(); await onIn(); }
       catch (e) { setStatus("Falha no login: " + e.message, "err"); }
     };
     $("btnLogout").onclick = async () => {
-      await msalApp.logoutPopup({ account }); account = null; window.currentUser = null;
+      await EG.logout(); window.currentUser = null;
       setStatus("Não autenticado."); $("user").textContent = ""; $("btnLogin").disabled = false;
-      ["btnLoad","btnJson","btnLogout"].forEach(id => $(id).disabled = true);
-      $("board").innerHTML = ""; $("etapaWarn").className = "warn hidden"; closeDrawer();
+      ["btnLoad", "btnIndicacao", "btnJson", "btnLogout"].forEach(id => $(id).disabled = true);
+      $("board").innerHTML = ""; $("etapaWarn").className = "warn hidden"; $("etapaWarn").innerHTML = "";
+      EG.renderEstado($("estado"), "ok");
+      closeDrawer(); fecharModalPerda(false); fecharModalIndicacao();
     };
 
-    $("btnLoad").onclick = async () => {
+    // ===================== CARGA DO QUADRO =====================
+    $("btnLoad").onclick = carregar;
+
+    async function carregar() {
       try {
         setStatus("Carregando via Graph...");
-        const t = await token();
-        const site = await gget("/sites/" + CONFIG.siteHost + ":" + CONFIG.sitePath, t);
-        if (!site.id) throw new Error("não resolveu o site");
-        siteId = site.id;
-        const cols = await gget("/sites/" + siteId + "/lists/Propostas/columns", t);
-        const etapa = (cols.value || []).find(c => c.name === "Etapa_Pipeline");
-        const choices = etapa && etapa.choice ? etapa.choice.choices : [];
+        $("board").innerHTML = "";
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando propostas…" });
 
-        renderEtapaWarn(window.validateEtapasConfig(choices));
+        // Choices reais de Propostas: Etapa_Pipeline (colunas do quadro) e
+        // Motivo_Perda (select do modal de perda / drawer).
+        const cols = await EG.listColumns("Propostas");
+        const colEtapa = (cols || []).find(c => c.name === "Etapa_Pipeline");
+        etapaChoices = colEtapa && colEtapa.choice ? colEtapa.choice.choices : [];
+        const colMotivo = (cols || []).find(c => c.name === "Motivo_Perda");
+        motivoPerdaChoices = colMotivo && colMotivo.choice && Array.isArray(colMotivo.choice.choices) ? colMotivo.choice.choices : [];
 
-        const props = await gget("/sites/" + siteId + "/lists/Propostas/items?expand=fields&$top=500", t);
-        const clientes = await gget("/sites/" + siteId + "/lists/Clientes/items?expand=fields($select=Title)&$top=500", t);
+        // Trava FAIL-CLOSED: registra os choices reais de Etapa_Pipeline contra os
+        // rótulos do pipeline.js; a partir daqui patchItemFields/createItem bloqueiam
+        // client-side qualquer gravação com rótulo que não exista no servidor
+        // (e.failClosed=true). O aviso visual continua sendo o validateEtapasConfig
+        // do pipeline.js (mesma comparação), no #etapaWarn de sempre.
+        await EG.travarChoices("Propostas", "Etapa_Pipeline", Object.keys(window.ETAPA_CONFIG));
+        renderEtapaWarn(window.validateEtapasConfig(etapaChoices));
+
+        // EG.listItems pagina sozinho (@odata.nextLink) — sem truncamento silencioso
+        const props = await EG.listItems("Propostas", "expand=fields&$top=500");
+        const clientes = await EG.listItems("Clientes", "expand=fields($select=Title)&$top=500");
         nomeClienteMap = {};
-        (clientes.value || []).forEach(c => { nomeClienteMap[c.id] = c.fields.Title; });
+        clientes.forEach(c => { nomeClienteMap[c.id] = c.fields && c.fields.Title; });
         propMap = {};
-        (props.value || []).forEach(p => { propMap[p.id] = p; });
+        props.forEach(p => { propMap[p.id] = p; });
 
-        lastPayload = { site: site.displayName, choices, propostas: props.value, clientesMap: nomeClienteMap };
-        renderBoard(choices, props.value);
-        setStatus("OK — " + (props.value || []).length + " proposta(s). Arraste cards entre colunas para mover.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+        lastPayload = { choices: etapaChoices, motivoPerdaChoices, propostas: props, clientesMap: nomeClienteMap };
+        renderBoard(etapaChoices, props);
+        // vazio REAL (carregou e não há itens) ≠ carregando ≠ erro
+        EG.renderEstado($("estado"), props.length ? "ok" : "vazio", { mensagem: "Nenhuma proposta encontrada — o quadro está vazio." });
+        setStatus("OK — " + props.length + " proposta(s). Arraste cards entre colunas para mover.");
+      } catch (e) {
+        EG.renderEstado($("estado"), "erro", { mensagem: e.message, onRetry: carregar });
+        setStatus("Falha: " + e.message, "err");
+      }
+    }
 
     $("btnJson").onclick = () => { const p = $("json"); p.hidden = !p.hidden; p.textContent = JSON.stringify(lastPayload, null, 2); };
 
@@ -185,20 +269,53 @@
       const el = $("etapaWarn");
       if (v.ok) { el.className = "warn hidden"; el.innerHTML = ""; return; }
       let html = "<strong>⚠️ Divergência entre ETAPA_CONFIG e os choices do SharePoint:</strong><br>";
-      if (v.semChoice.length) html += "No código mas <em>não</em> existem como etapa (typo/acento?): " + v.semChoice.map(x => "<code>" + x + "</code>").join(" ") + "<br>";
-      if (v.semConfig.length) html += "Etapa do SharePoint <em>sem</em> cor no ETAPA_CONFIG (usará fallback): " + v.semConfig.map(x => "<code>" + x + "</code>").join(" ");
+      if (v.semChoice.length) html += "No código mas <em>não</em> existem como etapa (typo/acento?): " + v.semChoice.map(x => "<code>" + esc(x) + "</code>").join(" ") + "<br>";
+      if (v.semConfig.length) html += "Etapa do SharePoint <em>sem</em> cor no ETAPA_CONFIG (usará fallback): " + v.semConfig.map(x => "<code>" + esc(x) + "</code>").join(" ");
       el.innerHTML = html; el.className = "warn";
     }
 
+    // ===================== RENDER DO QUADRO =====================
     const cliNome = (f) => nomeClienteMap[f.ClienteLookupId] || ("cliente #" + (f.ClienteLookupId ?? "?"));
+
+    // Classifica a Data_Proxima_Acao: "vencida" (vermelho) | "hoje" (laranja) | "".
+    // Compara o DIA em UTC do valor gravado (12:00Z, ou 00:00Z de DateOnly — nos
+    // dois casos toISOString devolve o dia certo) com o dia LOCAL de agora.
+    function classeDataAcao(s) {
+      if (!s) return "";
+      const d = new Date(s);
+      if (isNaN(d)) return "";
+      const diaAcao = d.toISOString().slice(0, 10);
+      const agora = new Date();
+      const hojeLocal = agora.getFullYear() + "-" + String(agora.getMonth() + 1).padStart(2, "0") + "-" + String(agora.getDate()).padStart(2, "0");
+      if (diaAcao < hojeLocal) return "vencida";
+      if (diaAcao === hojeLocal) return "hoje";
+      return "";
+    }
 
     function cardHtml(p) {
       const f = p.fields || {};
-      return `<div class="card" draggable="true" data-id="${p.id}">
-        <div class="num">${f.Title ?? "(sem número)"}</div>
-        <div class="cli">${cliNome(f)}</div>
-        <div class="val">${BRL(f.ValorTotal)}</div>
-      </div>`;
+      const etapa = f.Etapa_Pipeline;
+      const ativo = !!etapa && !ETAPAS_FECHADAS.includes(etapa);
+      let op = "";
+      if (ativo) {
+        // F5 — operação nos cards ativos: responsável + próxima ação (com prazo)
+        if (f.Responsavel_Principal) op += '<div class="meta resp">👤 ' + esc(f.Responsavel_Principal) + "</div>";
+        if (f.Proxima_Acao || f.Data_Proxima_Acao) {
+          const cls = classeDataAcao(f.Data_Proxima_Acao);
+          const data = f.Data_Proxima_Acao ? esc(fmtDate(f.Data_Proxima_Acao)) : "";
+          op += '<div class="meta prox ' + cls + '">➜ ' + esc(f.Proxima_Acao || "(sem descrição)") + (data ? " · " + data : "") + "</div>";
+        } else {
+          // card ativo sem próxima ação combinada: selo discreto âmbar
+          op += '<div class="selo-sem-acao">sem próxima ação</div>';
+        }
+      } else if (etapa === "Perdido" && f.Motivo_Perda) {
+        op += '<div class="meta motivo">✖ ' + esc(f.Motivo_Perda) + "</div>";
+      }
+      return '<div class="card" draggable="true" data-id="' + esc(p.id) + '">' +
+        '<div class="num">' + esc(f.Title ?? "(sem número)") + "</div>" +
+        '<div class="cli">' + esc(cliNome(f)) + "</div>" +
+        '<div class="val">' + BRL(f.ValorTotal) + "</div>" + op +
+        "</div>";
     }
 
     function renderBoard(choices, propostas) {
@@ -214,17 +331,17 @@
       $("board").innerHTML = colunas.map(col => {
         const sum = col.items.reduce((s, p) => s + ((p.fields && p.fields.ValorTotal) || 0), 0);
         const body = col.items.map(cardHtml).join("") || "<div class='empty'>—</div>";
-        return `<div class="col" data-etapa="${col.etapa}">
-          <div class="col-head" style="border-top-color:${col.cor}">
-            <div class="col-title" style="color:${col.cor}">${col.nome} <span class="col-count">${col.items.length}</span></div>
-            <div class="col-sum">${BRL(sum)}</div>
-          </div>
-          <div class="col-body">${body}</div>
-        </div>`;
+        return '<div class="col" data-etapa="' + esc(col.etapa) + '">' +
+          '<div class="col-head" style="border-top-color:' + esc(col.cor) + '">' +
+            '<div class="col-title" style="color:' + esc(col.cor) + '">' + esc(col.nome) + ' <span class="col-count">' + col.items.length + "</span></div>" +
+            '<div class="col-sum">' + BRL(sum) + "</div>" +
+          "</div>" +
+          '<div class="col-body">' + body + "</div>" +
+        "</div>";
       }).join("");
     }
 
-    // --- Drag & drop: mover proposta de etapa (PATCH no Graph) ---
+    // ===================== DRAG & DROP (otimista + rollback) =====================
     const board = $("board");
     board.addEventListener("dragstart", (e) => { const c = e.target.closest(".card"); if (c) { e.dataTransfer.setData("text/plain", c.dataset.id); c.classList.add("dragging"); } });
     board.addEventListener("dragend", (e) => { const c = e.target.closest(".card"); if (c) c.classList.remove("dragging"); });
@@ -236,38 +353,151 @@
       moveProposta(e.dataTransfer.getData("text/plain"), col.dataset.etapa);
     });
 
+    function marcarCard(id, cls, on) {
+      const el = board.querySelector('.card[data-id="' + CSS.escape(String(id)) + '"]');
+      if (el) el.classList[on ? "add" : "remove"](cls);
+      return el;
+    }
+
     async function moveProposta(id, novaEtapa) {
       const p = propMap[id]; if (!p) return;
       const atual = p.fields.Etapa_Pipeline;
       if (!novaEtapa || novaEtapa === atual) return;
-      setStatus("Movendo " + (p.fields.Title || id) + " → " + novaEtapa + "...");
-      try {
-        const t = await token();
-        const url = GRAPH + "/sites/" + siteId + "/lists/Propostas/items/" + id + "/fields";
-        const body = { Etapa_Pipeline: novaEtapa, Data_Entrada_Etapa: new Date().toISOString() };
-        const res = await fetch(url, { method: "PATCH", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-        if (!res.ok) throw new Error(res.status + " " + (await res.text()));
-        // sucesso: atualiza estado local e re-renderiza (sem refetch)
-        p.fields.Etapa_Pipeline = novaEtapa;
-        p.fields.Data_Entrada_Etapa = body.Data_Entrada_Etapa;
-        renderBoard(lastPayload.choices, lastPayload.propostas);
-        setStatus("✔ " + (p.fields.Title || id) + " movida para " + novaEtapa + ".");
-      } catch (e) { setStatus("Falha ao mover (nada foi alterado): " + e.message, "err"); }
+      // arrastar para "Perdido" exige motivo: mini-modal antes da gravação
+      if (novaEtapa === "Perdido") { abrirModalPerda(p, atual); return; }
+      await gravarMovimento(p, novaEtapa, atual, null);
     }
 
-    // --- Detalhe (drawer) ---
+    // Movimento OTIMISTA com rollback: o card muda de coluna imediatamente em
+    // estado "salvando…" (tracejado, sem interação); se o PATCH falhar, o card
+    // VOLTA à coluna de origem com realce breve de erro + mensagem normalizada.
+    // O usuário nunca vê o card parado numa coluna cuja gravação falhou.
+    async function gravarMovimento(p, novaEtapa, etapaAnterior, camposExtras) {
+      const id = p.id;
+      const dataAnterior = p.fields.Data_Entrada_Etapa;
+      // 1) otimista
+      p.fields.Etapa_Pipeline = novaEtapa;
+      renderBoard(etapaChoices, lastPayload.propostas);
+      marcarCard(id, "salvando", true);
+      setStatus("Movendo " + (p.fields.Title || id) + " → " + novaEtapa + "...");
+      // 2) PATCH mínimo — nunca grava "": campo vazio é omitido do corpo
+      const body = { Etapa_Pipeline: novaEtapa, Data_Entrada_Etapa: new Date().toISOString() };
+      if (camposExtras) Object.keys(camposExtras).forEach(k => {
+        const v = camposExtras[k];
+        if (v != null && v !== "") body[k] = v;
+      });
+      try {
+        await EG.patchItemFields("Propostas", id, body); // trava fail-closed ativa p/ Etapa_Pipeline
+        await relerProposta(id); // releitura pós-gravação: estado local = servidor
+        renderBoard(etapaChoices, lastPayload.propostas);
+        setStatus("✔ " + ((propMap[id].fields || {}).Title || id) + " movida para " + novaEtapa + ".");
+      } catch (e) {
+        // rollback visual: volta à coluna de origem + realce de erro
+        p.fields.Etapa_Pipeline = etapaAnterior;
+        p.fields.Data_Entrada_Etapa = dataAnterior;
+        renderBoard(etapaChoices, lastPayload.propostas);
+        const el = marcarCard(id, "rollback-erro", true);
+        if (el) setTimeout(() => el.classList.remove("rollback-erro"), 1600);
+        setStatus("Falha ao mover (nada foi alterado): " + e.message, "err");
+      }
+    }
+
+    // Relê o item no servidor após gravar (padrão do repo) e atualiza os mapas locais.
+    async function relerProposta(id) {
+      const sid = await EG.resolveSite();
+      const fresh = await EG.gget("/sites/" + sid + "/lists/Propostas/items/" + id + "?expand=fields");
+      propMap[id] = fresh;
+      const i = lastPayload.propostas.findIndex(x => String(x.id) === String(id));
+      if (i >= 0) lastPayload.propostas[i] = fresh;
+      return fresh;
+    }
+
+    // ===================== MODAL: MOTIVO DA PERDA =====================
+    // select com os choices REAIS de Propostas.Motivo_Perda (EG.listColumns);
+    // valor já gravado fora da lista é PRESERVADO como opção extra. Se a coluna
+    // não for Choice (ou não tiver choices), cai em texto livre para não travar.
+    function motivoSelectHtml(atual, idCampo) {
+      const a = atual || "";
+      if (motivoPerdaChoices.length) {
+        const ops = motivoPerdaChoices.slice();
+        if (a && !ops.includes(a)) ops.unshift(a); // preserva valor fora da lista
+        return '<select id="' + idCampo + '"><option value="">— selecione —</option>' +
+          ops.map(o => '<option value="' + esc(o) + '"' + (o === a ? " selected" : "") + ">" + esc(o) + "</option>").join("") + "</select>";
+      }
+      return '<input id="' + idCampo + '" type="text" value="' + esc(a) + '" maxlength="255" />';
+    }
+
+    let perdaCtx = null; // { p, etapaAnterior } enquanto o mini-modal está aberto
+
+    function abrirModalPerda(p, etapaAnterior) {
+      perdaCtx = { p, etapaAnterior };
+      // otimista: o card já aparece em "Perdido" (salvando…) enquanto o motivo é preenchido
+      p.fields.Etapa_Pipeline = "Perdido";
+      renderBoard(etapaChoices, lastPayload.propostas);
+      marcarCard(p.id, "salvando", true);
+      $("perdaSub").textContent = (p.fields.Title || p.id) + " — informe o motivo da perda para confirmar o movimento.";
+      $("perdaMotivoWrap").innerHTML = motivoSelectHtml(p.fields.Motivo_Perda, "perdaMotivo");
+      $("perdaConcorrente").value = p.fields.Concorrente || "";
+      $("perdaErro").hidden = true;
+      $("perdaBg").hidden = false;
+      const m = $("perdaMotivo"); if (m && m.focus) m.focus();
+    }
+
+    // comRollback=true (cancelar/Esc): o card volta à coluna de origem
+    function fecharModalPerda(comRollback) {
+      $("perdaBg").hidden = true;
+      if (!perdaCtx) return;
+      const ctx = perdaCtx; perdaCtx = null;
+      if (comRollback) {
+        ctx.p.fields.Etapa_Pipeline = ctx.etapaAnterior;
+        renderBoard(etapaChoices, lastPayload.propostas);
+        setStatus("Movimento cancelado — " + (ctx.p.fields.Title || ctx.p.id) + " permanece em " + (ctx.etapaAnterior || "(sem etapa)") + ".");
+      }
+    }
+
+    $("perdaCancelar").onclick = () => fecharModalPerda(true);
+    $("perdaBg").addEventListener("click", (e) => { if (e.target === $("perdaBg")) fecharModalPerda(true); });
+    $("perdaConfirmar").onclick = async () => {
+      if (!perdaCtx) return;
+      const motivo = ($("perdaMotivo").value || "").trim();
+      if (!motivo) { $("perdaErro").textContent = "Informe o motivo da perda (ou cancele o movimento)."; $("perdaErro").hidden = false; return; }
+      const ctx = perdaCtx; perdaCtx = null;
+      const concorrente = $("perdaConcorrente").value.trim();
+      $("perdaBg").hidden = true;
+      // desfaz o otimista local — gravarMovimento refaz (otimista + PATCH + rollback se falhar)
+      ctx.p.fields.Etapa_Pipeline = ctx.etapaAnterior;
+      // Motivo_Perda/Concorrente: dono da escrita = esta tela (F5); "" é omitido do PATCH
+      await gravarMovimento(ctx.p, "Perdido", ctx.etapaAnterior, { Motivo_Perda: motivo, Concorrente: concorrente });
+    };
+
+    // ===================== DRAWER DE DETALHE =====================
     board.addEventListener("click", (ev) => {
       const card = ev.target.closest(".card"); if (!card) return;
       const p = propMap[card.dataset.id]; if (p) openDrawer(p);
     });
     $("overlay").onclick = closeDrawer;
-    document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (!$("perdaBg").hidden) { fecharModalPerda(true); return; }
+      if (!$("indBg").hidden) { fecharModalIndicacao(); return; }
+      closeDrawer();
+    });
 
-    function row(label, value) { return value == null || value === "" ? "" : `<dt>${label}</dt><dd>${value}</dd>`; }
+    function row(label, value) { return value == null || value === "" ? "" : "<dt>" + esc(label) + "</dt><dd>" + esc(value) + "</dd>"; }
+
+    // <input type=date> quer AAAA-MM-DD: extrai o dia em UTC do valor gravado
+    // (par do meio-dia UTC usado na gravação — mesmo dia em qualquer fuso BR)
+    function opDataInput(s) {
+      if (!s) return "";
+      const d = new Date(s);
+      if (isNaN(d)) return "";
+      return d.toISOString().slice(0, 10);
+    }
 
     function openDrawer(p) {
       const f = p.fields || {};
       const cor = window.etapaCor(f.Etapa_Pipeline);
+      const ehPerdido = f.Etapa_Pipeline === "Perdido";
       const campos = [
         row("Cliente", cliNome(f)),
         row("Status", f.Status),
@@ -283,24 +513,45 @@
         row("Prazo execução", f.PrazoExecucao),
         row("Probabilidade", f.Probabilidade_Fechamento != null ? f.Probabilidade_Fechamento + "%" : null),
         row("Responsável", f.Responsavel_Principal),
+        row("Próxima ação", f.Proxima_Acao),
+        row("Data próx. ação", fmtDate(f.Data_Proxima_Acao)),
+        row("Motivo da perda", ehPerdido ? f.Motivo_Perda : null),
+        row("Concorrente", ehPerdido ? f.Concorrente : null),
         row("Origem do lead", f.Origem_Lead),
         row("Observações", f.Observacoes)
       ].join("");
-      $("drawer").innerHTML = `
-        <div class="drawer-head">
-          <div class="t">
-            <div class="num">${f.Title ?? "(sem número)"}</div>
-            <span class="etapa" style="background:${cor}">${f.Etapa_Pipeline ?? "(sem etapa)"}</span>
-          </div>
-          <button class="x" id="drawerClose">Fechar ✕</button>
-        </div>
-        <div class="drawer-body">
-          <dl>${campos}</dl>
-          <span class="raw-toggle" id="rawToggle">ver campos crus (Graph)</span>
-          <pre id="rawFields" hidden style="margin:8px 0 0">${JSON.stringify(f, null, 2)}</pre>
-        </div>`;
+      // Edição rápida de operação (F5). Donos de escrita nesta tela:
+      // Responsavel_Principal, Proxima_Acao, Data_Proxima_Acao (+ Motivo_Perda se Perdido).
+      const opHtml =
+        '<div class="op-block">' +
+          '<div class="op-title">Operação</div>' +
+          '<label for="opResp">Responsável principal</label>' +
+          '<input id="opResp" type="text" value="' + esc(f.Responsavel_Principal ?? "") + '" maxlength="255" />' +
+          '<label for="opProx">Próxima ação</label>' +
+          '<input id="opProx" type="text" value="' + esc(f.Proxima_Acao ?? "") + '" maxlength="255" />' +
+          '<label for="opData">Data da próxima ação</label>' +
+          '<input id="opData" type="date" value="' + esc(opDataInput(f.Data_Proxima_Acao)) + '" />' +
+          (ehPerdido ? '<label for="opMotivo">Motivo da perda</label>' + motivoSelectHtml(f.Motivo_Perda, "opMotivo") : "") +
+          '<div class="op-msg" id="opMsg" hidden></div>' +
+          '<button id="opSalvar" type="button">Salvar operação</button>' +
+        "</div>";
+      $("drawer").innerHTML =
+        '<div class="drawer-head">' +
+          '<div class="t">' +
+            '<div class="num">' + esc(f.Title ?? "(sem número)") + "</div>" +
+            '<span class="etapa" style="background:' + esc(cor) + '">' + esc(f.Etapa_Pipeline ?? "(sem etapa)") + "</span>" +
+          "</div>" +
+          '<button class="x" id="drawerClose" type="button">Fechar ✕</button>' +
+        "</div>" +
+        '<div class="drawer-body">' +
+          "<dl>" + campos + "</dl>" +
+          opHtml +
+          '<span class="raw-toggle" id="rawToggle">ver campos crus (Graph)</span>' +
+          '<pre id="rawFields" hidden style="margin:8px 0 0">' + esc(JSON.stringify(f, null, 2)) + "</pre>" +
+        "</div>";
       $("drawerClose").onclick = closeDrawer;
       $("rawToggle").onclick = () => { const r = $("rawFields"); r.hidden = !r.hidden; };
+      $("opSalvar").onclick = () => salvarOperacao(p);
       $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden", "false");
       $("overlay").classList.add("open");
     }
@@ -309,7 +560,119 @@
       $("overlay").classList.remove("open");
     }
 
-    init().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+    // PATCH mínimo do bloco de operação: só campos alterados; campo esvaziado
+    // NÃO é gravado ("" nunca vai ao Graph — regra do repo; limpar valor é
+    // operação de outra tela/decisão). Releitura pós-gravação + re-render.
+    async function salvarOperacao(p) {
+      const f = p.fields || {};
+      const body = {};
+      const resp = $("opResp").value.trim();
+      if (resp && resp !== (f.Responsavel_Principal || "")) body.Responsavel_Principal = resp;
+      const prox = $("opProx").value.trim();
+      if (prox && prox !== (f.Proxima_Acao || "")) body.Proxima_Acao = prox;
+      const data = $("opData").value; // AAAA-MM-DD do input date
+      if (data && data !== opDataInput(f.Data_Proxima_Acao)) body.Data_Proxima_Acao = data + "T12:00:00Z"; // meio-dia UTC: mesmo dia em qualquer fuso BR
+      const elMotivo = $("opMotivo"); // só existe quando etapa = Perdido
+      if (elMotivo) {
+        const m = (elMotivo.value || "").trim();
+        if (m && m !== (f.Motivo_Perda || "")) body.Motivo_Perda = m;
+      }
+      const msg = $("opMsg");
+      if (!Object.keys(body).length) { msg.textContent = "Nada para salvar."; msg.className = "op-msg"; msg.hidden = false; return; }
+      const btn = $("opSalvar"); btn.disabled = true;
+      msg.textContent = "Salvando…"; msg.className = "op-msg"; msg.hidden = false;
+      try {
+        await EG.patchItemFields("Propostas", p.id, body);
+        const fresh = await relerProposta(p.id);           // releitura pós-gravação
+        renderBoard(etapaChoices, lastPayload.propostas);  // F5 aparece nos cards na hora
+        openDrawer(fresh);                                 // drawer re-renderizado com o estado do servidor
+        setStatus("✔ Operação salva em " + ((fresh.fields || {}).Title || p.id) + ".");
+      } catch (e) {
+        btn.disabled = false;
+        msg.textContent = "Falha ao salvar: " + e.message; msg.className = "op-msg err"; msg.hidden = false;
+      }
+    }
+
+    // ===================== + INDICAÇÃO (F5) =====================
+    $("btnIndicacao").onclick = () => {
+      ["indRazao", "indDoc", "indContato", "indObs"].forEach(id => { $(id).value = ""; });
+      $("indErro").hidden = true;
+      $("indConfirmar").disabled = false; $("indConfirmar").textContent = "Registrar indicação";
+      $("indBg").hidden = false;
+      $("indRazao").focus();
+    };
+    function fecharModalIndicacao() { $("indBg").hidden = true; }
+    $("indCancelar").onclick = fecharModalIndicacao;
+    $("indBg").addEventListener("click", (e) => { if (e.target === $("indBg")) fecharModalIndicacao(); });
+
+    // Origem_Lead da FILA tem enum próprio (Outbound|Inbound|Licitações|Referrals —
+    // difere do enum de Propostas). Lemos os choices REAIS via EG.listColumns:
+    // preferimos "Indicação" se o dono criar esse choice; hoje o mais próximo é
+    // "Referrals" (a promoção make:5803496 já traduz Referrals→Indicação na
+    // Proposta — INVENTARIO-AS-IS §2). Sem candidato: omitimos o campo em vez
+    // de gravar rótulo inválido.
+    async function origemLeadIndicacao() {
+      if (origemLeadFila === null) {
+        try {
+          const cols = await EG.listColumns("Fila_Auditoria_Leads");
+          const col = (cols || []).find(c => c.name === "Origem_Lead");
+          origemLeadFila = col && col.choice && Array.isArray(col.choice.choices) ? col.choice.choices : [];
+        } catch (e) { origemLeadFila = []; console.warn("[kanban] choices de Fila_Auditoria_Leads.Origem_Lead indisponíveis:", e.message); }
+      }
+      const norm = (s) => String(s).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+      const exato = origemLeadFila.find(c => norm(c) === "indicacao");
+      if (exato) return exato;
+      const referrals = origemLeadFila.find(c => norm(c) === "referrals");
+      if (referrals) return referrals;
+      return origemLeadFila.find(c => norm(c).includes("indic") || norm(c).includes("referr")) || null;
+    }
+
+    $("indConfirmar").onclick = async () => {
+      const razao = $("indRazao").value.trim();
+      if (!razao) { $("indErro").textContent = "Razão social / Nome é obrigatório."; $("indErro").hidden = false; $("indRazao").focus(); return; }
+      const btn = $("indConfirmar");
+      btn.disabled = true; btn.textContent = "Registrando…"; $("indErro").hidden = true;
+      try {
+        let quem = window.currentUser;
+        if (!quem) { try { quem = await EG.me(); } catch { quem = { nome: (EG.getAccount() || {}).username || "?", email: "" }; } }
+        const origem = await origemLeadIndicacao();
+        const doc = $("indDoc").value.trim();
+        const contato = $("indContato").value.trim();
+        const obs = $("indObs").value.trim();
+        // Dados_Brutos: JSON do form + rastro de quem registrou (padrão da fila)
+        const dadosBrutos = {
+          razao_social_nome: razao,
+          cnpj_cpf: doc,
+          contato: contato,
+          observacao: obs,
+          origem: "indicacao-manual",
+          registradoPor: (quem.nome || "") + (quem.email ? " <" + quem.email + ">" : ""),
+          em: new Date().toISOString()
+        };
+        // Donos de escrita (esta tela, criação da indicação manual):
+        //   Title / RazaoSocial_Nome / Dados_Brutos / Origem_Lead / Status_Processamento.
+        // NÃO tocamos Status_Auditoria: a indicação entra no fluxo NORMAL de
+        // AUDITORIA humana da fila — quem aprova/rejeita é o revisor, não esta
+        // tela (os 3 status são ortogonais, cada escritor toca só o seu).
+        // E NÃO criamos Proposta: proposta só nasce via promoção pós-auditoria.
+        const fields = {
+          Title: razao,
+          RazaoSocial_Nome: razao,
+          Dados_Brutos: JSON.stringify(dadosBrutos),
+          Status_Processamento: "Persistido" // captura concluída — classificação (F2) vem depois
+        };
+        if (origem) fields.Origem_Lead = origem; // omitido se não houver choice compatível
+        await EG.createItem("Fila_Auditoria_Leads", fields);
+        fecharModalIndicacao();
+        setStatus("✔ Indicação registrada na fila de auditoria: " + razao + ".");
+      } catch (e) {
+        $("indErro").textContent = "Falha ao registrar: " + e.message; $("indErro").hidden = false;
+      } finally {
+        btn.disabled = false; btn.textContent = "Registrar indicação";
+      }
+    };
+
+    boot().catch(e => setStatus("Erro ao iniciar (MSAL): " + e.message, "err"));
   </script>
 </body>
 </html>
