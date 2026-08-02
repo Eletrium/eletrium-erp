@@ -120,6 +120,14 @@
     };
     const statusCor = (s) => STATUS_COR[s] || "#8b949e";
 
+    // C5 — validação de desvio de KM DESATIVADA por padrão: só religar quando
+    // existir referência de rota homologada (distância prevista por API de
+    // mapa). Com ativa=false: o input "KM esperado (referência)" fica oculto/
+    // desabilitado com hint, e NENHUM KM_Divergencia_Pct/Alerta_KM_Divergente
+    // é calculado ou gravado. O código da regra permanece (parametrizado por
+    // pct), atrás deste flag.
+    const KM_VALIDACAO_DESVIO = { ativa: false, pct: 20 }; // C5: só religar com referência de rota homologada.
+
     let itemMap = {}, todas = [], nomeCliente = {}, nomeTecnico = {};
     let tecnicosOS = [];   // itens crus de TecnicosMEI — popula os selects de técnico/líder (traz Valor_Hora_Contratado p/ snapshot)
     let choiceOS = {};     // { nomeInterno: [choices...] } lido de EG.listColumns("OrdensDeServico")
@@ -154,6 +162,14 @@
        KM_Divergencia_Pct, Alerta_KM_Divergente, OS_Logistica, Laudo_URL,
        Assinatura_URL. (Assinatura_URL/Fotos_Evidencia/Selfie_URL serão
        alimentados também pela captura mobile — integração pendente.)
+
+       NOVOS (Roadmap OS v2.1 — escritos por ESTA tela):
+         Operation_ID (Text ÚNICO no SharePoint — chave de idempotência dos
+           creates "LOGRET-<id>"/"RETIF-<id>", C2/C6),
+         Origem_OS (lookup — OS concluída que a retificação corrige, C6),
+         Motivo_Retorno (obrigatório na retificação, C6),
+         Snapshot_Manifesto, Snapshot_SHA256, Snapshot_Confirmado_Em
+           (snapshot verificável do fechamento, B7 — gravados só por concluirOS).
 
        A lista OS_Equipe INTEIRA é escrita por esta tela (e, no futuro, pelo
        app mobile de campo): nenhum cenário Make escreve nela hoje.
@@ -317,7 +333,11 @@
         rowD("Início", fmtDT(f.Hora_Inicio)), rowD("Conclusão", EG.fmtDate(f.DataConclusao)),
         rowM("Valor da OS", f.ValorOS),
         rowD("Horas previstas", f.Horas_Previstas_OS),
-        rowD("Alerta de esquecimento", f.Alerta_Esquecimento_Enviado == null ? null : (f.Alerta_Esquecimento_Enviado ? "Sim" : "Não"))
+        rowD("Alerta de esquecimento", f.Alerta_Esquecimento_Enviado == null ? null : (f.Alerta_Esquecimento_Enviado ? "Sim" : "Não")),
+        // C6 — esta OS é uma retificação? mostra a origem (Title resolvido) e o motivo
+        rowD("OS de origem (retificação)", f.Origem_OSLookupId == null ? null
+          : (((itemMap[String(f.Origem_OSLookupId)] || {}).fields || {}).Title || ("OS #" + f.Origem_OSLookupId))),
+        rowD("Motivo da correção", f.Motivo_Retorno)
       ].join("");
 
       const custos = temCusto ? `<dl>
@@ -341,6 +361,7 @@
           ${blocoEdicao()}
           ${blocoKM(f)}
           ${blocoFechamento(f)}
+          ${blocoRetificacao(f)}
           ${blocoEquipe()}
           <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
           <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
@@ -349,6 +370,7 @@
       ligarEdicao(o);
       ligarKM(o);
       ligarFechamento(o);
+      ligarRetificacao(o);
       ligarEquipe(o);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
@@ -420,8 +442,15 @@
             <label>KM final <input type="number" step="0.1" id="eKM_Final" /></label>
             <!-- referência manual, NUNCA persistida — a referência automática por
                  API de mapa (distância prevista do trajeto) é ponto de integração
-                 pendente. Usada só no cálculo de KM_Divergencia_Pct em salvarOS(). -->
-            <label>KM esperado (referência — não gravado) <input type="number" step="0.1" id="eKM_Ref" /></label>
+                 pendente. Usada só no cálculo de KM_Divergencia_Pct em salvarOS().
+                 C5: atrás do flag KM_VALIDACAO_DESVIO — desativada, o input fica
+                 oculto/desabilitado (o hint abaixo explica) e NADA de divergência
+                 é calculado ou gravado. -->
+            ${KM_VALIDACAO_DESVIO.ativa
+              ? `<label>KM esperado (referência — não gravado) <input type="number" step="0.1" id="eKM_Ref" /></label>`
+              : `<label><span>KM esperado (referência)</span>
+                   <input type="number" step="0.1" id="eKM_Ref" disabled hidden />
+                   <span class="ed-msg">validação de desvio desativada — aguardando referência homologada</span></label>`}
           </div>
           <label>Descrição <textarea id="eDescricao"></textarea></label>
           <label>Observações da gestão (não é a obs. de campo do técnico) <textarea id="eObservacoes"></textarea></label>
@@ -545,17 +574,23 @@
       // do trajeto) é ponto de integração pendente — hoje o gestor digita à mão.
       // Só calcula quando KM_Final foi alterado NESTE salvamento e a referência
       // está preenchida e positiva.
-      const refEl = $("eKM_Ref");
-      const refKm = refEl && refEl.value !== "" ? Number(refEl.value) : NaN;
-      if ("KM_Final" in campos && campos.KM_Final != null && isFinite(refKm) && refKm > 0) {
-        const iniAtual = ("KM_Inicial" in campos) ? campos.KM_Inicial
-          : ((f.KM_Inicial != null && f.KM_Inicial !== "" && isFinite(Number(f.KM_Inicial))) ? Number(f.KM_Inicial) : null);
-        if (iniAtual != null) {
-          const pct = Math.abs(campos.KM_Final - iniAtual - refKm) / refKm * 100;
-          campos.KM_Divergencia_Pct = Math.round(pct * 100) / 100;
-          // >20% liga o alerta; abaixo disso um alerta antigo NÃO é limpo aqui —
-          // limpar alerta é decisão de gestão, não efeito colateral de recálculo.
-          if (pct > 20) campos.Alerta_KM_Divergente = true;
+      // C5: regra inteira atrás de KM_VALIDACAO_DESVIO (desativada por padrão).
+      // Com ativa=false NENHUM KM_Divergencia_Pct/Alerta_KM_Divergente é
+      // calculado ou gravado; o limiar vem de KM_VALIDACAO_DESVIO.pct.
+      if (KM_VALIDACAO_DESVIO.ativa) {
+        const refEl = $("eKM_Ref");
+        const refKm = refEl && refEl.value !== "" ? Number(refEl.value) : NaN;
+        if ("KM_Final" in campos && campos.KM_Final != null && isFinite(refKm) && refKm > 0) {
+          const iniAtual = ("KM_Inicial" in campos) ? campos.KM_Inicial
+            : ((f.KM_Inicial != null && f.KM_Inicial !== "" && isFinite(Number(f.KM_Inicial))) ? Number(f.KM_Inicial) : null);
+          if (iniAtual != null) {
+            const pct = Math.abs(campos.KM_Final - iniAtual - refKm) / refKm * 100;
+            campos.KM_Divergencia_Pct = Math.round(pct * 100) / 100;
+            // acima do limiar liga o alerta; abaixo disso um alerta antigo NÃO é
+            // limpo aqui — limpar alerta é decisão de gestão, não efeito
+            // colateral de recálculo.
+            if (pct > KM_VALIDACAO_DESVIO.pct) campos.Alerta_KM_Divergente = true;
+          }
         }
       }
 
@@ -604,9 +639,22 @@
       return u ? `<a href="${esc(u)}" target="_blank" rel="noopener" style="color:#58a6ff">${esc(rotulo)} ↗</a>` : "";
     };
     const temTexto = (v) => v != null && String(v).trim() !== "";
-    // conta URLs http(s) no Note Fotos_Evidencia — uma por linha e/ou separadas por vírgula/;
-    const contarFotos = (note) => !note ? 0
-      : String(note).split(/[\n,;]+/).map(s => s.trim()).filter(s => /^https?:\/\//i.test(s)).length;
+    // URLs http(s) do Note Fotos_Evidencia — uma por linha e/ou separadas por
+    // vírgula/; . Também alimenta o manifesto do snapshot (B7).
+    const fotosUrls = (note) => !note ? []
+      : String(note).split(/[\n,;]+/).map(s => s.trim()).filter(s => /^https?:\/\//i.test(s));
+    const contarFotos = (note) => fotosUrls(note).length;
+    // B7 — manifesto canônico: chaves em ordem alfabética (sort de code units),
+    // JSON determinístico — o MESMO objeto sempre produz o MESMO texto e,
+    // portanto, o mesmo SHA-256.
+    const manifestoCanonico = (obj) => JSON.stringify(
+      Object.keys(obj).sort().reduce((a, k) => { a[k] = obj[k]; return a; }, {}));
+    // B7 — SHA-256 hex via WebCrypto (crypto.subtle exige contexto seguro:
+    // https ou localhost — que é onde esta tela roda).
+    async function sha256Hex(txt) {
+      const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(txt));
+      return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+    }
     // preenchido E realmente numérico — número inválido vira "—" na tela, nunca 0
     const ehNumOS = (v) => v != null && v !== "" && isFinite(Number(v));
     const celNum = (v, casas) => ehNumOS(v)
@@ -651,9 +699,10 @@
        O odômetro de uma OS começa onde a anterior terminou (KM_Inicial =
        KM_Final da OS_Anterior). "Herdar KM" grava o valor e marca
        KM_Herdado=true, que BLOQUEIA a edição manual de KM_Inicial; só
-       "Romper cadeia" (justificativa OBRIGATÓRIA) desbloqueia — e o
-       rompimento cria automaticamente uma OS de logística de retorno à base,
-       encadeada na OS rompida.
+       "Romper cadeia" (justificativa OBRIGATÓRIA) desbloqueia.
+       C2: a OS de logística de retorno NÃO é mais automática — é um passo
+       CONFIRMADO (checkbox marcado por padrão) + comando IDEMPOTENTE por
+       Operation_ID; ver o comentário em romperCadeia().
        ================================================================== */
     function blocoKM(f) {
       const ant = f.OS_AnteriorLookupId != null ? (itemMap[String(f.OS_AnteriorLookupId)] || null) : null;
@@ -676,7 +725,7 @@
           <dt>KM final</dt><dd>${esc(celNum(f.KM_Final, 1))}</dd>
           <dt>Cadeia</dt><dd><span class="badge" style="border-color:${corCadeia};color:${corCadeia}">${esc(cadeia)}</span></dd>
           ${ehNumOS(f.KM_Divergencia_Pct) ? `<dt>Divergência de KM</dt><dd>${esc(celNum(f.KM_Divergencia_Pct, 2))} %</dd>` : ""}
-          ${f.Alerta_KM_Divergente === true ? `<dt>Alerta</dt><dd><span class="badge" style="border-color:#F85149;color:#F85149">KM divergente (&gt;20%)</span></dd>` : ""}
+          ${f.Alerta_KM_Divergente === true ? `<dt>Alerta</dt><dd><span class="badge" style="border-color:#F85149;color:#F85149">KM divergente (&gt;${KM_VALIDACAO_DESVIO.pct}%)</span></dd>` : ""}
           ${rompida && temTexto(f.Justificativa_Rompimento_KM) ? `<dt>Justificativa do rompimento</dt><dd>${esc(f.Justificativa_Rompimento_KM)}</dd>` : ""}
           ${rompida && urlOk(f.Foto_Rompimento_KM_URL) ? `<dt>Foto do rompimento</dt><dd>${linkSeguro(f.Foto_Rompimento_KM_URL, "abrir foto")}</dd>` : ""}
           ${f.OS_Logistica === true ? `<dt>Tipo</dt><dd><span class="badge" style="border-color:#A371F7;color:#A371F7">OS de logística</span></dd>` : ""}
@@ -689,8 +738,14 @@
           <label>Justificativa do rompimento (obrigatória) <textarea id="kmRompJust"></textarea></label>
           <!-- captura da foto pelo celular é integração pendente — hoje cola-se a URL -->
           <label>URL da foto (opcional) <input type="url" id="kmRompFoto" placeholder="https://..." /></label>
+          <!-- C2: a OS de logística NÃO é mais automática — nada é criado sem
+               esta confirmação explícita (checkbox marcado por padrão); o botão
+               abaixo diz exatamente o que vai acontecer. -->
+          <label style="flex-direction:row;align-items:center;gap:8px">
+            <input type="checkbox" id="kmRompCriarLog" checked style="width:auto" />
+            Criar OS de logística de retorno à base</label>
           <div class="ed-btns">
-            <button id="kmRompConfirmar">Confirmar rompimento</button>
+            <button id="kmRompConfirmar">Romper cadeia + criar OS de logística</button>
             <button id="kmRompCancelar" class="sec">Cancelar</button>
           </div>
         </div>
@@ -706,6 +761,14 @@
         $("kmRompForm").hidden = true;
         if ((o.fields || {}).KM_Herdado === true) r.hidden = false;
       };
+      // C2: o botão diz o que vai acontecer — muda junto com o checkbox
+      const rotuloRomper = () => {
+        $("kmRompConfirmar").textContent = $("kmRompCriarLog").checked
+          ? "Romper cadeia + criar OS de logística"
+          : "Romper cadeia (SEM OS de logística)";
+      };
+      $("kmRompCriarLog").onchange = rotuloRomper;
+      rotuloRomper();
       $("kmRompConfirmar").onclick = () => romperCadeia(o);
     }
 
@@ -733,12 +796,60 @@
       } finally { kmOcupado = false; }
     }
 
+    // C2/C6 — busca a OS filha pelo Operation_ID (coluna Text ÚNICA e INDEXADA
+    // no SharePoint — o $filter abaixo só é confiável porque é indexado).
+    // Devolve o item (com fields expandidos) ou null. É o pré-cheque de
+    // idempotência do rompimento ("LOGRET-*") e da retificação ("RETIF-*").
+    async function buscarPorOperationId(opId) {
+      const sid = await EG.resolveSite();
+      const r = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") +
+        "/items?expand=fields&$filter=" +
+        encodeURIComponent("fields/Operation_ID eq '" + String(opId).replace(/'/g, "''") + "'") + "&$top=1");
+      return (r && r.value && r.value[0]) || null;
+    }
+
+    // coloca uma OS recém-criada/encontrada na tabela local, relendo com
+    // fields expandidos quando o eco do create vier magro
+    async function entrarNaTabelaLocal(item, rotuloAviso) {
+      let full = item;
+      if (!(item.fields && item.fields.Title)) {
+        try {
+          const sid = await EG.resolveSite();
+          full = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + item.id + "?expand=fields");
+        } catch (e2) { console.warn(rotuloAviso + " criada, mas a releitura falhou:", e2.message); }
+      }
+      if (full && full.id && !itemMap[full.id]) { itemMap[full.id] = full; todas.unshift(full); }
+      return full;
+    }
+
+    /* C2 — rompimento com PASSO CONFIRMADO + COMANDO IDEMPOTENTE.
+       POR QUE ESTE CAMINHO: a dupla gravação (PATCH do rompimento + create da
+       OS de logística) não é atômica pelo Graph, e o gateway/outbox do Grupo B
+       (B1-B2) AINDA NÃO EXISTE — aguarda aval do dono. Esse é o motivo da
+       escolha "passo confirmado + Operation_ID": (a) nada é criado sem a
+       confirmação explícita do checkbox; (b) a criação é idempotente pela
+       coluna Operation_ID (Text ÚNICO no SharePoint) = "LOGRET-<id da OS
+       rompida>".
+       ORDEM INVERTIDA para convergência:
+         (1) pré-cheque $filter Operation_ID eq 'LOGRET-<id>' (indexado) —
+             se a filha já existe, PULA a criação;
+         (2) cria a filha COM Operation_ID — se dois cliques concorrerem, o
+             segundo create FALHA na unicidade e é tratado como "já criada"
+             (re-cheque confirma), NÃO como falha;
+         (3) PATCH do rompimento na OS original.
+       COMPENSAÇÃO (substitui o procedimento manual do SPEC-MODULO-OS-MEI
+       §3.2): se (3) falhar, não há nada para desfazer à mão — o re-clique do
+       botão converge sozinho: o passo (1) acha a filha, pula a criação e
+       refaz só o PATCH. Filha órfã nunca duplica (unicidade) e a OS original
+       nunca fica rompida sem a filha confirmada (a filha nasce ANTES do
+       PATCH). */
     async function romperCadeia(o) {
       if (kmOcupado) return;
       const msg = $("kmMsg");
       const f = o.fields || {};
       const just = ($("kmRompJust").value || "").trim();
       const foto = ($("kmRompFoto").value || "").trim();
+      const criarLog = $("kmRompCriarLog").checked; // C2: nada é criado sem esta confirmação
       if (!just) {
         msg.className = "ed-msg err"; msg.textContent = "Justificativa é obrigatória para romper a cadeia.";
         $("kmRompJust").focus();
@@ -748,38 +859,55 @@
       try {
         kmOcupado = true;
         btns.forEach(b => { if (b) b.disabled = true; });
+        let filha = null, filhaJaExistia = false;
+        if (criarLog) {
+          const opId = "LOGRET-" + o.id;
+          // (1) pré-cheque idempotente — re-clique após falha no PATCH cai aqui
+          msg.className = "ed-msg"; msg.textContent = "Verificando OS de logística existente...";
+          filha = await buscarPorOperationId(opId);
+          filhaJaExistia = !!filha;
+          if (!filha) {
+            // (2) criação COM Operation_ID (unicidade segura contra clique duplo)
+            msg.textContent = "Criando OS de logística de retorno...";
+            const camposLog = {
+              Title: "LOG-" + (f.Title || o.id) + "-RETORNO",
+              OS_Logistica: true,
+              Operation_ID: opId,
+              Descricao: "OS de logística de retorno à base criada (com confirmação) pelo rompimento da cadeia de KM da OS " +
+                         (f.Title || o.id) + ". Justificativa do rompimento: " + just,
+              OS_AnteriorLookupId: Number(o.id)
+            };
+            // lookups só entram se existirem na OS de origem (nunca enviar vazio)
+            if (f.ClienteLookupId != null) camposLog.ClienteLookupId = Number(f.ClienteLookupId);
+            if (f.TecnicoLookupId != null) camposLog.TecnicoLookupId = Number(f.TecnicoLookupId);
+            // Status NÃO vai no create: fica o default da lista (o dono do campo é o 1A)
+            try {
+              filha = await EG.createItem("OrdensDeServico", camposLog);
+            } catch (eCreate) {
+              // clique concorrente: o segundo create bate na UNICIDADE de
+              // Operation_ID — re-cheque; se a filha está lá, é "já criada",
+              // não é falha.
+              const ja = await buscarPorOperationId(opId).catch(() => null);
+              if (!ja) throw eCreate;
+              filha = ja; filhaJaExistia = true;
+            }
+          }
+          filha = await entrarNaTabelaLocal(filha, "OS de logística");
+        }
+        // (3) PATCH do rompimento na OS original — KM_Herdado=false desbloqueia KM_Inicial
         msg.className = "ed-msg"; msg.textContent = "Gravando rompimento...";
-        // 1) marca o rompimento na própria OS — KM_Herdado=false desbloqueia KM_Inicial
         const campos = { Cadeia_KM_Rompida: true, KM_Herdado: false, Justificativa_Rompimento_KM: just };
         if (foto) campos.Foto_Rompimento_KM_URL = foto; // vazio fica FORA do payload (nunca gravar "" por cima)
         await EG.patchItemFields("OrdensDeServico", o.id, campos);
-        // 2) cria a OS de logística de retorno à base: o rompimento significa que
-        // o veículo saiu do fluxo previsto — o retorno vira OS própria, encadeada
-        // nesta (OS_Anterior aponta para a OS rompida).
-        msg.textContent = "Criando OS de logística de retorno...";
-        const camposLog = {
-          Title: "LOG-" + (f.Title || o.id) + "-RETORNO",
-          OS_Logistica: true,
-          Descricao: "OS de logística criada automaticamente pelo rompimento da cadeia de KM da OS " +
-                     (f.Title || o.id) + " — retorno do veículo à base. Justificativa do rompimento: " + just,
-          OS_AnteriorLookupId: Number(o.id)
-        };
-        // lookups só entram se existirem na OS de origem (nunca enviar vazio)
-        if (f.ClienteLookupId != null) camposLog.ClienteLookupId = Number(f.ClienteLookupId);
-        if (f.TecnicoLookupId != null) camposLog.TecnicoLookupId = Number(f.TecnicoLookupId);
-        // Status NÃO vai no create: fica o default da lista (o dono do campo é o 1A)
-        const criado = await EG.createItem("OrdensDeServico", camposLog);
-        // relê a OS criada com fields expandidos e a coloca na tabela local
-        let criadoFull = criado;
-        try {
-          const sid = await EG.resolveSite();
-          criadoFull = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + criado.id + "?expand=fields");
-        } catch (e2) { console.warn("OS de logística criada, mas a releitura falhou:", e2.message); }
-        if (criadoFull && criadoFull.id) { itemMap[criadoFull.id] = criadoFull; todas.unshift(criadoFull); }
         const novo = await relerOS(o.id);
         openDrawer(novo);
-        setStatus("Cadeia de KM rompida na OS " + (f.Title || o.id) + " — criada a OS de logística " +
-                  ((((criadoFull || {}).fields || {}).Title) || camposLog.Title) + ".");
+        const tituloFilha = filha ? (((filha.fields || {}).Title) || ("OS #" + filha.id)) : null;
+        setStatus("Cadeia de KM rompida na OS " + (f.Title || o.id) +
+                  (criarLog
+                    ? (filhaJaExistia
+                        ? " — OS de logística " + tituloFilha + " já existia (idempotente), reaproveitada."
+                        : " — criada a OS de logística " + tituloFilha + ".")
+                    : " — SEM OS de logística (criação não confirmada)."));
       } catch (e) {
         msg.className = "ed-msg err"; msg.textContent = "Falha: " + e.message;
         btns.forEach(b => { if (b) b.disabled = false; });
@@ -893,20 +1021,161 @@
         fcOcupado = true;
         $("fcConcluir").disabled = true;
         msg.className = "ed-msg"; msg.textContent = "Concluindo OS...";
+        // B7 — SNAPSHOT VERIFICÁVEL DO FECHAMENTO: os campos que fecham a OS
+        // são congelados num manifesto JSON canônico (chaves ordenadas) +
+        // SHA-256, gravados JUNTO com a conclusão. Depois da releitura,
+        // recomputamos o hash sobre o manifesto RELIDO e comparamos com o SHA
+        // relido — detecta truncamento/normalização silenciosa no caminho de
+        // gravação. O PDF do snapshot (render imutável p/ o cliente) é
+        // integração futura.
+        const agora = new Date().toISOString();
+        const manifesto = manifestoCanonico({
+          id: String(o.id),
+          Title: f.Title ?? null,
+          ClienteLookupId: f.ClienteLookupId ?? null,
+          TecnicoLookupId: f.TecnicoLookupId ?? null,
+          Horas_Previstas_OS: ehNumOS(f.Horas_Previstas_OS) ? Number(f.Horas_Previstas_OS) : null,
+          KM_Inicial: ehNumOS(f.KM_Inicial) ? Number(f.KM_Inicial) : null,
+          KM_Final: ehNumOS(f.KM_Final) ? Number(f.KM_Final) : null,
+          Laudo_URL: f.Laudo_URL ?? null,
+          Assinatura_URL: f.Assinatura_URL ?? null,
+          Fotos_Evidencia: fotosUrls(f.Fotos_Evidencia),
+          ValorOS: ehNumOS(f.ValorOS) ? Number(f.ValorOS) : null,
+          timestamp: agora
+        });
+        const sha = await sha256Hex(manifesto);
         // PATCH explícito (padrão decidirVeiculo) — ver o comentário de conflito
         // de dono de campo no topo desta Frente B: Status e DataConclusao são do
         // 1A; esta escrita só existe porque o 1A está pausado.
         await EG.patchItemFields("OrdensDeServico", o.id, {
           Status: "Concluída",
-          DataConclusao: new Date().toISOString()
+          DataConclusao: agora,
+          Snapshot_Manifesto: manifesto,
+          Snapshot_SHA256: sha,
+          Snapshot_Confirmado_Em: agora
         });
         const novo = await relerOS(o.id);
         openDrawer(novo);
-        setStatus("OS " + (((novo.fields || {}).Title) || o.id) + " concluída.");
+        // B7 — verificação pós-releitura: hash RECOMPUTADO sobre o manifesto
+        // relido vs. SHA-256 relido. Divergência NÃO desfaz a conclusão — só
+        // pede verificação humana.
+        const nf = (novo || {}).fields || {};
+        let snapshotOk = false;
+        try {
+          snapshotOk = temTexto(nf.Snapshot_Manifesto) && temTexto(nf.Snapshot_SHA256) &&
+            (await sha256Hex(String(nf.Snapshot_Manifesto))) === String(nf.Snapshot_SHA256);
+        } catch (eHash) { console.warn("B7: falha ao recomputar o hash do snapshot relido:", eHash.message); }
+        if (snapshotOk) {
+          setStatus("OS " + (nf.Title || o.id) + " concluída — SNAPSHOT_CONFIRMADO (sha256 " +
+                    String(nf.Snapshot_SHA256).slice(0, 8) + ").");
+        } else {
+          setStatus("OS " + (nf.Title || o.id) + " concluída, MAS o snapshot relido NÃO confere com o " +
+                    "SHA-256 gravado — verifique Snapshot_Manifesto/Snapshot_SHA256 no item " +
+                    "(a conclusão NÃO foi desfeita).", "err");
+        }
       } catch (e) {
         msg.className = "ed-msg err"; msg.textContent = "Falha ao concluir: " + e.message;
         if ($("fcConcluir")) $("fcConcluir").disabled = false;
       } finally { fcOcupado = false; }
+    }
+
+    /* ==================================================================
+       C6 — RETIFICAÇÃO POR OS FILHA
+       OS com Status="Concluída" é IMUTÁVEL (trava server-side; NÃO existe
+       reabertura). Correção = OS FILHA nova ("RETIF-<Title>") apontando para
+       a origem via Origem_OSLookupId, com Motivo_Retorno OBRIGATÓRIO.
+       Idempotente por Operation_ID="RETIF-<id original>" (Text ÚNICO no
+       SharePoint): segunda tentativa falha na unicidade → tratada como
+       "já existe" e mostramos o número da retificação existente.
+       SEM Status no create (dono do campo é o 1A — fica o default da lista).
+       ================================================================== */
+    function blocoRetificacao(f) {
+      if (f.Status !== "Concluída") return "";
+      return `
+        <div class="grupo">Retificação</div>
+        <div class="ed-msg" style="margin-top:6px">Esta OS está concluída e é IMUTÁVEL
+          (trava server-side — não há reabertura). Para corrigir qualquer coisa,
+          crie uma OS de correção encadeada a esta.</div>
+        <button id="rtfToggle" class="sec" style="margin-top:8px">Criar OS de correção</button>
+        <div id="rtfForm" class="ed" hidden>
+          <label>Motivo da correção (obrigatório) <textarea id="rtfMotivo"></textarea></label>
+          <div class="ed-btns">
+            <button id="rtfCriar">Criar OS de correção</button>
+            <button id="rtfCancelar" class="sec">Cancelar</button>
+          </div>
+        </div>
+        <div id="rtfMsg" class="ed-msg"></div>`;
+    }
+
+    function ligarRetificacao(o) {
+      const tg = $("rtfToggle");
+      if (!tg) return; // seção só existe em OS concluída
+      tg.onclick = () => { $("rtfForm").hidden = false; tg.hidden = true; };
+      $("rtfCancelar").onclick = () => { $("rtfForm").hidden = true; tg.hidden = false; };
+      $("rtfCriar").onclick = () => criarRetificacao(o);
+    }
+
+    let rtfOcupado = false;
+    async function criarRetificacao(o) {
+      if (rtfOcupado) return;
+      const msg = $("rtfMsg");
+      const f = o.fields || {};
+      const motivo = ($("rtfMotivo").value || "").trim();
+      if (!motivo) {
+        msg.className = "ed-msg err"; msg.textContent = "Motivo da correção é obrigatório.";
+        $("rtfMotivo").focus();
+        return;
+      }
+      const opId = "RETIF-" + o.id;
+      const btns = [$("rtfCriar"), $("rtfCancelar")];
+      try {
+        rtfOcupado = true;
+        btns.forEach(b => { if (b) b.disabled = true; });
+        // pré-cheque idempotente (mesmo padrão do C2): retificação já existe? mostra o número
+        msg.className = "ed-msg"; msg.textContent = "Verificando retificação existente...";
+        let filha = await buscarPorOperationId(opId);
+        let jaExistia = !!filha;
+        if (!filha) {
+          msg.textContent = "Criando OS de correção...";
+          const campos = {
+            Title: "RETIF-" + (f.Title || o.id),
+            Origem_OSLookupId: Number(o.id),
+            Motivo_Retorno: motivo,
+            Operation_ID: opId,
+            Descricao: "OS de correção da OS " + (f.Title || o.id) +
+                       " (concluída — imutável). Motivo da correção: " + motivo
+          };
+          // copiados quando existirem na origem (nunca enviar vazio)
+          if (f.ClienteLookupId != null) campos.ClienteLookupId = Number(f.ClienteLookupId);
+          if (f.TecnicoLookupId != null) campos.TecnicoLookupId = Number(f.TecnicoLookupId);
+          if (temTexto(f.Tipo_OS)) campos.Tipo_OS = f.Tipo_OS;
+          if (temTexto(f.Categoria)) campos.Categoria = f.Categoria;
+          try {
+            filha = await EG.createItem("OrdensDeServico", campos);
+          } catch (eCreate) {
+            // segunda tentativa concorrente falha na UNICIDADE de Operation_ID —
+            // re-cheque: se a retificação está lá, é "já existe", não é falha.
+            const ja = await buscarPorOperationId(opId).catch(() => null);
+            if (!ja) throw eCreate;
+            filha = ja; jaExistia = true;
+          }
+        }
+        filha = await entrarNaTabelaLocal(filha, "OS de correção");
+        indicadores(todas);
+        aplicarFiltro();
+        const tituloFilha = ((filha || {}).fields || {}).Title || ("OS #" + ((filha || {}).id || "?"));
+        msg.className = "ed-msg";
+        msg.textContent = jaExistia
+          ? "Retificação já existe: " + tituloFilha + " (idempotente — nada foi duplicado)."
+          : "OS de correção criada: " + tituloFilha + ".";
+        setStatus("Retificação da OS " + (f.Title || o.id) + ": " + tituloFilha +
+                  (jaExistia ? " (já existia)." : " criada."));
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha: " + e.message;
+      } finally {
+        rtfOcupado = false;
+        btns.forEach(b => { if (b) b.disabled = false; });
+      }
     }
 
     /* ==================================================================
