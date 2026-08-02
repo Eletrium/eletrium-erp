@@ -8,6 +8,34 @@
   <script src="graph.js"></script>
   <script src="pipeline.js"></script>
   <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela (não mexem em app.css, que é compartilhado) */
+    /* display:grid/flex sobrescreve a regra [hidden] do navegador — reforçamos aqui */
+    [hidden] { display: none !important; }
+
+    /* estados padrão de tela (EG.renderEstado) — classes vêm do graph.js */
+    #estado { margin: 14px 0; color: #8b949e; font-size: .92rem; }
+    #estado .eg-estado-erro { color: #F85149; }
+    #estado .eg-estado-retry {
+      margin-left: 8px; font-size: .84rem; padding: 4px 10px; border-radius: 6px;
+      border: 1px solid #30363d; background: #21262d; color: #e6edf3; cursor: pointer;
+    }
+    #estado .eg-estado-retry:hover { border-color: #8b949e; }
+
+    /* bloco de edição do drawer (mesmo padrão de os.html) */
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    .ed { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+    .ed[hidden] { display: none; }
+    .ed label { display: flex; flex-direction: column; gap: 4px; color: #8b949e; font-size: .78rem; }
+    .ed input, .ed select, .ed textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 7px 10px; font-size: .86rem; font-family: inherit;
+    }
+    .ed input:focus, .ed select:focus, .ed textarea:focus { outline: 0; border-color: #1f6feb; }
+    .ed-btns { display: flex; gap: 8px; }
+    .ed-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .ed-msg.err { color: #F85149; }
+  </style>
 </head>
 <body>
   <header>
@@ -37,11 +65,15 @@
   <div id="status">Não autenticado.</div>
   <div id="choiceWarn" class="choice-warn" hidden></div>
   <main>
+    <!-- estados carregando / vazio / erro via EG.renderEstado (onda 2) -->
+    <div id="estado" hidden></div>
     <table id="tbl" hidden>
-      <thead><tr><th>Número</th><th>Cliente</th><th>Etapa</th><th>Valor</th><th>Status</th><th>Validade</th></tr></thead>
+      <thead><tr>
+        <th>Número</th><th>Cliente</th><th>Etapa</th><th>Valor</th><th>Status</th><th>Validade</th>
+        <th>Responsável</th><th>Próxima ação</th><th>Data</th>
+      </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
-    <div class="empty" id="empty" hidden>Nenhuma proposta.</div>
   </main>
 
   <div class="overlay" id="overlay"></div>
@@ -50,7 +82,10 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
-    let itemMap = {}, nomeCliente = {};
+    const esc = (v) => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    let itemMap = {}, nomeCliente = {}, todas = [];
+    let choiceProp = {}; // { nomeInterno: [choices...] } lido de EG.listColumns("Propostas") — selects dinâmicos
 
     async function boot() { if (await EG.init()) await onIn(); }
     async function onIn() {
@@ -61,37 +96,96 @@
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
 
-    $("btnLoad").onclick = async () => {
+    async function carregar() {
       try {
+        $("tbl").hidden = true;
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando propostas…" });
         setStatus("Carregando propostas...");
-        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
-        // Mesma checagem que o Kanban (index.html) já faz via validateEtapasConfig.
-        EG.validarChoices("Propostas", "Etapa_Pipeline", Object.keys(window.ETAPA_CONFIG || {}))
-          .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Etapa do Pipeline"))
-          .catch(() => {});
-        const [props, cli] = await Promise.all([EG.listItems("Propostas"), EG.listItems("Clientes", "expand=fields($select=Title)&$top=500")]);
-        nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields.Title);
+        // Etapa_Pipeline agora usa a trava FAIL-CLOSED (não só o aviso): além de
+        // renderizar a divergência no choiceWarn, EG.travarChoices registra os
+        // choices reais do servidor e patchItemFields/createItem passam a RECUSAR
+        // client-side qualquer gravação de Etapa_Pipeline com rótulo inexistente.
+        // Mesmas chaves que o Kanban (index.html) valida via validateEtapasConfig.
+        // Falha da trava não derruba a tela (vira null e o aviso só não aparece).
+        const [vEtapa, props, cli, cols] = await Promise.all([
+          EG.travarChoices("Propostas", "Etapa_Pipeline", Object.keys(window.ETAPA_CONFIG || {})).catch(() => null),
+          EG.listItems("Propostas"),
+          EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
+          // colunas populam os selects de Choice DINAMICAMENTE (Motivo_Perda —
+          // nada de rótulo hardcodado). Falha não derruba a tela: só desabilita o select.
+          EG.listColumns("Propostas").catch(e => { console.warn("Falha ao ler colunas de Propostas:", e.message); return []; })
+        ]);
+        EG.renderAvisoChoices($("choiceWarn"), vEtapa, "Etapa do Pipeline");
+        nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
+        choiceProp = {};
+        (cols || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceProp[c.name] = c.choice.choices; });
         itemMap = {}; props.forEach(p => itemMap[p.id] = p);
-        render(props);
-        setStatus("OK — " + props.length + " proposta(s).");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+        todas = props;
+        render(todas);
+        // vazio REAL (carregou e não há itens) ≠ "ainda carregando" ≠ erro
+        if (!todas.length) EG.renderEstado($("estado"), "vazio", { mensagem: "Nenhuma proposta." });
+        else EG.renderEstado($("estado"), "ok");
+        setStatus("OK — " + todas.length + " proposta(s).");
+      } catch (e) {
+        $("tbl").hidden = true;
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar propostas: " + e.message, onRetry: carregar });
+        setStatus("Falha: " + e.message, "err");
+      }
+    }
+    $("btnLoad").onclick = carregar;
 
-    const cliNome = (f) => nomeCliente[f.ClienteLookupId] || ("cliente #" + (f.ClienteLookupId ?? "?"));
+    const cliNome = (f) => f.ClienteLookupId != null ? (nomeCliente[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : "—";
+
+    // ---- datas da coluna "Próxima ação" -------------------------------------
+    // Data_Proxima_Acao é Date only (volta "AAAA-MM-DDT00:00:00Z"): comparar via
+    // new Date() local mostraria o dia ANTERIOR em Brasília — comparamos por
+    // chave AAAA-MM-DD (UTC para data-pura, local para timestamp real).
+    const dataChave = (s) => {
+      if (!s) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
+      const d = new Date(s); if (isNaN(d.getTime())) return "";
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    const hojeChave = () => {
+      const d = new Date(), p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    const ETAPAS_FINAIS = ["Ganho", "Perdido"];
+    const ehAtiva = (f) => !ETAPAS_FINAIS.includes(f.Etapa_Pipeline);
+
+    // célula da data da próxima ação: vencida = vermelho, hoje = laranja;
+    // proposta ATIVA sem data = "—" âmbar (cobrança visual de operação)
+    function celDataProxima(f) {
+      const d = f.Data_Proxima_Acao;
+      if (!d) {
+        return ehAtiva(f)
+          ? `<td style="color:#D29922" title="sem próxima ação definida">—</td>`
+          : `<td>—</td>`;
+      }
+      const chave = dataChave(d), hoje = hojeChave();
+      let cor = "", titulo = "";
+      if (chave && chave < hoje) { cor = "#F85149"; titulo = "próxima ação vencida"; }
+      else if (chave === hoje) { cor = "#F0883E"; titulo = "próxima ação é hoje"; }
+      return `<td${cor ? ` style="color:${cor}" title="${titulo}"` : ""}>${esc(EG.fmtDate(d) ?? "—")}</td>`;
+    }
 
     function render(props) {
-      if (!props.length) { $("tbl").hidden = true; $("empty").hidden = false; return; }
-      $("empty").hidden = true; $("tbl").hidden = false;
+      if (!props.length) { $("tbody").innerHTML = ""; $("tbl").hidden = true; return; }
+      $("tbl").hidden = false;
       $("tbody").innerHTML = props.map(p => {
         const f = p.fields || {};
         const cor = window.etapaCor(f.Etapa_Pipeline);
-        return `<tr data-id="${p.id}">
-          <td>${f.Title ?? "—"}</td>
-          <td>${cliNome(f)}</td>
-          <td><span class="badge" style="border-color:${cor};color:${cor}">${f.Etapa_Pipeline ?? "—"}</span></td>
+        return `<tr data-id="${esc(p.id)}">
+          <td>${esc(f.Title ?? "—")}</td>
+          <td>${esc(cliNome(f))}</td>
+          <td><span class="badge" style="border-color:${cor};color:${cor}">${esc(f.Etapa_Pipeline ?? "—")}</span></td>
           <td class="num">${EG.BRL(f.ValorTotal)}</td>
-          <td>${f.Status ?? "—"}</td>
-          <td>${EG.fmtDate(f.DataValidade) ?? "—"}</td>
+          <td>${esc(f.Status ?? "—")}</td>
+          <td>${esc(EG.fmtDate(f.DataValidade) ?? "—")}</td>
+          <td>${esc(f.Responsavel_Principal ?? "—")}</td>
+          <td>${esc(f.Proxima_Acao ?? "—")}</td>
+          ${celDataProxima(f)}
         </tr>`;
       }).join("");
     }
@@ -100,7 +194,7 @@
     $("tbody").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && itemMap[tr.dataset.id]) openDrawer(itemMap[tr.dataset.id]); });
     $("overlay").onclick = closeDrawer;
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
-    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${l}</dt><dd>${v}</dd>`;
+    const rowD = (l, v) => (v == null || v === "") ? "" : `<dt>${esc(l)}</dt><dd>${esc(v)}</dd>`;
 
     function openDrawer(p) {
       const f = p.fields || {};
@@ -112,18 +206,177 @@
         rowD("Descrição", f.Descricao), rowD("Emissão", EG.fmtDate(f.DataEmissao)), rowD("Validade", EG.fmtDate(f.DataValidade)),
         rowD("Entrada na etapa", EG.fmtDate(f.Data_Entrada_Etapa)), rowD("Forma pgto", f.FormaPagamento),
         rowD("Prazo execução", f.PrazoExecucao), rowD("Probabilidade", f.Probabilidade_Fechamento != null ? f.Probabilidade_Fechamento + "%" : null),
-        rowD("Responsável", f.Responsavel_Principal), rowD("Origem do lead", f.Origem_Lead), rowD("Observações", f.Observacoes)
+        rowD("Responsável", f.Responsavel_Principal), rowD("Origem do lead", f.Origem_Lead),
+        rowD("Próxima ação", f.Proxima_Acao), rowD("Data da próxima ação", EG.fmtDate(f.Data_Proxima_Acao)),
+        rowD("Motivo da perda", f.Motivo_Perda), rowD("Concorrente", f.Concorrente),
+        rowD("Observações", f.Observacoes)
       ].join("");
       $("drawer").innerHTML = `
-        <div class="drawer-head"><div class="t">${f.Title ?? "(sem número)"}</div><button class="x" id="dc">Fechar ✕</button></div>
+        <div class="drawer-head"><div class="t">${esc(f.Title ?? "(sem número)")}</div><button class="x" id="dc">Fechar ✕</button></div>
         <div class="drawer-body"><dl>${rows}</dl>
-          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
-          <pre id="rf" hidden style="margin-top:8px">${JSON.stringify(f, null, 2)}</pre>
+          ${blocoEdicao(f)}
+          <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
+          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
       $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      ligarEdicao(p);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    /* ==================================================================
+       EDIÇÃO DE OPERAÇÃO — única escrita desta tela.
+       Mesmo padrão de os.html (blocoEdicao/ligarEdicao/salvarOS):
+         - PATCH via EG.patchItemFields, SÓ com os campos alterados (dirty tracking);
+         - releitura do servidor após gravar (nunca confiar no eco local);
+         - re-render de drawer + tabela com o estado real.
+
+       DONO DE CAMPO (por que SÓ estes campos são editáveis aqui):
+         - Responsavel_Principal, Proxima_Acao, Data_Proxima_Acao, Motivo_Perda,
+           Concorrente: SEM escritor automatizado (docs/INVENTARIO-AS-IS.md) —
+           o dono é a operação F5, ou seja, ESTA tela.
+         - Etapa_Pipeline NÃO é editável aqui: muda pelo Kanban (index.html),
+           que carrega o Data_Entrada_Etapa junto — mudar aqui dessincronizaria o SLA.
+         - ValorTotal/Valor_Servico/Valor_Materiais/Descricao e os campos de
+           documento (Link_Documento_PDF, Data_Geracao_PDF...) têm outros donos
+           (nova-proposta.html e o gerador de PDF) — ficam FORA do formulário.
+         - Motivo_Perda/Concorrente só fazem sentido (e só aparecem) quando
+           Etapa_Pipeline = "Perdido".
+       ================================================================== */
+    // yyyy-mm-dd para o input date. Data-pura (meia-noite UTC, típico de Date only)
+    // usa o próprio AAAA-MM-DD do ISO — converter para local mostraria o dia
+    // ANTERIOR em Brasília. (Mesma lógica de os.html.)
+    const toDateInput = (s) => {
+      if (!s) return ""; const d = new Date(s); if (isNaN(d.getTime())) return "";
+      if (EG.ehDataPura(s)) return String(s).slice(0, 10);
+      const p = (n) => String(n).padStart(2, "0");
+      return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+    };
+    // normaliza o valor ORIGINAL do item para a mesma forma do input (dirty tracking por string)
+    function normOrig(tipo, v) {
+      if (tipo === "data") return toDateInput(v);
+      return v == null ? "" : String(v); // choice, texto
+    }
+    // converte o valor do input para o que o Graph grava.
+    // NUNCA gravamos "": campo intocado nem entra no payload (dirty tracking);
+    // se o usuário APAGOU um valor que existia, isso é limpeza intencional -> null.
+    function paraGraph(tipo, val) {
+      if (val === "") return null; // limpar de propósito (o skip do não-alterado é o dirty tracking)
+      // Data only: meio-dia UTC — a data local fica correta em qualquer fuso plausível
+      // (meia-noite UTC viraria o dia ANTERIOR ao ser exibida em Brasília).
+      if (tipo === "data") return val + "T12:00:00Z";
+      return val;
+    }
+
+    // campo -> id do input + tipo (dirige dirty tracking e conversão p/ Graph).
+    // Motivo_Perda/Concorrente só existem no DOM quando a etapa é "Perdido" —
+    // ligarEdicao/salvarProposta pulam elementos ausentes.
+    const CAMPOS_EDIT = [
+      { campo: "Responsavel_Principal", el: "pResponsavel",  tipo: "texto" },
+      { campo: "Proxima_Acao",          el: "pProximaAcao",  tipo: "texto" },
+      { campo: "Data_Proxima_Acao",     el: "pDataProxima",  tipo: "data" },
+      { campo: "Motivo_Perda",          el: "pMotivoPerda",  tipo: "choice" },
+      { campo: "Concorrente",           el: "pConcorrente",  tipo: "texto" }
+    ];
+
+    function blocoEdicao(f) {
+      // valores/opções são preenchidos por ligarEdicao() via .value — nada de
+      // valor de usuário interpolado em atributo HTML.
+      const perdido = f.Etapa_Pipeline === "Perdido";
+      return `
+        <div class="grupo">Operação</div>
+        <button id="pToggle" class="sec" style="margin-top:8px">Editar operação</button>
+        <div id="pForm" class="ed" hidden>
+          <label>Responsável principal <input type="text" id="pResponsavel" /></label>
+          <label>Próxima ação <input type="text" id="pProximaAcao" /></label>
+          <label>Data da próxima ação <input type="date" id="pDataProxima" /></label>
+          ${perdido ? `
+          <label>Motivo da perda <select id="pMotivoPerda"></select></label>
+          <label>Concorrente <input type="text" id="pConcorrente" /></label>` : ""}
+          <div class="ed-btns">
+            <button id="pSalvar">Salvar</button>
+            <button id="pCancelar" class="sec">Cancelar</button>
+          </div>
+          <div id="pMsg" class="ed-msg"></div>
+        </div>`;
+    }
+
+    // popula um select de Choice com os valores REAIS do SharePoint (choiceProp).
+    // Sem colunas carregadas -> select desabilitado (não arriscamos gravar rótulo inventado).
+    // Valor legado fora da lista continua visível e selecionável (não some da tela).
+    function popularChoice(sel, campo, atual) {
+      sel.innerHTML = "";
+      const vazio = document.createElement("option");
+      vazio.value = ""; vazio.textContent = "(vazio)"; sel.appendChild(vazio);
+      const ops = choiceProp[campo];
+      const lista = Array.isArray(ops) ? ops.slice() : [];
+      if (atual != null && atual !== "" && !lista.includes(atual)) lista.unshift(atual);
+      lista.forEach(v => { const op = document.createElement("option"); op.value = v; op.textContent = v; sel.appendChild(op); });
+      if (!Array.isArray(ops)) { sel.disabled = true; sel.title = "choices de " + campo + " não carregados — recarregue a página"; }
+      sel.value = atual == null ? "" : String(atual);
+    }
+
+    function ligarEdicao(p) {
+      const f = p.fields || {};
+      const tg = $("pToggle"), form = $("pForm");
+      if (!tg || !form) return;
+      tg.onclick = () => { form.hidden = false; tg.hidden = true; };
+      $("pCancelar").onclick = () => openDrawer(p); // descarta o rascunho re-renderizando do estado em memória
+
+      $("pResponsavel").value = f.Responsavel_Principal ?? "";
+      $("pProximaAcao").value = f.Proxima_Acao ?? "";
+      $("pDataProxima").value = toDateInput(f.Data_Proxima_Acao);
+      // só quando Etapa_Pipeline = "Perdido" (senão os elementos nem existem)
+      if ($("pMotivoPerda")) popularChoice($("pMotivoPerda"), "Motivo_Perda", f.Motivo_Perda);
+      if ($("pConcorrente")) $("pConcorrente").value = f.Concorrente ?? "";
+
+      $("pSalvar").onclick = () => salvarProposta(p);
+    }
+
+    let salvandoProp = false;
+    async function salvarProposta(p) {
+      if (salvandoProp) return;
+      const msg = $("pMsg");
+      const f = p.fields || {};
+
+      // dirty tracking: só entra no payload o que o usuário efetivamente mudou
+      const campos = {};
+      CAMPOS_EDIT.forEach(c => {
+        const el = $(c.el);
+        if (!el || el.disabled) return; // ausente (etapa ≠ Perdido) ou choice sem opções carregadas
+        const antes = normOrig(c.tipo, f[c.campo]);
+        const agora = el.value;
+        if (antes !== agora) campos[c.campo] = paraGraph(c.tipo, agora);
+      });
+      if (!Object.keys(campos).length) {
+        msg.className = "ed-msg"; msg.textContent = "Nada foi alterado.";
+        return;
+      }
+
+      const btns = [$("pSalvar"), $("pCancelar")];
+      try {
+        salvandoProp = true;
+        btns.forEach(b => { if (b) b.disabled = true; });
+        msg.className = "ed-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Propostas", p.id, campos);
+        // relê do servidor em vez de confiar no eco local: se algum campo for
+        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Propostas") + "/items/" + p.id + "?expand=fields");
+        itemMap[p.id] = novo;
+        const i = todas.findIndex(x => String(x.id) === String(p.id));
+        if (i > -1) todas[i] = novo;
+        render(todas);
+        openDrawer(novo); // volta ao modo leitura já com os dados relidos
+        setStatus("Proposta " + ((novo.fields || {}).Title || p.id) + " atualizada (" + Object.keys(campos).join(", ") + ").");
+      } catch (e) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+        btns.forEach(b => { if (b) b.disabled = false; });
+      } finally {
+        salvandoProp = false;
+      }
+    }
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
