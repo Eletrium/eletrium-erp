@@ -25,29 +25,110 @@ window.EG = (function () {
   async function logout() { await msalApp.logoutPopup({ account }); account = null; currentUser = null; }
   const getAccount = () => account;
 
-  async function token() {
-    const req = { scopes: CONFIG.scopes, account };
+  // `forcarRenovacao` (opcional) ignora o cache do MSAL — usado pelo apiRequest
+  // quando o Graph devolve 401 com token que o MSAL ainda achava válido.
+  // Chamadas existentes sem argumento continuam idênticas.
+  async function token(forcarRenovacao) {
+    const req = { scopes: CONFIG.scopes, account, forceRefresh: !!forcarRenovacao };
     try { return (await msalApp.acquireTokenSilent(req)).accessToken; }
     catch { return (await msalApp.acquireTokenPopup(req)).accessToken; }
   }
-  async function gget(url) {
-    const t = await token();
-    const r = await fetch(url.startsWith("http") ? url : GRAPH + url, { headers: { Authorization: "Bearer " + t, Accept: "application/json" } });
-    if (!r.ok) throw new Error(r.status + " " + (await r.text()));
-    return r.json();
+
+  // ---------------------------------------------------------------------------
+  // apiRequest — ponto ÚNICO de rede com o Graph. gget/gpatch/gpost são cascas
+  // finas sobre ele (assinaturas públicas inalteradas). Concentrar aqui permite:
+  //   1. erro normalizado (status + código do Graph + mensagem pt-BR) em vez do
+  //      text() cru que as telas mostravam ao usuário;
+  //   2. retry automático em 429/503 respeitando Retry-After — throttling do
+  //      Graph não pode virar erro na tela;
+  //   3. 401 → uma renovação de token forçada antes de desistir (token expirado
+  //      no meio de uma sessão longa não derruba a gravação).
+  // ---------------------------------------------------------------------------
+  const espera = (ms) => new Promise((res) => setTimeout(res, ms));
+
+  // Retry-After pode vir em segundos ou como data HTTP; sem header, backoff
+  // simples proporcional à tentativa. Teto de 10s: melhor falhar rápido do que
+  // deixar o usuário olhando uma tela congelada.
+  function esperaDoRetryAfter(r, tentativa) {
+    const TETO_MS = 10000;
+    const bruto = r.headers && r.headers.get ? r.headers.get("Retry-After") : null;
+    let ms = NaN;
+    if (bruto != null && bruto !== "") {
+      const seg = Number(bruto);
+      if (!isNaN(seg)) ms = seg * 1000;
+      else { const quando = Date.parse(bruto); if (!isNaN(quando)) ms = quando - Date.now(); }
+    }
+    if (isNaN(ms) || ms < 0) ms = 1000 * tentativa;
+    return Math.min(ms, TETO_MS);
   }
-  async function gpatch(url, body) {
-    const t = await token();
-    const r = await fetch(url.startsWith("http") ? url : GRAPH + url, { method: "PATCH", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(r.status + " " + (await r.text()));
-    return r.json();
+
+  // Monta um Error legível a partir da resposta de erro do Graph.
+  // O corpo de erro do Graph é JSON {"error":{"code","message"}} — parseamos
+  // quando der; se não der (proxy, HTML de gateway), o texto cru vai em e.corpo.
+  async function erroGraph(r) {
+    let corpo = "", codigo = "", msgServidor = "";
+    try { corpo = await r.text(); } catch { /* resposta sem corpo */ }
+    try {
+      const j = JSON.parse(corpo);
+      if (j && j.error) { codigo = j.error.code || ""; msgServidor = j.error.message || ""; }
+    } catch { /* corpo não é JSON — segue com o texto cru */ }
+    const DESC = {
+      400: "requisição inválida",
+      401: "sessão expirada — entre novamente",
+      403: "sem permissão para esta operação",
+      404: "recurso não encontrado no SharePoint",
+      409: "conflito de edição (alguém alterou antes)",
+      412: "pré-condição falhou",
+      429: "limite de requisições do Graph atingido",
+      500: "erro interno do Graph",
+      502: "falha no gateway do Graph",
+      503: "serviço do Graph indisponível no momento",
+      504: "o Graph demorou demais para responder"
+    };
+    const desc = DESC[r.status] || "erro HTTP " + r.status;
+    const e = new Error("Graph " + r.status + (codigo ? " (" + codigo + ")" : "") + " — " + desc + (msgServidor ? ": " + msgServidor : ""));
+    e.status = r.status;
+    e.codigo = codigo;
+    e.corpo = corpo;
+    return e;
   }
-  async function gpost(url, body) {
-    const t = await token();
-    const r = await fetch(url.startsWith("http") ? url : GRAPH + url, { method: "POST", headers: { Authorization: "Bearer " + t, "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    if (!r.ok) throw new Error(r.status + " " + (await r.text()));
-    return r.json();
+
+  async function apiRequest(method, url, body) {
+    const full = url.startsWith("http") ? url : GRAPH + url;
+    let t = await token();
+    let tentativasThrottle = 0, renovou401 = false;
+    for (;;) {
+      const headers = { Authorization: "Bearer " + t, Accept: "application/json" };
+      const opcoes = { method, headers };
+      if (body !== undefined) { headers["Content-Type"] = "application/json"; opcoes.body = JSON.stringify(body); }
+      const r = await fetch(full, opcoes);
+      if (r.ok) {
+        // 204/corpo vazio (DELETE, alguns PATCH) não pode explodir no .json()
+        if (r.status === 204) return null;
+        const texto = await r.text();
+        return texto ? JSON.parse(texto) : null;
+      }
+      if ((r.status === 429 || r.status === 503) && tentativasThrottle < 2) {
+        tentativasThrottle++;
+        await espera(esperaDoRetryAfter(r, tentativasThrottle));
+        continue;
+      }
+      if (r.status === 401 && !renovou401) {
+        renovou401 = true;
+        t = await token(true); // uma chance de renovar o token antes de falhar
+        continue;
+      }
+      throw await erroGraph(r);
+    }
   }
+
+  /** GET no Graph (url relativa ao v1.0 ou absoluta). Retorna o JSON da resposta. */
+  const gget = (url) => apiRequest("GET", url);
+  /** PATCH no Graph com corpo JSON. Retorna o JSON da resposta (ou null se vazia). */
+  const gpatch = (url, body) => apiRequest("PATCH", url, body);
+  /** POST no Graph com corpo JSON. Retorna o JSON da resposta (ou null se vazia). */
+  const gpost = (url, body) => apiRequest("POST", url, body);
+
   async function me() {
     if (currentUser) return currentUser;
     const m = await gget("/me?$select=id,displayName,userPrincipalName,mail");
@@ -60,16 +141,38 @@ window.EG = (function () {
     if (!s.id) throw new Error("não resolveu o site");
     siteId = s.id; return siteId;
   }
+
+  // Lista itens SEGUINDO @odata.nextLink até o fim — o Graph pagina em 200 por
+  // padrão (500 com $top=500) e antes disso as telas truncavam EM SILÊNCIO ao
+  // passar desse volume. Assinatura e retorno (array de itens) inalterados.
+  // Teto de segurança: 20 páginas / 10.000 itens — acima disso é sinal de query
+  // errada (sem filtro) e o loop avisaria no console em vez de travar a aba.
   async function listItems(list, query) {
     const sid = await resolveSite();
     const q = query || "expand=fields&$top=500";
-    return (await gget("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items?" + q)).value || [];
+    let url = "/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items?" + q;
+    const MAX_PAGINAS = 20, MAX_ITENS = 10000;
+    const itens = [];
+    let paginas = 0;
+    while (url) {
+      const pagina = await gget(url);
+      const lote = pagina.value || [];
+      for (let i = 0; i < lote.length; i++) itens.push(lote[i]);
+      paginas++;
+      url = pagina["@odata.nextLink"] || null;
+      if (url && (paginas >= MAX_PAGINAS || itens.length >= MAX_ITENS)) {
+        console.warn("EG.listItems('" + list + "'): teto de paginação atingido (" + paginas + " página(s), " + itens.length + " itens) — resultado TRUNCADO. Revise a query ($filter/$top).");
+        break;
+      }
+    }
+    return itens;
   }
   async function listColumns(list) {
     const sid = await resolveSite();
     return (await gget("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/columns")).value || [];
   }
   async function patchItemFields(list, id, fields) {
+    checarTravas(list, fields); // fail-closed: bloqueia ANTES de ir à rede (só com trava registrada)
     const sid = await resolveSite();
     return gpatch("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items/" + id + "/fields", fields);
   }
@@ -77,6 +180,7 @@ window.EG = (function () {
   // (ex.: ClienteLookupId: 3) — o Graph não aceita "Cliente" com objeto.
   // Só inclua chaves com valor: campo vazio enviado como "" grava vazio.
   async function createItem(list, fields) {
+    checarTravas(list, fields); // fail-closed: bloqueia ANTES de ir à rede (só com trava registrada)
     const sid = await resolveSite();
     return gpost("/sites/" + sid + "/lists/" + encodeURIComponent(list) + "/items", { fields });
   }
@@ -131,6 +235,70 @@ window.EG = (function () {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Travas fail-closed de Choice (OPT-IN por tela — retrocompatível).
+  //
+  // validarChoices só AVISA; a gravação com rótulo errado passava e virava dado
+  // órfão no SharePoint. travarChoices valida igual, MAS registra o resultado:
+  // a partir daí, patchItemFields/createItem BLOQUEIAM client-side qualquer
+  // payload cujo campo travado carregue valor que não existe nos choices reais
+  // do servidor — antes do PATCH/POST. Sem trava registrada, nada muda (as 15
+  // telas atuais continuam funcionando sem alteração).
+  // ---------------------------------------------------------------------------
+  const travas = {}; // "lista||campo" -> { choices, semChoice, semConfig, registradoEm }
+  const chaveTrava = (lista, campo) => lista + "||" + campo;
+
+  /**
+   * Valida choices como EG.validarChoices e REGISTRA o resultado como trava
+   * fail-closed para (lista, campoInterno). Retorna o mesmo objeto de validação
+   * (pode ir direto para renderAvisoChoices/renderAvisosChoices).
+   * @param {string} lista nome da lista do SharePoint
+   * @param {string} campoInterno nome interno da coluna Choice
+   * @param {string[]} chavesLocais rótulos hard-coded da tela
+   * @param {{apenasSemChoice?: boolean}} [opts] mesmo contrato de validarChoices
+   */
+  async function travarChoices(lista, campoInterno, chavesLocais, opts) {
+    const v = await validarChoices(lista, campoInterno, chavesLocais, opts);
+    // indisponível (coluna não é Choice / Graph falhou) não vira trava:
+    // fail-closed só faz sentido com os choices REAIS do servidor em mãos.
+    if (!v.indisponivel) {
+      travas[chaveTrava(lista, campoInterno)] = {
+        choices: v.choices.slice(),
+        semChoice: v.semChoice.slice(),
+        semConfig: v.semConfig.slice(),
+        registradoEm: new Date().toISOString()
+      };
+    }
+    return v;
+  }
+
+  // Checagem executada por patchItemFields/createItem. Só age quando a trava
+  // registrada tem DIVERGÊNCIA (semChoice não vazio) — cenário em que a tela
+  // comprovadamente carrega rótulo que não existe no servidor. Trava sem
+  // divergência não bloqueia nada: comportamento atual intacto.
+  function checarTravas(lista, fields) {
+    if (!fields) return;
+    for (const campo of Object.keys(fields)) {
+      const t = travas[chaveTrava(lista, campo)];
+      if (!t || !t.semChoice.length) continue;
+      const valores = Array.isArray(fields[campo]) ? fields[campo] : [fields[campo]];
+      for (const v of valores) {
+        if (v == null || v === "" || typeof v !== "string") continue;
+        if (!t.choices.includes(v)) {
+          const e = new Error("valor '" + v + "' não existe no Choice '" + campo + "' do SharePoint — gravação bloqueada (fail-closed)");
+          e.failClosed = true; e.lista = lista; e.campo = campo; e.valor = v;
+          throw e;
+        }
+      }
+    }
+  }
+
+  /**
+   * Snapshot (cópia) das travas fail-closed registradas — para debug no console.
+   * @returns {Object.<string, {choices: string[], semChoice: string[], semConfig: string[], registradoEm: string}>}
+   */
+  function travasAtivas() { return JSON.parse(JSON.stringify(travas)); }
+
   // Renderiza (ou esconde) o aviso num elemento. `rotulo` identifica o campo p/ o usuário.
   function renderAvisoChoices(el, v, rotulo) {
     if (!el) return;
@@ -161,5 +329,43 @@ window.EG = (function () {
     el.innerHTML = html; el.hidden = false;
   }
 
-  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, ehDataPura, validarChoices, renderAvisoChoices, renderAvisosChoices };
+  // ---------------------------------------------------------------------------
+  // Estados de tela — utilitário para a onda 2 (nenhuma tela precisa usar ainda).
+  // Hoje cada tela improvisa "Carregando..." num setStatus próprio e confunde
+  // "vazio de verdade" com "nem carregou". Este helper padroniza os 4 estados.
+  // ---------------------------------------------------------------------------
+  /**
+   * Renderiza um dos 4 estados padrão de tela no elemento dado.
+   * @param {HTMLElement} el contêiner do estado (ex.: uma div acima da tabela)
+   * @param {"carregando"|"vazio"|"erro"|"ok"} estado "ok" esconde o elemento
+   * @param {{mensagem?: string, onRetry?: function}} [opts] mensagem custom;
+   *        onRetry (só no "erro") liga o botão "Tentar de novo"
+   */
+  function renderEstado(el, estado, opts) {
+    if (!el) return;
+    const o = opts || {};
+    const esc = (s) => String(s).replace(/[&<>]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    if (estado === "ok") { el.hidden = true; el.innerHTML = ""; return; }
+    el.hidden = false;
+    if (estado === "carregando") {
+      // spinner textual: sem dependência de CSS novo, as telas atuais não têm keyframes
+      el.innerHTML = '<span class="eg-estado eg-estado-carregando">⏳ ' + esc(o.mensagem || "Carregando…") + "</span>";
+      return;
+    }
+    if (estado === "vazio") {
+      // vazio REAL: dados carregados e não há itens — diferente de "ainda carregando"
+      el.innerHTML = '<span class="eg-estado eg-estado-vazio">' + esc(o.mensagem || "Nenhum item encontrado.") + "</span>";
+      return;
+    }
+    if (estado === "erro") {
+      el.innerHTML = '<span class="eg-estado eg-estado-erro">' + esc(o.mensagem || "Não foi possível carregar os dados.") + "</span>" +
+        (typeof o.onRetry === "function" ? ' <button type="button" class="eg-estado-retry">Tentar de novo</button>' : "");
+      const btn = el.querySelector(".eg-estado-retry");
+      if (btn) btn.addEventListener("click", o.onRetry);
+      return;
+    }
+    console.warn("EG.renderEstado: estado desconhecido '" + estado + "' (esperado: carregando | vazio | erro | ok)");
+  }
+
+  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, ehDataPura, validarChoices, renderAvisoChoices, renderAvisosChoices, travarChoices, travasAtivas, renderEstado };
 })();
