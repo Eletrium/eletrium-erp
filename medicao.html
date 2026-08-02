@@ -14,7 +14,7 @@
     /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
     [hidden] { display: none !important; }
 
-    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
     .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
     .kpi .k { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
     .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
@@ -26,7 +26,6 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
       padding: 6px 10px; font-size: .86rem; font-family: inherit; color-scheme: dark;
     }
-    .chk { display: inline-flex; align-items: center; gap: 6px; color: #8b949e; font-size: .82rem; cursor: pointer; }
     .hint { color: #8b949e; font-size: .8rem; }
     .toolbar .hint.right { margin-left: auto; }
 
@@ -38,22 +37,26 @@
     td .badge { white-space: nowrap; margin-top: 0; }
     td.n { text-align: right; white-space: nowrap; }
     td.dim { color: #8b949e; }
+    td .pend { display: block; color: #8b949e; font-size: .74rem; margin-top: 3px; max-width: 260px; white-space: normal; }
 
     /* linha de grupo (técnico) e subtotal dentro da tabela do lote */
     tr.grp td { background: #1c2129; font-weight: 600; border-top: 2px solid #30363d; }
     tr.grp td span { color: #8b949e; font-weight: 400; font-size: .8rem; }
+    tr.grp td .badge { font-weight: 400; margin-left: 6px; }
     tr.sub td { background: #161b22; font-weight: 600; color: #e6edf3; border-bottom: 2px solid #30363d; }
     tr.sub td.rot { text-align: right; color: #8b949e; font-weight: 400; font-size: .8rem; }
+    tr.sub.analise td { font-weight: 400; color: #D29922; border-bottom: 1px solid #30363d; }
 
+    .badge.ok { border-color: #3fb950; color: #3fb950; }
     .badge.warn { border-color: #D29922; color: #D29922; }
     .badge.err { border-color: #F85149; color: #F85149; }
+    .badge.info { border-color: #58a6ff; color: #58a6ff; }
+    .badge.pf { border-color: #BC8CFF; color: #BC8CFF; }
 
-    /* aviso da regra do lote / prévia */
+    /* aviso da regra do lote */
     .aviso-ro { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
                 border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
     .aviso-ro strong { color: #e6edf3; }
-    .aviso-previa { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
-                    border: 1px solid #d2992255; background: #d2992218; color: #e3b341; }
 
     .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
@@ -91,54 +94,71 @@
   <main>
     <div id="conteudo" hidden>
       <div class="aviso-ro">
-        <strong>Painel de Medição Mensal (modelo MEI) — somente leitura.</strong>
-        As horas dos técnicos MEI em OS, valoradas pelo valor-hora contratado, formam o lote do mês.
-        O MEI confere o <em>Espelho de Medição</em> (XLS) e fatura contra ele. Elegibilidade e
-        “De Acordo do líder” são gravados na tela de OS — aqui nada é alterado.
+        <strong>Painel de Medição Mensal (modelo MEI).</strong>
+        As horas dos técnicos MEI em OS, valoradas pela cadeia snapshot → tarifa vigente → contrato,
+        formam a medição da competência. <strong>Falha documental não suprime pagamento:</strong> linha sem
+        selfie/diário/De&nbsp;Acordo entra como <em>Em análise</em>, com horas preservadas e a pendência
+        identificada — vira pendência de análise, não exclusão. Condição insegura (EPI reprovado)
+        <em>bloqueia</em>. Elegibilidade e “De Acordo do líder” são gravados na tela de OS; aqui você
+        confere, exporta o <em>Espelho de Medição</em> (XLS) e <strong>fecha o lote da competência</strong>
+        (persistido e congelado em OS_Medicoes_Lotes / OS_Medicoes_Itens).
       </div>
 
       <div class="kpis">
-        <div class="kpi"><div class="k">Técnicos no lote</div><div class="v" id="kTec">0</div><div class="sub">com linhas no período</div></div>
+        <div class="kpi"><div class="k">Técnicos no lote</div><div class="v" id="kTec">0</div><div class="sub">com linhas medíveis no período</div></div>
         <div class="kpi"><div class="k">OS distintas</div><div class="v" id="kOs">0</div></div>
-        <div class="kpi"><div class="k">Total de horas</div><div class="v" id="kHoras">0</div><div class="sub">soma de Horas_Trabalhadas</div></div>
-        <div class="kpi"><div class="k">Valor do lote</div><div class="v" id="kValor" style="color:#3fb950">R$ 0,00</div><div class="sub">horas × valor-hora</div></div>
-        <div class="kpi"><div class="k">Fora do lote</div><div class="v" id="kFora" style="color:#F0883E">0</div><div class="sub">linhas do período excluídas</div></div>
+        <div class="kpi"><div class="k">Horas aprovadas</div><div class="v" id="kHoras">0</div><div class="sub">só linhas Aprovadas</div></div>
+        <div class="kpi"><div class="k">Valor aprovado</div><div class="v" id="kValor" style="color:#3fb950">R$ 0,00</div><div class="sub">horas × valor-hora (Aprovadas)</div></div>
+        <div class="kpi"><div class="k">Em análise</div><div class="v" id="kAnalise" style="color:#D29922">R$ 0,00</div><div class="sub" id="kAnaliseSub">0 linha(s) — não soma no aprovado</div></div>
+        <div class="kpi"><div class="k">Bloqueadas</div><div class="v" id="kBloq" style="color:#F85149">0</div><div class="sub">condição insegura (EPI reprovado)</div></div>
+        <div class="kpi"><div class="k">Fora do lote</div><div class="v" id="kFora" style="color:#F0883E">0</div><div class="sub">sem horas — nada a medir</div></div>
       </div>
 
       <div class="toolbar">
         <label for="mTecnico">Técnico MEI</label>
         <select id="mTecnico"><option value="">(Todos)</option></select>
-        <label for="mMes">Período</label>
+        <label for="mMes">Competência</label>
         <input type="month" id="mMes" />
-        <label class="chk" for="mEleg"><input type="checkbox" id="mEleg" checked /> só linhas elegíveis</label>
+        <label for="mStatus">Status</label>
+        <select id="mStatus">
+          <option value="">(Todos)</option>
+          <option value="Aprovado">Aprovado</option>
+          <option value="Em análise">Em análise</option>
+          <option value="Bloqueado">Bloqueado</option>
+        </select>
         <button id="btnXls" disabled title="Carregue os dados primeiro">Gerar Espelho de Medição (XLS)</button>
-        <span class="ro">somente leitura — De Acordo e elegibilidade são da tela de OS</span>
+        <button id="btnFechar" disabled title="Carregue os dados primeiro">Fechar lote da competência</button>
+        <span class="ro">De Acordo e elegibilidade são gravados na tela de OS</span>
         <span class="hint right" id="mContador"></span>
       </div>
 
-      <div class="aviso-previa" id="avisoPrevia" hidden>
-        <strong>Modo prévia:</strong> o filtro “só linhas elegíveis” está desligado — a tabela inclui linhas
-        <em>sem</em> De Acordo do líder e/ou <em>não elegíveis</em> ao financeiro (marcadas por linha).
-        Estes números <strong>não</strong> são o lote oficial de medição.
-      </div>
-
-      <div class="secao" id="secLote">Lote de medição</div>
+      <div class="secao" id="secLote">Medição da competência</div>
       <table id="lTbl" hidden>
         <thead><tr>
           <th>OS</th><th>Cliente</th><th>Função</th><th>Check-in</th><th>Check-out</th>
-          <th>Horas</th><th>Valor-hora</th><th>Valor</th>
+          <th>Horas</th><th>Valor-hora</th><th>Valor</th><th>Status</th>
         </tr></thead>
         <tbody id="lTbody"></tbody>
       </table>
       <div class="empty" id="lEmpty" hidden></div>
 
-      <div class="secao" id="secFora" hidden>Fora do lote <span>— linhas do período que não entram na medição (nada some em silêncio)</span></div>
+      <div class="secao" id="secFora" hidden>Fora do lote <span>— linhas do período sem horas medíveis (nada some em silêncio)</span></div>
       <table id="fTbl" hidden>
         <thead><tr>
           <th>Técnico</th><th>OS</th><th>Check-in</th><th>Horas</th><th>Motivo</th>
         </tr></thead>
         <tbody id="fTbody"></tbody>
       </table>
+
+      <div class="secao" id="secLotes" hidden>Lotes fechados <span>— OS_Medicoes_Lotes (read-only; o lote congelado é a verdade — mudar tarifa não recalcula lote fechado)</span></div>
+      <table id="loTbl" hidden>
+        <thead><tr>
+          <th>Lote</th><th>Competência</th><th>Prestador</th><th>Status</th>
+          <th>Tarifa</th><th>Horas</th><th>Valor</th>
+        </tr></thead>
+        <tbody id="loTbody"></tbody>
+      </table>
+      <div class="empty" id="loEmpty" hidden></div>
     </div>
   </main>
 
@@ -147,32 +167,50 @@
 
   <script>
     /* ===================================================================
-       MEDIÇÃO MENSAL (modelo MEI) — tela SOMENTE LEITURA.
+       MEDIÇÃO MENSAL (modelo MEI) — Roadmap OS v2.1: C3 + B5 + B8 + C7.
 
-       MAPA DE DONO DE CAMPO (quem escreve o quê — esta tela não escreve nada):
+       MAPA DE DONO DE CAMPO (quem escreve o quê):
        - OS_Equipe.Checkin_Hora / Checkout_Hora / Selfie_URL ......... app do técnico (PWA)
        - OS_Equipe.EPI_Checklist_OK / Diario_Preenchido .............. app do técnico (PWA)
        - OS_Equipe.De_Acordo_Lider / _Em / _Por ...................... tela de OS (líder)
        - OS_Equipe.Elegivel_Financeiro / Horas_Trabalhadas ........... tela de OS / processo
        - OS_Equipe.Valor_Hora_Snapshot ............................... processo de fechamento (congela o valor-hora)
-       - TecnicosMEI.Valor_Hora_Contratado / Status .................. cadastro de técnicos
-       Esta tela apenas LÊ, agrega e exporta o Espelho de Medição.
+       - TecnicosMEI.Valor_Hora_Contratado / Status /
+         Tipo_Pessoa / Documento_Liquidacao .......................... cadastro de técnicos
+       - Tarifas_Versoes ............................................. cadastro de tarifas (B5)
+       - OS_Medicoes_Lotes / OS_Medicoes_Itens ....................... ESTA TELA, só no "Fechar lote" (B8)
+       Fora do fechamento de lote, esta tela apenas LÊ, agrega e exporta.
 
-       REGRA DO LOTE (fonte da verdade desta tela):
-       Entram na medição as linhas de OS_Equipe cuja data-base
+       REGRA DA MEDIÇÃO (C3 — 3 grupos, horas SEMPRE preservadas):
+       Linhas de OS_Equipe cuja data-base
          (Checkin_Hora → fallback De_Acordo_Lider_Em → fallback Created)
-       cai no período escolhido E:
-         - Elegivel_Financeiro === true
-         - De_Acordo_Lider === true
-         - Horas_Trabalhadas numérico e > 0
-         - valor-hora determinável (Valor_Hora_Snapshot, senão o
-           Valor_Hora_Contratado ATUAL do técnico, com badge de aviso)
-       Linhas do período que NÃO cumprem algum critério vão para a seção
-       "Fora do lote" com o(s) motivo(s) — nada é descartado em silêncio.
-       O checkbox "só linhas elegíveis" desligado vira MODO PRÉVIA: as duas
-       primeiras condições são suspensas (a linha entra na tabela com badge),
-       mas "sem horas" e "sem valor-hora" continuam excluindo, porque sem
-       elas não existe valor calculável.
+       cai na competência escolhida são classificadas assim:
+         - APROVADO ..... De Acordo + elegível + horas > 0 + valor-hora ok.
+         - EM ANÁLISE ... FALHA DOCUMENTAL (sem selfie, sem diário, sem De Acordo,
+                          sem valor-hora determinável). A linha ENTRA no lote com as
+                          horas preservadas, valor calculado quando possível e a
+                          pendência identificada POR LINHA. Falha de upload/documentação
+                          NÃO pode suprimir pagamento de horas trabalhadas — vira
+                          pendência de análise, não exclusão.
+         - BLOQUEADO .... condição insegura: EPI_Checklist_OK === false (explicitamente
+                          reprovado). Não soma e NÃO é persistido nos itens do lote.
+       Linha sem horas (> 0) não tem o que medir: fica em "Fora do lote" com o
+       motivo — nada é descartado em silêncio.
+
+       VALOR-HORA (B5 — cadeia, com badge dizendo a origem):
+         1) Valor_Hora_Snapshot da linha (congelado no fechamento);
+         2) tarifa VIGENTE NA COMPETÊNCIA em Tarifas_Versoes
+            (Vigencia_Inicio <= competência <= Vigencia_Fim, Ativa = true);
+         3) Valor_Hora_Contratado ATUAL do técnico (badge de aviso).
+       Mudança de tarifa NUNCA recalcula lote já fechado — o lote congelado
+       (Calculation_JSON) é a verdade (B8).
+
+       FECHAMENTO (B8): "Fechar lote da competência" cria 1 lote POR PRESTADOR em
+       OS_Medicoes_Lotes (Chave_Lote "<prestadorId>|<AAAA-MM>" ÚNICA — refechar a
+       mesma competência falha e é tratado como "lote já fechado") + itens em
+       OS_Medicoes_Itens (Aprovado/Em análise; Bloqueado não entra). Alíquotas
+       INSS/IRRF/ISS da tarifa vigente são apenas REGISTRADAS no Calculation_JSON —
+       retenção NÃO é aplicada em lugar nenhum (parametrização C7, sem hardcode).
        =================================================================== */
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
@@ -236,9 +274,10 @@
     };
 
     /* ============================== estado ============================== */
-    let equipe = [], tecnicos = [], ordens = [], clientes = [];
-    let mapTec = {}, mapOS = {}, nomeCliente = {};
+    let equipe = [], tecnicos = [], ordens = [], clientes = [], tarifas = [], lotes = [];
+    let mapTec = {}, mapOS = {}, nomeCliente = {}, mapTarifa = {};
     let mapReg = {};          // id da linha de OS_Equipe -> registro calculado (para o drawer)
+    let mapLote = {};         // id do lote -> item (para o drawer de lote)
     let carregado = false;
 
     const tecDe = (lookupId) => lookupId == null ? null : (mapTec[lookupId] || null);
@@ -256,6 +295,29 @@
       const cid = (o.fields || {}).ClienteLookupId;
       return cid == null ? null : (nomeCliente[cid] || ("cliente #" + cid));
     };
+
+    /* ============ C7 — dimensões do prestador (Tipo_Pessoa / Documento) ============ */
+    const tipoPessoaRotulo = (tp) => tp === "PF_AUTONOMO" ? "PF (autônomo)" : (tp === "PJ_MEI" ? "PJ (MEI)" : (tp || null));
+    // PF_AUTONOMO ganha badge distinta (roxa) — liquidação por RPA/recibo, não NF de MEI
+    const tipoPessoaBadge = (tp) => {
+      if (tp === "PF_AUTONOMO") return "<span class='badge pf'>PF autônomo</span>";
+      if (tp === "PJ_MEI") return "<span class='badge'>PJ MEI</span>";
+      return "";
+    };
+    const docLiqBadge = (doc) => doc ? "<span class='badge'>" + esc(doc) + "</span>" : "";
+
+    const statusBadge = (st) => {
+      const cls = st === "Aprovado" ? "ok" : (st === "Em análise" ? "warn" : "err");
+      return "<span class='badge " + cls + "'>" + esc(st) + "</span>";
+    };
+    const loteStatusBadge = (st) => {
+      const cls = st === "Pago" ? "info" : (st === "Fechado" ? "ok" : (st === "Em análise" ? "warn" : ""));
+      return "<span class='badge " + cls + "'>" + esc(st || "—") + "</span>";
+    };
+    const vhOrigemRotulo = (r) =>
+      r.vhFonte === "snapshot" ? "snapshot da linha (congelado)" :
+      r.vhFonte === "tarifa" ? "tarifa vigente na competência" + (r.tarifaTitle ? " — " + r.tarifaTitle : "") :
+      r.vhFonte === "atual" ? "contrato ATUAL do prestador (sem snapshot nem tarifa vigente)" : "indeterminável";
 
     /* ============================ autenticação ============================ */
     async function boot() { if (await EG.init()) await onIn(); }
@@ -275,29 +337,34 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando medição...");
-        const [eq, te, os, cl] = await Promise.all([
+        const [eq, te, os, cl, ta, lo] = await Promise.all([
           soft(EG.listItems("OS_Equipe"), "OS_Equipe"),
           soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
           soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
-          soft(EG.listItems("Clientes"), "Clientes")
+          soft(EG.listItems("Clientes"), "Clientes"),
+          soft(EG.listItems("Tarifas_Versoes"), "Tarifas_Versoes"),
+          soft(EG.listItems("OS_Medicoes_Lotes"), "OS_Medicoes_Lotes")
         ]);
-        setDados(eq, te, os, cl);
+        setDados(eq, te, os, cl, ta, lo);
         carregado = true;
         $("conteudo").hidden = false;
         montarFiltros();
-        habilitarXls();
+        habilitarBotoes();
         render();
         setStatus("OK — " + equipe.length + " linha(s) de equipe, " + tecnicos.length + " técnico(s), " +
-                  ordens.length + " OS, " + clientes.length + " cliente(s).");
+                  ordens.length + " OS, " + clientes.length + " cliente(s), " +
+                  tarifas.length + " tarifa(s), " + lotes.length + " lote(s) fechado(s).");
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
     // separado da carga para poder ser exercitado com dados falsos (window.MED.setDados)
-    function setDados(eq, te, os, cl) {
+    function setDados(eq, te, os, cl, ta, lo) {
       equipe = eq || []; tecnicos = te || []; ordens = os || []; clientes = cl || [];
+      tarifas = ta || []; lotes = lo || [];
       mapTec = {}; tecnicos.forEach(t => { mapTec[t.id] = t; });
       mapOS = {}; ordens.forEach(o => { mapOS[o.id] = o; });
       nomeCliente = {}; clientes.forEach(c => { nomeCliente[c.id] = (c.fields || {}).Title; });
+      mapTarifa = {}; tarifas.forEach(t => { mapTarifa[t.id] = t; });
     }
 
     function montarFiltros() {
@@ -316,20 +383,50 @@
       }
     }
 
-    function habilitarXls() {
+    function habilitarBotoes() {
       const b = $("btnXls");
       if (typeof XLSX === "undefined") {
         // CDN do SheetJS não carregou (offline / bloqueio): degrada sem quebrar
         b.disabled = true;
         b.title = "Biblioteca de planilha (SheetJS) não carregou da CDN — recarregue a página com internet para gerar o XLS.";
-        return;
+      } else {
+        b.disabled = !carregado;
+        b.title = carregado ? "Gera o Espelho de Medição da competência filtrada" : "Carregue os dados primeiro";
       }
-      b.disabled = !carregado;
-      b.title = carregado ? "Gera o Espelho de Medição do lote filtrado" : "Carregue os dados primeiro";
+      const f = $("btnFechar");
+      f.disabled = !carregado;
+      f.title = carregado
+        ? "Cria 1 lote por prestador em OS_Medicoes_Lotes (Aprovado + Em análise; Bloqueado não entra) e congela o cálculo"
+        : "Carregue os dados primeiro";
     }
 
     /* ==================================================================
-       CLASSIFICAÇÃO: período -> lote | fora do lote (com motivos)
+       B5 — TARIFAS VERSIONADAS: tarifa vigente na competência.
+       Vigencia_Inicio <= competência <= Vigencia_Fim (comparação por mês,
+       AAAA-MM), Ativa === true. Sem Vigencia_Fim = vigência aberta.
+       Empate (sobreposição) resolve pela Vigencia_Inicio mais recente.
+       ================================================================== */
+    function tarifaVigente(ym) {
+      if (!ym) return null;
+      const cand = tarifas.filter(t => {
+        const f = t.fields || {};
+        if (f.Ativa !== true) return false;
+        const ini = mKey(f.Vigencia_Inicio);
+        if (!ini || ini > ym) return false;          // sem início não há vigência definida
+        const fim = mKey(f.Vigencia_Fim);
+        if (fim && fim < ym) return false;
+        return true;
+      });
+      if (!cand.length) return null;
+      cand.sort((a, b) => String((b.fields || {}).Vigencia_Inicio || "")
+        .localeCompare(String((a.fields || {}).Vigencia_Inicio || "")));
+      return cand[0];
+    }
+
+    /* ==================================================================
+       C3 — CLASSIFICAÇÃO em 3 grupos (horas SEMPRE preservadas):
+       Aprovado | Em análise (falha documental) | Bloqueado (condição insegura).
+       Sem horas (> 0) => fora do lote (status null), com motivo.
        ================================================================== */
     // data-base da linha para o período: Checkin_Hora -> De_Acordo_Lider_Em -> Created.
     // (Created vem em fields.Created via expand=fields; createdDateTime é o mesmo dado na raiz do item.)
@@ -338,126 +435,151 @@
       return f.Checkin_Hora || f.De_Acordo_Lider_Em || f.Created || item.createdDateTime || null;
     };
 
-    // monta o registro calculado de uma linha (valor-hora, valor, motivos de exclusão)
-    function calcularLinha(item, soElegiveis) {
+    // monta o registro calculado de uma linha (status, valor-hora, valor, pendências)
+    function calcularLinha(item, tarifa) {
       const f = item.fields || {};
       const tec = tecDe(f.TecnicoLookupId);
       const tf = tec ? (tec.fields || {}) : {};
-      const motivos = [];
+      const pendencias = [];   // falha documental  -> Em análise
+      const bloqueios = [];    // condição insegura -> Bloqueado
+      const motivosFora = [];  // sem horas         -> fora do lote
 
-      // critérios do lote oficial (suspensos no modo prévia — a linha entra marcada)
-      const semDeAcordo = f.De_Acordo_Lider !== true;
-      const naoElegivel = f.Elegivel_Financeiro !== true;
-      if (soElegiveis) {
-        if (semDeAcordo) motivos.push("sem De Acordo do líder");
-        if (naoElegivel) {
-          const faltas = [];
-          if (!urlSeguro(f.Selfie_URL) && !temValor(f.Selfie_URL)) faltas.push("selfie");
-          if (f.Diario_Preenchido !== true) faltas.push("diário");
-          motivos.push(faltas.length ? "não elegível (sem " + faltas.join(" + ") + ")" : "não elegível ao financeiro");
-        }
+      // sem horas não há o que medir — única exclusão que resta (C3)
+      const temHoras = ehNum(f.Horas_Trabalhadas) && num(f.Horas_Trabalhadas) > 0;
+      if (!temHoras) motivosFora.push("sem horas trabalhadas (> 0) — nada a medir");
+
+      // condição insegura: só o EPI explicitamente reprovado bloqueia
+      if (f.EPI_Checklist_OK === false) bloqueios.push("EPI reprovado no checklist — condição insegura");
+
+      // falhas DOCUMENTAIS: entram no lote como "Em análise" com pendência por linha.
+      // Falha de upload/documentação não pode suprimir pagamento de horas trabalhadas —
+      // vira pendência de análise, não exclusão.
+      if (f.De_Acordo_Lider !== true) pendencias.push("sem De Acordo do líder");
+      if (f.Elegivel_Financeiro !== true) {
+        const faltas = [];
+        if (!urlSeguro(f.Selfie_URL) && !temValor(f.Selfie_URL)) faltas.push("sem selfie");
+        if (f.Diario_Preenchido !== true) faltas.push("sem diário");
+        if (faltas.length) faltas.forEach(m => pendencias.push(m));
+        else pendencias.push("não elegível ao financeiro (motivo não registrado na linha)");
       }
 
-      // sem horas não há o que medir — vale também no modo prévia
-      const temHoras = ehNum(f.Horas_Trabalhadas) && num(f.Horas_Trabalhadas) > 0;
-      if (!temHoras) motivos.push("sem horas trabalhadas");
-
-      // valor-hora: snapshot congelado no fechamento; na falta dele, o valor
-      // ATUAL do contrato do técnico (com badge — pode divergir do vigente na época)
-      let vh = null, vhFonte = null;
+      // B5 — cadeia do valor-hora: snapshot -> tarifa vigente na competência -> contrato atual
+      const tvf = tarifa ? (tarifa.fields || {}) : {};
+      let vh = null, vhFonte = null, tarifaTitle = null;
       if (ehNum(f.Valor_Hora_Snapshot)) { vh = num(f.Valor_Hora_Snapshot); vhFonte = "snapshot"; }
+      else if (tarifa && ehNum(tvf.Valor_Hora_Padrao)) { vh = num(tvf.Valor_Hora_Padrao); vhFonte = "tarifa"; tarifaTitle = tvf.Title || ("tarifa #" + tarifa.id); }
       else if (ehNum(tf.Valor_Hora_Contratado)) { vh = num(tf.Valor_Hora_Contratado); vhFonte = "atual"; }
-      if (vh == null) motivos.push("sem valor-hora (nem snapshot nem contratado)");
+      if (vh == null) pendencias.push("sem valor-hora determinável (nem snapshot, nem tarifa vigente, nem contrato)");
 
       const valor = (temHoras && vh != null) ? num(f.Horas_Trabalhadas) * vh : null;
 
+      // status null = fora do lote (sem horas); senão Bloqueado > Em análise > Aprovado
+      const status = motivosFora.length ? null
+        : (bloqueios.length ? "Bloqueado" : (pendencias.length ? "Em análise" : "Aprovado"));
+
       return {
-        id: item.id, item, f,
+        id: item.id, item, f, tf,
         tecId: f.TecnicoLookupId, tecNome: tecNome(f.TecnicoLookupId),
         osId: f.OSLookupId, osTitle: osTitulo(f.OSLookupId), cliente: clienteDaOS(f.OSLookupId),
         dataBase: dataBase(item),
         horas: ehNum(f.Horas_Trabalhadas) ? num(f.Horas_Trabalhadas) : null,
-        vh, vhFonte, valor,
-        semDeAcordo, naoElegivel,
-        motivos
+        vh, vhFonte, tarifaTitle, valor,
+        status, pendencias, bloqueios, motivosFora
       };
     }
 
-    // devolve { lote: [regs], fora: [regs] } aplicando período + técnico + regra do lote
+    // devolve { medicao (Aprovado/Em análise/Bloqueado), fora, ym, tarifa }
+    // aplicando competência + técnico. O filtro de STATUS é só de exibição —
+    // KPIs, XLS e fechamento de lote usam a classificação completa.
     function classificar() {
       const ym = $("mMes").value;
       const ft = $("mTecnico").value;
-      const soElegiveis = $("mEleg").checked;
-      const lote = [], fora = [];
+      const tarifa = tarifaVigente(ym);
+      const medicao = [], fora = [];
       equipe.forEach(item => {
         const f = item.fields || {};
         if (ft && String(f.TecnicoLookupId ?? "") !== String(ft)) return;
         const k = mKey(dataBase(item));
         if (!ym || k !== ym) return;           // fora do período não aparece em lugar nenhum
-        const reg = calcularLinha(item, soElegiveis);
-        (reg.motivos.length ? fora : lote).push(reg);
+        const reg = calcularLinha(item, tarifa);
+        (reg.status ? medicao : fora).push(reg);
       });
       const porTec = (a, b) => a.tecNome.localeCompare(b.tecNome, "pt-BR") ||
         String(a.dataBase || "").localeCompare(String(b.dataBase || ""));
-      lote.sort(porTec); fora.sort(porTec);
-      return { lote, fora, ym, soElegiveis };
+      medicao.sort(porTec); fora.sort(porTec);
+      return { medicao, fora, ym, tarifa };
+    }
+
+    // agrupa registros (já ordenados por técnico) preservando a ordem
+    function agruparPorTec(regs) {
+      const grupos = [];
+      regs.forEach(r => {
+        const g = grupos[grupos.length - 1];
+        if (g && String(g.tecId) === String(r.tecId)) g.regs.push(r);
+        else grupos.push({ tecId: r.tecId, tecNome: r.tecNome, tf: r.tf, regs: [r] });
+      });
+      return grupos;
     }
 
     /* ============================== render ============================== */
     function render() {
       if (!carregado) return;
-      const { lote, fora, ym, soElegiveis } = classificar();
-      mapReg = {}; lote.concat(fora).forEach(r => { mapReg[r.id] = r; });
+      const { medicao, fora, ym, tarifa } = classificar();
+      mapReg = {}; medicao.concat(fora).forEach(r => { mapReg[r.id] = r; });
 
-      $("avisoPrevia").hidden = soElegiveis;
-      $("secLote").textContent = soElegiveis
-        ? "Lote de medição — " + rotuloPeriodo(ym)
-        : "Prévia (inclui não elegíveis) — " + rotuloPeriodo(ym);
+      const stF = $("mStatus").value;
+      const visiveis = stF ? medicao.filter(r => r.status === stF) : medicao;
+      const aprov = medicao.filter(r => r.status === "Aprovado");
+      const anal = medicao.filter(r => r.status === "Em análise");
+      const bloq = medicao.filter(r => r.status === "Bloqueado");
+      const noLote = aprov.concat(anal);   // o que entra no lote (Bloqueado fica de fora)
 
-      // KPIs do lote filtrado
-      const tecSet = new Set(lote.map(r => String(r.tecId ?? "?")));
-      const osSet = new Set(lote.filter(r => r.osId != null).map(r => String(r.osId)));
-      const horas = lote.reduce((s, r) => s + num(r.horas), 0);
-      const valor = lote.reduce((s, r) => s + num(r.valor), 0);
+      $("secLote").textContent = "Medição — " + rotuloPeriodo(ym) + (stF ? " · exibindo só “" + stF + "”" : "");
+
+      // KPIs (C3): Aprovado soma; Em análise é SEPARADO (não soma no aprovado); Bloqueado conta
+      const tecSet = new Set(noLote.map(r => String(r.tecId ?? "?")));
+      const osSet = new Set(noLote.filter(r => r.osId != null).map(r => String(r.osId)));
       $("kTec").textContent = tecSet.size;
       $("kOs").textContent = osSet.size;
-      $("kHoras").textContent = fmtN(horas, 1) + " h";
-      $("kValor").textContent = brl(valor);
+      $("kHoras").textContent = fmtN(aprov.reduce((s, r) => s + num(r.horas), 0), 1) + " h";
+      $("kValor").textContent = brl(aprov.reduce((s, r) => s + num(r.valor), 0));
+      $("kAnalise").textContent = brl(anal.reduce((s, r) => s + num(r.valor), 0));
+      $("kAnaliseSub").textContent = anal.length + " linha(s) · " + fmtN(anal.reduce((s, r) => s + num(r.horas), 0), 1) +
+        " h — não soma no aprovado";
+      $("kBloq").textContent = bloq.length;
       $("kFora").textContent = fora.length;
-      $("mContador").textContent = lote.length + " linha(s) no lote · " + fora.length + " fora · período " + rotuloPeriodo(ym);
+      $("mContador").textContent = aprov.length + " aprovada(s) · " + anal.length + " em análise · " +
+        bloq.length + " bloqueada(s) · " + fora.length + " fora · " +
+        (tarifa ? "tarifa vigente: " + ((tarifa.fields || {}).Title || ("#" + tarifa.id)) : "sem tarifa vigente na competência");
 
-      renderLote(lote);
+      renderMedicao(visiveis, stF);
       renderFora(fora);
+      renderLotes();
     }
 
-    function renderLote(lote) {
-      if (!lote.length) {
+    function renderMedicao(regs, stF) {
+      if (!regs.length) {
         $("lTbody").innerHTML = ""; $("lTbl").hidden = true; $("lEmpty").hidden = false;
         $("lEmpty").textContent = equipe.length
-          ? "Nenhuma linha de OS_Equipe entra no lote deste período com os filtros atuais. Veja a seção “Fora do lote” abaixo — se houver linhas lá, o motivo de cada exclusão está indicado."
+          ? (stF ? "Nenhuma linha com status “" + stF + "” nesta competência com os filtros atuais."
+                 : "Nenhuma linha de OS_Equipe é medível nesta competência com os filtros atuais. Veja a seção “Fora do lote” abaixo — se houver linhas lá, o motivo de cada exclusão está indicado.")
           : "Nenhuma linha registrada em OS_Equipe.";
         return;
       }
       $("lEmpty").hidden = true; $("lTbl").hidden = false;
 
-      // agrupa por técnico preservando a ordenação (nome, depois data)
-      const grupos = [];
-      lote.forEach(r => {
-        const g = grupos[grupos.length - 1];
-        if (g && String(g.tecId) === String(r.tecId)) g.regs.push(r);
-        else grupos.push({ tecId: r.tecId, tecNome: r.tecNome, regs: [r] });
-      });
-
-      $("lTbody").innerHTML = grupos.map(g => {
-        const hSub = g.regs.reduce((s, r) => s + num(r.horas), 0);
-        const vSub = g.regs.reduce((s, r) => s + num(r.valor), 0);
-        const cab = "<tr class='grp'><td colspan='8'>" + esc(g.tecNome) +
-          " <span>· " + g.regs.length + " linha(s)</span></td></tr>";
+      $("lTbody").innerHTML = agruparPorTec(regs).map(g => {
+        const tf = g.tf || {};
+        // C7: dimensões do prestador na linha de grupo (Tipo_Pessoa / Documento_Liquidacao)
+        const cab = "<tr class='grp'><td colspan='9'>" + esc(g.tecNome) +
+          " <span>· " + g.regs.length + " linha(s)</span>" +
+          tipoPessoaBadge(tf.Tipo_Pessoa) + docLiqBadge(tf.Documento_Liquidacao) +
+          "</td></tr>";
         const linhas = g.regs.map(r => {
           const flags = [];
-          if (r.vhFonte === "atual") flags.push("<span class='badge warn'>valor atual (sem snapshot)</span>");
-          if (r.semDeAcordo) flags.push("<span class='badge err'>sem De Acordo</span>");
-          if (r.naoElegivel) flags.push("<span class='badge err'>não elegível</span>");
+          if (r.vhFonte === "tarifa") flags.push("<span class='badge info'>tarifa vigente" + (r.tarifaTitle ? ": " + esc(r.tarifaTitle) : "") + "</span>");
+          if (r.vhFonte === "atual") flags.push("<span class='badge warn'>contrato atual (sem snapshot/tarifa)</span>");
+          const pend = r.bloqueios.concat(r.pendencias);
           return "<tr data-id='" + esc(r.id) + "'>" +
             "<td>" + esc(r.osTitle) + "</td>" +
             "<td class='dim'>" + esc(r.cliente || "—") + "</td>" +
@@ -467,11 +589,20 @@
             "<td class='n'>" + cel(r.horas, 2) + "</td>" +
             "<td class='n'>" + esc(celBRL(r.vh)) + (flags.length ? "<br>" + flags.join(" ") : "") + "</td>" +
             "<td class='n'>" + esc(celBRL(r.valor)) + "</td>" +
-            "</tr>";
+            "<td>" + statusBadge(r.status) +
+              (pend.length ? "<span class='pend'>" + esc(pend.join(" · ")) + "</span>" : "") +
+            "</td></tr>";
         }).join("");
-        const sub = "<tr class='sub'><td colspan='5' class='rot'>subtotal de " + esc(g.tecNome) + "</td>" +
-          "<td class='n'>" + fmtN(hSub, 2) + "</td><td></td>" +
-          "<td class='n'>" + esc(brl(vSub)) + "</td></tr>";
+        const ap = g.regs.filter(r => r.status === "Aprovado");
+        const an = g.regs.filter(r => r.status === "Em análise");
+        let sub = "<tr class='sub'><td colspan='5' class='rot'>aprovado de " + esc(g.tecNome) + "</td>" +
+          "<td class='n'>" + fmtN(ap.reduce((s, r) => s + num(r.horas), 0), 2) + "</td><td></td>" +
+          "<td class='n'>" + esc(brl(ap.reduce((s, r) => s + num(r.valor), 0))) + "</td><td></td></tr>";
+        if (an.length) {
+          sub = "<tr class='sub analise'><td colspan='5' class='rot'>em análise (não soma no aprovado)</td>" +
+            "<td class='n'>" + fmtN(an.reduce((s, r) => s + num(r.horas), 0), 2) + "</td><td></td>" +
+            "<td class='n'>" + esc(brl(an.reduce((s, r) => s + num(r.valor), 0))) + "</td><td></td></tr>" + sub;
+        }
         return cab + linhas + sub;
       }).join("");
     }
@@ -486,12 +617,203 @@
         "<td>" + esc(r.osTitle) + "</td>" +
         "<td>" + esc(fmtDT(r.f.Checkin_Hora) || "—") + "</td>" +
         "<td class='n'>" + cel(r.horas, 2) + "</td>" +
-        "<td class='dim'>" + esc(r.motivos.join(" · ")) + "</td>" +
+        "<td class='dim'>" + esc(r.motivosFora.join(" · ")) + "</td>" +
         "</tr>"
       ).join("");
     }
 
-    ["mTecnico", "mMes", "mEleg"].forEach(id => $(id).addEventListener("change", render));
+    /* ================== B8 — lotes fechados (read-only) ================== */
+    function renderLotes() {
+      $("secLotes").hidden = false;
+      mapLote = {}; lotes.forEach(l => { mapLote[l.id] = l; });
+      if (!lotes.length) {
+        $("loTbody").innerHTML = ""; $("loTbl").hidden = true;
+        $("loEmpty").hidden = false;
+        $("loEmpty").textContent = "Nenhum lote fechado ainda (OS_Medicoes_Lotes vazia).";
+        return;
+      }
+      $("loEmpty").hidden = true; $("loTbl").hidden = false;
+      const ord = lotes.slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        return String(fb.Competencia || "").localeCompare(String(fa.Competencia || "")) ||
+          String(fa.Title || "").localeCompare(String(fb.Title || ""), "pt-BR");
+      });
+      $("loTbody").innerHTML = ord.map(l => {
+        const f = l.fields || {};
+        const tar = f.Tarifa_VersaoLookupId != null ? (mapTarifa[f.Tarifa_VersaoLookupId] || null) : null;
+        return "<tr data-lote='" + esc(l.id) + "'>" +
+          "<td>" + esc(f.Title || ("lote #" + l.id)) + "</td>" +
+          "<td>" + esc(f.Competencia || "—") + "</td>" +
+          "<td class='dim'>" + esc(f.PrestadorLookupId != null ? tecNome(f.PrestadorLookupId) : "—") + "</td>" +
+          "<td>" + loteStatusBadge(f.Status_Lote) + "</td>" +
+          "<td class='dim'>" + esc(tar ? ((tar.fields || {}).Title || ("#" + tar.id)) : (f.Tarifa_VersaoLookupId != null ? "tarifa #" + f.Tarifa_VersaoLookupId : "—")) + "</td>" +
+          "<td class='n'>" + cel(f.Total_Horas, 2) + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Valor_Total)) + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    ["mTecnico", "mMes", "mStatus"].forEach(id => $(id).addEventListener("change", render));
+
+    /* ==================================================================
+       B8 — FECHAR LOTE DA COMPETÊNCIA (única escrita desta tela).
+       1 lote por prestador (do filtro, ou todos). Chave_Lote única —
+       refechar a mesma competência é tratado como "lote já fechado".
+       Bloqueado NÃO entra nos itens; Aprovado/Em análise entram 1:1 por OS
+       (linhas repetidas da MESMA OS são agregadas num item, porque a
+       Chave_Item "<osId>|<prestadorId>|<AAAA-MM>" é única — sem agregação a
+       segunda linha falharia e horas sumiriam da medição persistida).
+       ================================================================== */
+    async function fecharLote() {
+      if (!carregado) return;
+      const btn = $("btnFechar");
+      const { medicao, ym, tarifa } = classificar();
+      if (!ym) { setStatus("Escolha a competência antes de fechar o lote.", "err"); return; }
+
+      // agrupa por prestador (fechamento ignora o filtro de STATUS de propósito:
+      // um lote parcial por filtro de exibição esconderia linhas da competência)
+      const porTec = new Map(); let semTec = 0;
+      medicao.forEach(r => {
+        if (r.tecId == null) { semTec++; return; }
+        const k = String(r.tecId);
+        if (!porTec.has(k)) porTec.set(k, []);
+        porTec.get(k).push(r);
+      });
+
+      const lotePorChave = {};
+      lotes.forEach(l => { const c = (l.fields || {}).Chave_Lote; if (c) lotePorChave[c] = l; });
+
+      const alvos = [], jaFechados = [];
+      porTec.forEach((regs, tecId) => {
+        const mediveis = regs.filter(r => r.status !== "Bloqueado");
+        if (!mediveis.length) return;                 // só bloqueadas: nada a persistir
+        const chave = tecId + "|" + ym;
+        if (lotePorChave[chave]) jaFechados.push((lotePorChave[chave].fields || {}).Title || chave);
+        else alvos.push({ tecId, regs, mediveis, chave });
+      });
+
+      if (!alvos.length) {
+        setStatus(jaFechados.length
+          ? "Lote já fechado nesta competência: " + jaFechados.join(", ") + " — a Chave_Lote é única; refechar não recalcula (o lote congelado é a verdade). Veja “Lotes fechados”."
+          : "Nada a fechar: nenhuma linha Aprovada ou Em análise na competência com os filtros atuais.", "err");
+        return;
+      }
+
+      const somaAp = (regs, campo) => regs.filter(r => r.status === "Aprovado").reduce((s, r) => s + num(r[campo]), 0);
+      const totH = alvos.reduce((s, a) => s + somaAp(a.mediveis, "horas"), 0);
+      const totV = alvos.reduce((s, a) => s + somaAp(a.mediveis, "valor"), 0);
+      const totAn = alvos.reduce((s, a) => s + a.mediveis.filter(r => r.status === "Em análise").length, 0);
+      if (!confirm("Fechar lote da competência " + ym + "?\n\n" +
+        "• " + alvos.length + " lote(s), um por prestador: " + alvos.map(a => tecNome(a.tecId)).join(", ") + "\n" +
+        "• Aprovado: " + fmtN(totH, 2) + " h · " + brl(totV) + "\n" +
+        "• Em análise: " + totAn + " linha(s) — entram no lote como pendência, sem somar no aprovado\n" +
+        (jaFechados.length ? "• " + jaFechados.length + " prestador(es) já fechado(s) serão pulados: " + jaFechados.join(", ") + "\n" : "") +
+        (semTec ? "• " + semTec + " linha(s) sem técnico ficarão de fora (sem prestador não há chave de lote)\n" : "") +
+        "\nO cálculo é CONGELADO em OS_Medicoes_Lotes/Itens — mudança de tarifa não recalcula lote fechado.")) return;
+
+      btn.disabled = true;
+      const criados = [], falhas = [];
+      // C7: alíquotas vêm SÓ da tarifa vigente e são apenas REGISTRADAS no
+      // Calculation_JSON — nenhuma retenção é calculada/aplicada aqui.
+      const tvf = tarifa ? (tarifa.fields || {}) : {};
+      const aliquotas = {
+        INSS_Pct: ehNum(tvf.Aliquota_INSS_Pct) ? num(tvf.Aliquota_INSS_Pct) : null,
+        IRRF_Pct: ehNum(tvf.Aliquota_IRRF_Pct) ? num(tvf.Aliquota_IRRF_Pct) : null,
+        ISS_Pct: ehNum(tvf.Aliquota_ISS_Pct) ? num(tvf.Aliquota_ISS_Pct) : null
+      };
+
+      try {
+        setStatus("Fechando " + alvos.length + " lote(s) da competência " + ym + "...");
+        for (const alvo of alvos) {
+          const nome = tecNome(alvo.tecId);
+          const temAnalise = alvo.mediveis.some(r => r.status === "Em análise");
+          // Calculation_JSON congelado: a verdade do lote (inclui as bloqueadas
+          // para auditoria — elas NÃO viram itens nem somam nos totais)
+          const calc = {
+            competencia: ym,
+            prestador: { id: Number(alvo.tecId), nome },
+            tarifaVersaoId: tarifa ? Number(tarifa.id) : null,
+            aliquotas,   // registradas da tarifa vigente — retenção NÃO aplicada (C7)
+            linhas: alvo.regs.map(r => ({
+              equipeId: r.id,
+              osId: r.osId != null ? Number(r.osId) : null,
+              horas: r.horas,
+              valorHora: r.vh,
+              origemValorHora: r.vhFonte,
+              status: r.status,
+              pendencias: r.bloqueios.concat(r.pendencias)
+            }))
+          };
+          const fieldsLote = {
+            Title: "MED " + nome + " " + ym,
+            PrestadorLookupId: Number(alvo.tecId),
+            Competencia: ym,
+            Chave_Lote: alvo.chave,
+            Status_Lote: temAnalise ? "Em análise" : "Fechado",
+            Calculation_JSON: JSON.stringify(calc),
+            Total_Horas: somaAp(alvo.mediveis, "horas"),
+            Valor_Total: somaAp(alvo.mediveis, "valor")
+          };
+          if (tarifa) fieldsLote.Tarifa_VersaoLookupId = Number(tarifa.id);
+
+          let novoLote;
+          try { novoLote = await EG.createItem("OS_Medicoes_Lotes", fieldsLote); }
+          catch (e) {
+            const dup = /duplic|unique|exclusiv/i.test(String(e.message || ""));
+            falhas.push("lote de " + nome + ": " + (dup ? "já fechado (Chave_Lote única — mostrando o existente)" : e.message));
+            continue;   // registra e segue para o próximo prestador
+          }
+          criados.push(fieldsLote.Title);
+
+          // itens do lote — agrupados por OS por causa da Chave_Item única
+          const porOS = new Map();
+          alvo.mediveis.forEach(r => {
+            if (r.osId == null) {
+              falhas.push("item de " + nome + " (linha " + r.id + ") sem OS — não persistido (sem osId não há Chave_Item); segue no Calculation_JSON");
+              return;
+            }
+            const k = String(r.osId);
+            if (!porOS.has(k)) porOS.set(k, []);
+            porOS.get(k).push(r);
+          });
+          for (const [osId, regs] of porOS) {
+            const valores = regs.filter(r => r.valor != null);
+            const vhs = new Set(regs.filter(r => r.vh != null).map(r => r.vh));
+            const pend = [...new Set(regs.reduce((a, r) => a.concat(r.pendencias), []))];
+            const fi = {
+              Title: regs[0].osTitle + " — " + nome + " " + ym + (regs.length > 1 ? " (" + regs.length + " lançamentos)" : ""),
+              LoteLookupId: Number(novoLote.id),
+              OSLookupId: Number(osId),
+              PrestadorLookupId: Number(alvo.tecId),
+              Competencia: ym,
+              Chave_Item: osId + "|" + alvo.tecId + "|" + ym,
+              Horas: regs.reduce((s, r) => s + num(r.horas), 0),
+              Status_Item: regs.some(r => r.status === "Em análise") ? "Em análise" : "Aprovado"
+            };
+            if (vhs.size === 1) fi.Valor_Hora = [...vhs][0];
+            if (valores.length) fi.Valor = valores.reduce((s, r) => s + num(r.valor), 0);
+            if (pend.length) fi.Pendencias = pend.join("; ");
+            try { await EG.createItem("OS_Medicoes_Itens", fi); }
+            catch (e) { falhas.push("item " + fi.Chave_Item + ": " + e.message); }   // registra e segue
+          }
+        }
+
+        // releitura: o que vale é o que foi persistido — recarrega e mostra
+        lotes = await soft(EG.listItems("OS_Medicoes_Lotes"), "OS_Medicoes_Lotes");
+        renderLotes();
+
+        if (falhas.length) console.warn("Fechamento de lote — falhas:", falhas);
+        const msg = (criados.length ? "Lote(s) fechado(s): " + criados.join(", ") + "." : "Nenhum lote novo criado.") +
+          (jaFechados.length ? " Já fechados (pulados): " + jaFechados.join(", ") + "." : "") +
+          (falhas.length ? " " + falhas.length + " falha(s): " + falhas.join(" | ") : "");
+        setStatus(msg, falhas.length && !criados.length ? "err" : "");
+      } catch (e) {
+        setStatus("Falha ao fechar lote: " + e.message, "err");
+      } finally {
+        btn.disabled = !carregado;
+      }
+    }
+    $("btnFechar").onclick = () => { fecharLote().catch(e => setStatus("Falha ao fechar lote: " + e.message, "err")); };
 
     /* ==================================================================
        DRAWER de detalhe da linha (leitura)
@@ -500,10 +822,13 @@
     const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
 
     function abrirDrawer(r) {
-      const f = r.f;
+      const f = r.f, tf = r.tf || {};
+      const pend = r.bloqueios.concat(r.pendencias);
       const corpo =
         "<dl>" +
           linha("Técnico", r.tecNome) +
+          linha("Tipo de pessoa", tipoPessoaRotulo(tf.Tipo_Pessoa)) +
+          linha("Documento de liquidação", tf.Documento_Liquidacao) +
           linha("OS", r.osTitle) +
           linha("Cliente", r.cliente) +
           linha("Função", f.Funcao) +
@@ -526,21 +851,28 @@
         (link(f.Selfie_URL, "Selfie") || "") +
         grupo("Valoração") +
         "<dl>" +
-          linha("Valor-hora (snapshot)", ehNum(f.Valor_Hora_Snapshot) ? brl(f.Valor_Hora_Snapshot) : null) +
-          (r.vhFonte === "atual" ? linha("Valor-hora usado (contrato ATUAL — sem snapshot)", brl(r.vh)) : "") +
+          linha("Valor-hora usado", r.vh != null ? brl(r.vh) : "— (indeterminável)") +
+          linha("Origem do valor-hora", vhOrigemRotulo(r)) +
           (r.valor != null
             ? "<dt class='tot'>Valor da linha</dt><dd class='tot'><strong>" + esc(brl(r.valor)) + "</strong></dd>"
             : linha("Valor da linha", "— (não calculável)")) +
         "</dl>" +
-        (r.motivos.length
-          ? grupo("Fora do lote — motivos") + "<dl>" + r.motivos.map(m => linha("•", m)).join("") + "</dl>"
+        (r.status === null && r.motivosFora.length
+          ? grupo("Fora do lote — motivos") + "<dl>" + r.motivosFora.map(m => linha("•", m)).join("") + "</dl>"
+          : "") +
+        (pend.length
+          ? grupo(r.status === "Bloqueado" ? "Bloqueio / pendências" : "Pendências de análise (não suprimem pagamento)") +
+            "<dl>" + pend.map(m => linha("•", m)).join("") + "</dl>"
           : "");
-      const corBadge = r.motivos.length ? "#F0883E" : "#22B573";
-      const badge = r.motivos.length ? "Fora do lote" : "No lote";
+      const st = r.status || "Fora do lote";
+      const corBadge = r.status === "Aprovado" ? "#3fb950"
+        : r.status === "Em análise" ? "#D29922"
+        : r.status === "Bloqueado" ? "#F85149" : "#F0883E";
       $("drawer").innerHTML =
         "<div class='drawer-head'><div class='t'>" + esc(r.osTitle) +
-          "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(r.tecNome) + "</div>" +
-          "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" +
+          "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(r.tecNome) +
+            (tf.Tipo_Pessoa === "PF_AUTONOMO" ? " <span class='badge pf'>PF autônomo</span>" : "") + "</div>" +
+          "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(st) + "</span></div>" +
         "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpo +
           "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
@@ -550,10 +882,42 @@
       $("rt").onclick = () => { const p = $("rf"); p.hidden = !p.hidden; };
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
+
+    // drawer read-only de um lote fechado — mostra o cálculo CONGELADO
+    function abrirDrawerLote(l) {
+      const f = l.fields || {};
+      const tar = f.Tarifa_VersaoLookupId != null ? (mapTarifa[f.Tarifa_VersaoLookupId] || null) : null;
+      let calcTxt = f.Calculation_JSON || "";
+      try { calcTxt = JSON.stringify(JSON.parse(calcTxt), null, 2); } catch { /* mostra cru */ }
+      const corpo =
+        "<dl>" +
+          linha("Competência", f.Competencia) +
+          linha("Prestador", f.PrestadorLookupId != null ? tecNome(f.PrestadorLookupId) : null) +
+          linha("Status do lote", f.Status_Lote) +
+          linha("Tarifa da versão", tar ? ((tar.fields || {}).Title || ("#" + tar.id)) : (f.Tarifa_VersaoLookupId != null ? "tarifa #" + f.Tarifa_VersaoLookupId : null)) +
+          linha("Total de horas (aprovadas)", ehNum(f.Total_Horas) ? fmtN(f.Total_Horas, 2) + " h" : null) +
+          linha("Chave do lote", f.Chave_Lote) +
+          (ehNum(f.Valor_Total)
+            ? "<dt class='tot'>Valor total (aprovado)</dt><dd class='tot'><strong>" + esc(brl(f.Valor_Total)) + "</strong></dd>" : "") +
+        "</dl>" +
+        (f.Notas ? grupo("Notas") + "<dl>" + linha("•", f.Notas) + "</dl>" : "") +
+        grupo("Calculation_JSON (congelado no fechamento — a verdade do lote)") +
+        "<pre style='margin-top:8px'>" + esc(calcTxt || "—") + "</pre>";
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(f.Title || ("lote #" + l.id)) +
+          "<div style='margin-top:6px'>" + loteStatusBadge(f.Status_Lote) + "</div>" +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpo + "</div>";
+      $("dc").onclick = fechar;
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+
     function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 
     document.addEventListener("click", (e) => {
       if (e.target.closest("a")) return;
+      const elLote = e.target.closest("tr[data-lote]");
+      if (elLote) { const l = mapLote[elLote.dataset.lote]; if (l) abrirDrawerLote(l); return; }
       const el = e.target.closest("tr[data-id]");
       if (!el) return;
       const r = mapReg[el.dataset.id];
@@ -564,7 +928,9 @@
 
     /* ==================================================================
        ESPELHO DE MEDIÇÃO (XLS) — SheetJS
-       Uma aba "Resumo" + uma aba por técnico do lote.
+       Uma aba "Resumo" + uma aba por técnico, com os 3 grupos (C3) e as
+       dimensões do prestador (C7). Sempre exporta a classificação COMPLETA
+       da competência/técnico — o filtro de status é só de exibição.
        ================================================================== */
     // nome de aba válido no Excel: sem []:*?/\ e máx. 31 caracteres; único no workbook
     function nomeAba(base, usados) {
@@ -583,86 +949,96 @@
 
     $("btnXls").onclick = () => {
       if (typeof XLSX === "undefined") return;   // botão já estaria desabilitado; guarda extra
-      const { lote, ym, soElegiveis } = classificar();
-      if (!lote.length) { setStatus("Nada a exportar: o lote do período está vazio.", "err"); return; }
+      const { medicao, ym, tarifa } = classificar();
+      if (!medicao.length) { setStatus("Nada a exportar: não há linhas medíveis na competência.", "err"); return; }
 
       const periodo = rotuloPeriodo(ym);
       const gerado = new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
       const ftVal = $("mTecnico").value;
       const ftNome = ftVal ? tecNome(ftVal) : null;
-
-      // agrupa por técnico (lote já vem ordenado por técnico)
-      const grupos = [];
-      lote.forEach(r => {
-        const g = grupos[grupos.length - 1];
-        if (g && String(g.tecId) === String(r.tecId)) g.regs.push(r);
-        else grupos.push({ tecId: r.tecId, tecNome: r.tecNome, regs: [r] });
-      });
+      const grupos = agruparPorTec(medicao);
 
       const wb = XLSX.utils.book_new();
       const usados = new Set();
+      const somaSt = (regs, st, campo) => regs.filter(r => r.status === st).reduce((s, r) => s + num(r[campo]), 0);
 
       // ---- aba Resumo ----
       const resumo = [
         ["Espelho de Medição — Eletrium ERP (modelo MEI)"],
-        ["Período", periodo],
+        ["Competência", periodo],
         ["Gerado em", gerado],
         ["Filtro de técnico", ftNome || "(todos)"],
-        ["Modo", soElegiveis ? "lote oficial (só linhas elegíveis com De Acordo)" : "PRÉVIA — inclui linhas não elegíveis"],
+        ["Tarifa vigente", tarifa ? ((tarifa.fields || {}).Title || ("#" + tarifa.id)) : "(nenhuma na competência)"],
+        ["Regra", "Aprovado soma no total; Em análise fica separado (pendência documental não suprime pagamento); Bloqueado (EPI reprovado) não entra"],
         [],
-        ["Técnico", "Linhas", "OS distintas", "Horas", "Valor total (R$)"]
+        ["Prestador", "Tipo de pessoa", "Doc. de liquidação", "Linhas", "OS distintas",
+         "Horas aprovadas", "Valor aprovado (R$)", "Horas em análise", "Valor em análise (R$)", "Bloqueadas"]
       ];
-      let totH = 0, totV = 0;
+      let tHA = 0, tVA = 0, tHN = 0, tVN = 0, tBloq = 0;
       grupos.forEach(g => {
-        const h = g.regs.reduce((s, r) => s + num(r.horas), 0);
-        const v = g.regs.reduce((s, r) => s + num(r.valor), 0);
+        const tf = g.tf || {};
+        const hA = somaSt(g.regs, "Aprovado", "horas"), vA = somaSt(g.regs, "Aprovado", "valor");
+        const hN = somaSt(g.regs, "Em análise", "horas"), vN = somaSt(g.regs, "Em análise", "valor");
+        const nB = g.regs.filter(r => r.status === "Bloqueado").length;
         const osN = new Set(g.regs.filter(r => r.osId != null).map(r => String(r.osId))).size;
-        totH += h; totV += v;
-        resumo.push([g.tecNome, g.regs.length, osN, h, v]);
+        tHA += hA; tVA += vA; tHN += hN; tVN += vN; tBloq += nB;
+        resumo.push([g.tecNome, tipoPessoaRotulo(tf.Tipo_Pessoa) || "", tf.Documento_Liquidacao || "",
+          g.regs.length, osN, hA, vA, hN, vN, nB]);
       });
-      resumo.push(["TOTAL", lote.length, new Set(lote.filter(r => r.osId != null).map(r => String(r.osId))).size, totH, totV]);
+      resumo.push(["TOTAL", "", "", medicao.length,
+        new Set(medicao.filter(r => r.osId != null).map(r => String(r.osId))).size, tHA, tVA, tHN, tVN, tBloq]);
       const wsR = XLSX.utils.aoa_to_sheet(resumo);
-      wsR["!cols"] = [{ wch: 32 }, { wch: 8 }, { wch: 12 }, { wch: 10 }, { wch: 16 }];
+      wsR["!cols"] = [{ wch: 32 }, { wch: 14 }, { wch: 16 }, { wch: 8 }, { wch: 12 },
+                      { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 18 }, { wch: 10 }];
       XLSX.utils.book_append_sheet(wb, wsR, nomeAba("Resumo", usados));
 
       // ---- uma aba por técnico ----
       grupos.forEach(g => {
+        const tf = g.tf || {};
         const aoa = [
           ["Espelho de Medição — " + g.tecNome],
-          ["Período", periodo],
+          ["Competência", periodo],
           ["Gerado em", gerado],
+          ["Tipo de pessoa", tipoPessoaRotulo(tf.Tipo_Pessoa) || "—"],
+          ["Documento de liquidação", tf.Documento_Liquidacao || "—"],
           [],
-          ["OS", "Cliente", "Função", "Check-in", "Check-out", "Horas", "Valor-hora (R$)", "Valor (R$)", "Observação"]
+          ["OS", "Cliente", "Função", "Check-in", "Check-out", "Horas", "Valor-hora (R$)", "Valor (R$)",
+           "Status", "Pendências", "Origem do valor-hora"]
         ];
-        let h = 0, v = 0;
         g.regs.forEach(r => {
-          h += num(r.horas); v += num(r.valor);
           aoa.push([
             r.osTitle, r.cliente || "", r.f.Funcao || "",
             fmtDT(r.f.Checkin_Hora) || "", fmtDT(r.f.Checkout_Hora) || "",
             r.horas, r.vh, r.valor,
-            r.vhFonte === "atual" ? "valor-hora ATUAL do contrato (sem snapshot)" : ""
+            r.status,
+            r.bloqueios.concat(r.pendencias).join("; "),
+            vhOrigemRotulo(r)
           ]);
         });
         aoa.push([]);
-        aoa.push(["Subtotal", "", "", "", "", h, "", v, ""]);
+        aoa.push(["Subtotal aprovado", "", "", "", "", somaSt(g.regs, "Aprovado", "horas"), "", somaSt(g.regs, "Aprovado", "valor"), "", "", ""]);
+        aoa.push(["Em análise (não soma no aprovado)", "", "", "", "", somaSt(g.regs, "Em análise", "horas"), "", somaSt(g.regs, "Em análise", "valor"), "", "", ""]);
+        const nB = g.regs.filter(r => r.status === "Bloqueado").length;
+        if (nB) aoa.push(["Bloqueadas (não entram)", "", "", "", "", "", "", "", nB + " linha(s)", "", ""]);
         const ws = XLSX.utils.aoa_to_sheet(aoa);
-        ws["!cols"] = [{ wch: 24 }, { wch: 22 }, { wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 36 }];
+        ws["!cols"] = [{ wch: 24 }, { wch: 22 }, { wch: 14 }, { wch: 16 }, { wch: 16 },
+                       { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 34 }];
         XLSX.utils.book_append_sheet(wb, ws, nomeAba(g.tecNome, usados));
       });
 
       const nomeArq = "Espelho_Medicao_" + (ym || "sem-periodo") +
         (ftNome ? "_" + nomeArquivoSeguro(ftNome) : "") + ".xlsx";
       XLSX.writeFile(wb, nomeArq);
-      setStatus("Espelho gerado: " + nomeArq + " (" + grupos.length + " técnico(s), " + lote.length + " linha(s)).");
+      setStatus("Espelho gerado: " + nomeArq + " (" + grupos.length + " técnico(s), " + medicao.length + " linha(s)).");
     };
 
     /* Exposto para testar a lógica sem login (dados falsos):
-       MED.setDados([...], [...], [...], [...]); MED.forcarCarregado(); MED.montarFiltros(); MED.render(); */
+       MED.setDados(equipe, tecnicos, ordens, clientes, tarifas, lotes);
+       MED.forcarCarregado(); MED.montarFiltros(); MED.render(); */
     window.MED = {
-      setDados, montarFiltros, render, classificar, calcularLinha, mKey, dataBase,
-      num, ehNum, cel, celBRL, nomeAba,
-      forcarCarregado: (v) => { carregado = v !== false; $("conteudo").hidden = !carregado; habilitarXls(); }
+      setDados, montarFiltros, render, classificar, calcularLinha, tarifaVigente, fecharLote,
+      mKey, dataBase, num, ehNum, cel, celBRL, nomeAba,
+      forcarCarregado: (v) => { carregado = v !== false; $("conteudo").hidden = !carregado; habilitarBotoes(); }
     };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
