@@ -25,6 +25,10 @@
     .rel-badge { display: inline-block; border-radius: 6px; padding: 2px 9px; font-size: .76rem; border: 1px solid var(--bc, #30363d); color: var(--bc, #8b949e); white-space: nowrap; }
     .rel-badge.vazio { border-style: dashed; }
     .empty b { color: #e6edf3; }
+    /* container dos estados de carga (EG.renderEstado) — só aparece em carregando/erro/vazio */
+    #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
+    #estado .eg-estado-erro { color: #f85149; }
+    #estado .eg-estado-retry { margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -57,6 +61,8 @@
     <b>Risco de Perda</b> após 90 dias sem atividade e <b>Inativo</b> após 180. Nenhuma ação é disparada por esta tela.</div>
   <div id="choiceWarn" class="choice-warn" hidden></div>
   <main>
+    <!-- estados de carga (EG.renderEstado): carregando | erro (com retry) | vazio; "ok" esconde -->
+    <div id="estado" hidden></div>
     <div class="kpis" id="kpis"></div>
     <div class="toolbar">
       <label for="fRel">Relacionamento:</label>
@@ -109,19 +115,30 @@
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
 
-    $("btnLoad").onclick = async () => {
+    // Função nomeada (não handler anônimo) para servir de onRetry do estado "erro".
+    async function carregarClientes() {
       try {
         setStatus("Carregando clientes...");
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando clientes…" });
         clientes = await EG.listItems("Clientes");
         carregou = true;
         render();
         setStatus("OK — " + clientes.length + " cliente(s) na base.");
-        // Guarda de divergência de rótulos (padrão das demais telas).
-        EG.validarChoices("Clientes", "Status_Relacionamento", Object.keys(REL))
+        // vazio REAL: carga concluída com zero itens — diferente de "nem carregou"
+        EG.renderEstado($("estado"), clientes.length ? "ok" : "vazio", { mensagem: "Nenhum cliente na base." });
+        // Guarda de divergência de rótulos (padrão das demais telas). travarChoices
+        // também ARMA a trava fail-closed; esta tela é somente leitura, então a
+        // trava não bloqueia nada aqui — é uniformidade de contrato com as telas
+        // que gravam (e o registro vale para debug via EG.travasAtivas()).
+        EG.travarChoices("Clientes", "Status_Relacionamento", Object.keys(REL))
           .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de Relacionamento (Clientes)"))
           .catch(() => {});
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar clientes: " + e.message, onRetry: carregarClientes });
+      }
+    }
+    $("btnLoad").onclick = carregarClientes;
 
     const relDe = (i) => {
       const v = (i.fields || {}).Status_Relacionamento;
@@ -152,7 +169,9 @@
       const filtro = $("fRel").value;
       if (!clientes.length) {
         $("count").textContent = "";
-        $("tbl").innerHTML = "<div class='empty'>Nenhum cliente na base.</div>";
+        // a mensagem de base vazia agora vive no container #estado ("vazio" via
+        // EG.renderEstado) — só ela distingue "carga ok sem itens" de "nem carregou"
+        $("tbl").innerHTML = "";
         return;
       }
       const monitorados = clientes.filter(i => relDe(i) !== SEM);

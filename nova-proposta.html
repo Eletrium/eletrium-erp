@@ -57,6 +57,10 @@
     .acoes { grid-column: 1 / -1; display: flex; gap: 10px; align-items: center; margin-top: 6px; }
     .ok { background: #12291c; border: 1px solid #22B573; color: #7ee2a8; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
     .ok a { color: #7ee2a8; }
+    /* container dos estados de carga (EG.renderEstado) — só aparece em carregando/erro/vazio */
+    #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
+    #estado .eg-estado-erro { color: #F85149; }
+    #estado .eg-estado-retry { margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -88,6 +92,9 @@
 
   <main>
     <div class="ok" id="okBox" hidden></div>
+
+    <!-- estados de carga (EG.renderEstado): carregando | erro (com retry) | vazio; "ok" esconde -->
+    <div id="estado" hidden></div>
 
     <div class="seg" id="seg" hidden>
       <button data-t="proposta" class="on">Proposta (CRM)</button>
@@ -179,20 +186,31 @@
     async function carregar() {
       try {
         setStatus("Carregando clientes...");
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando clientes…" });
         const cli = await EG.listItems("Clientes", "expand=fields($select=Title)&$top=500");
         clientes = cli.map(c => ({ id: c.id, nome: (c.fields && c.fields.Title) || ("cliente #" + c.id) }))
                       .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
         $("seg").hidden = false; $("form").hidden = false;
         render();
-        // guardas de rótulo — avisam se algum enum divergir do SharePoint
+        // guardas de rótulo — avisam se algum enum divergir do SharePoint e ARMAM a
+        // trava fail-closed: EG.createItem passa a bloquear client-side (antes da
+        // rede, erro legível com e.failClosed = true) valor de Choice que não
+        // existe no servidor, em vez de gravar dado órfão.
         Promise.all([
-          EG.validarChoices("Propostas", "Tipo_Servico_Proposta", TIPO_SERVICO).then(v => ({ v, rotulo: "Tipo de serviço (Proposta)" })),
-          EG.validarChoices("Propostas", "Canal_Venda", CANAL).then(v => ({ v, rotulo: "Canal de venda (Proposta)" })),
-          EG.validarChoices("Orcamentos_Venda", "Origem_Demanda", ORIGEM_DEMANDA).then(v => ({ v, rotulo: "Origem da demanda (Orçamento)" })),
-          EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", STATUS_ORC).then(v => ({ v, rotulo: "Status do orçamento" }))
+          EG.travarChoices("Propostas", "Tipo_Servico_Proposta", TIPO_SERVICO).then(v => ({ v, rotulo: "Tipo de serviço (Proposta)" })),
+          EG.travarChoices("Propostas", "Canal_Venda", CANAL).then(v => ({ v, rotulo: "Canal de venda (Proposta)" })),
+          EG.travarChoices("Orcamentos_Venda", "Origem_Demanda", ORIGEM_DEMANDA).then(v => ({ v, rotulo: "Origem da demanda (Orçamento)" })),
+          EG.travarChoices("Orcamentos_Venda", "Status_Orcamento", STATUS_ORC).then(v => ({ v, rotulo: "Status do orçamento" }))
         ]).then(p => EG.renderAvisosChoices($("choiceWarn"), p)).catch(() => {});
         setStatus("OK — " + clientes.length + " cliente(s). " + (clientes.length ? "" : "⚠️ Sem clientes: cadastre um antes, o campo é obrigatório."), clientes.length ? "" : "err");
-      } catch (e) { setStatus("Falha ao carregar: " + e.message, "err"); }
+        // vazio REAL: carga concluída e zero clientes — o form continua visível
+        // (retrocompatibilidade), mas Cliente é obrigatório e o Criar vai falhar.
+        EG.renderEstado($("estado"), clientes.length ? "ok" : "vazio",
+          { mensagem: "Nenhum cliente cadastrado — cadastre um em Clientes antes; o campo Cliente é obrigatório." });
+      } catch (e) {
+        setStatus("Falha ao carregar: " + e.message, "err");
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar clientes: " + e.message, onRetry: carregar });
+      }
     }
 
     $("seg").addEventListener("click", (e) => {

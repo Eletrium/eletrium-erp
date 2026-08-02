@@ -64,6 +64,10 @@
     .form-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .form-msg.err { color: #F85149; }
     .drawer-head .acs { display: flex; gap: 8px; align-items: center; }
+    /* container dos estados de carga (EG.renderEstado) — só aparece em carregando/erro/vazio */
+    #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
+    #estado .eg-estado-erro { color: #F85149; }
+    #estado .eg-estado-retry { margin-left: 6px; }
   </style>
 </head>
 <body>
@@ -98,6 +102,8 @@
     <div class="toolbar">
       <button id="btnNovo" disabled>＋ Novo cliente</button>
     </div>
+    <!-- estados de carga (EG.renderEstado): carregando | erro (com retry) | vazio; "ok" esconde -->
+    <div id="estado" hidden></div>
     <div class="grid" id="grid"></div>
   </main>
 
@@ -140,8 +146,12 @@
         choicesOk = true;
       } catch (e) { console.warn("[clientes] listColumns falhou, usando enums de fallback:", e.message); }
       // guarda de rótulos: divergência entre fallback e SharePoint vira aviso visível
+      // E ARMA a trava fail-closed — esta tela GRAVA os 7 campos de Choice via
+      // createItem/patchItemFields; com a trava, valor que não existe no servidor
+      // é bloqueado client-side ANTES da rede (erro legível, e.failClosed = true),
+      // em vez de virar dado órfão no SharePoint.
       Promise.all(Object.keys(FALLBACK_CHOICES).map(n =>
-        EG.validarChoices("Clientes", n, FALLBACK_CHOICES[n]).then(v => ({ v, rotulo: n + " (Clientes)" }))
+        EG.travarChoices("Clientes", n, FALLBACK_CHOICES[n]).then(v => ({ v, rotulo: n + " (Clientes)" }))
       )).then(p => EG.renderAvisosChoices($("choiceWarn"), p)).catch(() => {});
     }
 
@@ -299,17 +309,25 @@
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
 
-    $("btnLoad").onclick = async () => {
+    // Função nomeada (não handler anônimo) para servir de onRetry do estado "erro".
+    async function carregarClientes() {
       try {
         setStatus("Carregando clientes...");
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando clientes…" });
         carregarChoices();   // em paralelo — o form usa fallback até chegar
         const items = await EG.listItems("Clientes");
         setItens(items);
         render();
         $("btnNovo").disabled = false;
         setStatus("OK — " + itens.length + " cliente(s).");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+        // vazio REAL: carga concluída com zero itens — diferente de "nem carregou"
+        EG.renderEstado($("estado"), itens.length ? "ok" : "vazio", { mensagem: "Nenhum cliente cadastrado." });
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar clientes: " + e.message, onRetry: carregarClientes });
+      }
+    }
+    $("btnLoad").onclick = carregarClientes;
 
     function setItens(items) {
       itens = items || [];
@@ -322,6 +340,10 @@
     }
 
     function render() {
+      // com itens na tela, o estado de carga some — cobre o 1º cliente criado com a base vazia
+      if (itens.length) EG.renderEstado($("estado"), "ok");
+      // a mensagem de base vazia agora vive no container #estado ("vazio" via
+      // EG.renderEstado) — só ela distingue "carga ok sem itens" de "nem carregou"
       $("grid").innerHTML = itens.map(i => {
         const f = i.fields || {};
         const loc = [f.Cidade, f.Estado].filter(Boolean).join(" / ");
@@ -331,7 +353,7 @@
           ${f.Status ? `<span class="badge">${esc(f.Status)}</span>` : ""}
           ${f.Segmento ? `<span class="badge">${esc(f.Segmento)}</span>` : ""}
         </div>`;
-      }).join("") || "<div class='empty'>Nenhum cliente.</div>";
+      }).join("");
     }
 
     /* ======================= drawer: LEITURA ======================= */
