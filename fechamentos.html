@@ -143,7 +143,7 @@
         <div class="kpi"><div class="k">Valor somado</div><div class="v" id="dK_valor" style="color:#3fb950">R$ 0,00</div><div class="sub">soma de Valor_Total_Dia</div></div>
         <div class="kpi"><div class="k">Média por diária</div><div class="v" id="dK_media">—</div></div>
         <div class="kpi"><div class="k">Horas produtivas</div><div class="v" id="dK_horas">0</div></div>
-        <div class="kpi"><div class="k">KM rodado</div><div class="v" id="dK_km">0</div></div>
+        <div class="kpi"><div class="k">KM rodado</div><div class="v" id="dK_km">0</div><div class="sub">KM por viagem (compartilhamento deduplicado)</div></div>
       </div>
 
       <div class="toolbar">
@@ -162,7 +162,7 @@
       <table id="dTbl" hidden>
         <thead><tr>
           <th>Data</th><th>Técnico</th><th>Status do dia</th><th>Classificação</th>
-          <th>H. produtivas</th><th>Total h.</th><th>KM</th><th>Valor do dia</th>
+          <th>H. produtivas</th><th>Total h.</th><th>KM</th><th>Viagem</th><th>Valor do dia</th>
         </tr></thead>
         <tbody id="dTbody"></tbody>
       </table>
@@ -249,6 +249,11 @@
 
     const CLASSIFICACAO = ["Meia Diaria (1-4h)", "Diaria Completa (5-8h)", "Diaria Completa + Horas Extras (+8h)", "Sem trabalho registrado"];
 
+    // B6 — veículo compartilhado (schema de 02/08): Viagem_ID (Text) + Papel_Viagem (Choice).
+    // Quem GRAVA esses campos é o fluxo de campo; esta tela só LÊ e agrega.
+    const PAPEL_VIAGEM = ["Condutor", "Passageiro"];
+    const COR_PAPEL = { "Condutor": "#58A6FF", "Passageiro": "#A371F7" };
+
     const STATUS_APROVACAO = ["Pendente", "Aprovado", "Rejeitado"];
     const COR_APROVACAO = { "Pendente": "#F0883E", "Aprovado": "#22B573", "Rejeitado": "#F85149" };
 
@@ -308,6 +313,7 @@
     /* ============================== estado ============================== */
     let fechamentos = [], diarias = [], veiculos = [], tecnicos = [];
     let nomeTecnico = {}, veicRotulo = {};
+    let viagemGrupos = {};  // Viagem_ID -> grupo com participantes e divergências (montado em setDados)
     let mapFech = {}, mapDiar = {}, mapVeic = {};
     let carregado = false;
     let usuarioNome = "";   // vai para Aprovado_Por ao decidir um veículo
@@ -352,6 +358,7 @@
           EG.validarChoices("Fechamento_Mensal_Tecnico", "Mes", MESES).then(v => ({ v, rotulo: "Mês (Fechamento_Mensal_Tecnico)" })),
           EG.validarChoices("Diaria_Tecnico", "Status_Dia", STATUS_DIA).then(v => ({ v, rotulo: "Status do Dia (Diaria_Tecnico)" })),
           EG.validarChoices("Diaria_Tecnico", "Classificacao_Jornada", CLASSIFICACAO).then(v => ({ v, rotulo: "Classificação da Jornada (Diaria_Tecnico)" })),
+          EG.validarChoices("Diaria_Tecnico", "Papel_Viagem", PAPEL_VIAGEM).then(v => ({ v, rotulo: "Papel na Viagem (Diaria_Tecnico)" })),
           EG.validarChoices("Veiculos_Tecnicos", "Status_Aprovacao", STATUS_APROVACAO).then(v => ({ v, rotulo: "Status de Aprovação (Veiculos_Tecnicos)" }))
         ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
 
@@ -384,6 +391,55 @@
       mapFech = {}; fechamentos.forEach(i => { mapFech[i.id] = i; });
       mapDiar = {}; diarias.forEach(i => { mapDiar[i.id] = i; });
       mapVeic = {}; veiculos.forEach(i => { mapVeic[i.id] = i; });
+      montarViagens();
+    }
+
+    /* ================= B6 — viagens compartilhadas (agregação) =================
+       Diárias que compartilharam o mesmo veículo no mesmo deslocamento carregam o
+       MESMO Viagem_ID; o Condutor é quem tem o KM do veículo e o reembolso de KM
+       é ÚNICO por viagem (pago ao condutor). Passageiro não gera reembolso.
+       Diária sem Viagem_ID (dado legado) segue contando individualmente. */
+    const viagemId = (f) => { const v = (f || {}).Viagem_ID; return v == null ? "" : String(v).trim(); };
+    const vgCurta = (id) => id.length > 12 ? id.slice(0, 10) + "…" : id;
+
+    // grupos calculados sobre TODAS as diárias carregadas (não sobre o filtro):
+    // um grupo "quebrado" pelo filtro não pode acusar "sem condutor" falsamente.
+    function montarViagens() {
+      viagemGrupos = {};
+      diarias.forEach(o => {
+        const vid = viagemId(o.fields);
+        if (!vid) return;
+        (viagemGrupos[vid] = viagemGrupos[vid] || { itens: [] }).itens.push(o);
+      });
+      Object.values(viagemGrupos).forEach(g => {
+        const papel = (o) => (o.fields || {}).Papel_Viagem;
+        g.condutores = g.itens.filter(o => papel(o) === "Condutor");
+        g.passageiros = g.itens.filter(o => papel(o) === "Passageiro");
+        g.semCondutor = g.condutores.length === 0;
+        g.multiCondutor = g.condutores.length > 1;
+      });
+    }
+
+    // KM deduplicado por viagem, calculado sobre a LISTA dada (o filtro em vigor):
+    // cada Viagem_ID conta UMA vez — a KM do Condutor presente na lista; sem
+    // condutor na lista, a maior KM_Rodado do grupo presente (a divergência de
+    // grupo sem condutor é acusada à parte, por montarViagens). Sem Viagem_ID
+    // (legado), a diária conta individualmente.
+    function kmPorViagem(lista) {
+      const grupos = {};
+      let km = 0;
+      lista.forEach(o => {
+        const f = o.fields || {};
+        const vid = viagemId(f);
+        if (!vid) { km += num(f.KM_Rodado); return; }
+        (grupos[vid] = grupos[vid] || []).push(f);
+      });
+      Object.values(grupos).forEach(fs => {
+        const cond = fs.filter(f => f.Papel_Viagem === "Condutor");
+        const base = cond.length ? cond : fs;   // >1 condutor: pega a maior (divergência já sinalizada)
+        km += Math.max(...base.map(f => num(f.KM_Rodado)));
+      });
+      return km;
     }
 
     function montarFiltros() {
@@ -509,8 +565,26 @@
         valor,
         media: media(valor, lista.length),   // null quando não há diárias -> exibe "—"
         horas: lista.reduce((s, o) => s + num((o.fields || {}).Horas_Produtivas), 0),
-        km: lista.reduce((s, o) => s + num((o.fields || {}).KM_Rodado), 0)
+        km: kmPorViagem(lista)   // B6: KM por VIAGEM, não por diária (compartilhamento deduplicado)
       };
+    }
+
+    // célula "Viagem" da tabela: Viagem_ID curto + papel + alertas de divergência
+    function celViagem(f) {
+      const vid = viagemId(f);
+      if (!vid) return "<td class='dim'>—</td>";
+      const g = viagemGrupos[vid];
+      const papel = f.Papel_Viagem;
+      const cp = cor(COR_PAPEL, papel);
+      let html = "<span class='dim' title='" + esc(vid) + "'>" + esc(vgCurta(vid)) + "</span> " +
+        "<span class='badge' style='border-color:" + cp + ";color:" + cp + "'>" + esc(papel || "sem papel") + "</span>";
+      if (papel === "Passageiro" && ehNum(f.KM_Rodado) && num(f.KM_Rodado) > 0)
+        html += " <span class='badge' style='border-color:#F85149;color:#F85149' title='indício de apontamento errado'>KM em passageiro — não reembolsável</span>";
+      if (g && g.semCondutor)
+        html += " <span class='badge' style='border-color:#D29922;color:#D29922'>viagem sem condutor</span>";
+      if (g && g.multiCondutor)
+        html += " <span class='badge' style='border-color:#D29922;color:#D29922'>mais de um condutor</span>";
+      return "<td>" + html + "</td>";
     }
     function renderDiar() {
       const lista = filtrarDiar().slice().sort((a, b) => {
@@ -545,6 +619,7 @@
           "<td class='n'>" + cel(f.Horas_Produtivas, 1) + "</td>" +
           "<td class='n'>" + cel(f.Total_Horas_Dia, 1) + "</td>" +
           "<td class='n'>" + cel(f.KM_Rodado, 1) + "</td>" +
+          celViagem(f) +
           "<td class='num'>" + esc(celBRL(f.Valor_Total_Dia)) + "</td>" +
           "</tr>";
       }).join("");
@@ -653,6 +728,38 @@
              ") não bate com o total gravado (" + esc(brl(total)) + ").</div>";
     }
 
+    /* B6 — linha informativa de viagens compartilhadas no drawer do fechamento.
+       Fechamento_Mensal_Tecnico é CALCULADO por flow; esta tela não altera nenhum
+       valor gravado — só EXPÕE a leitura das diárias do mês para conferência de
+       quanto KM do técnico está em viagem compartilhada (passageiro não reembolsa). */
+    function infoViagensFech(f) {
+      const mi = mesIdx(f.Mes);
+      if (mi < 0 || !temValor(f.Ano)) return "";
+      const alvo = String(f.Ano) + "-" + String(mi + 1).padStart(2, "0");   // AAAA-MM do fechamento
+      const doMes = diarias.filter(o => {
+        const d = o.fields || {};
+        if (!viagemId(d)) return false;
+        const k = dKey(d.Data_Dia);
+        if (!k || k.slice(0, 7) !== alvo) return false;
+        // liga a diária ao técnico do fechamento: por lookup quando existir, senão pelo nome
+        if (f.TecnicoLookupId != null) return String(d.TecnicoLookupId ?? "") === String(f.TecnicoLookupId);
+        const nome = f.Tecnico_Nome || f.Title;
+        return temValor(nome) && tecNome(d.TecnicoLookupId) === nome;
+      });
+      if (!doMes.length) return "";
+      let kmCond = 0, kmPass = 0;
+      doMes.forEach(o => {
+        const d = o.fields || {};
+        if (d.Papel_Viagem === "Condutor") kmCond += num(d.KM_Rodado);
+        else if (d.Papel_Viagem === "Passageiro") kmPass += num(d.KM_Rodado);
+      });
+      return grupo("Viagens compartilhadas (conferência)") +
+        "<dl>" +
+          linha("KM em viagens compartilhadas", fmtN(kmCond, 1) + " km como condutor / " + fmtN(kmPass, 1) + " km como passageiro (não reembolsável)") +
+        "</dl>" +
+        "<div class='hint'>Linha informativa — os valores gravados do fechamento não são alterados por esta tela.</div>";
+    }
+
     function abrirFechDrawer(o) {
       const f = o.fields || {};
       const c = cor(COR_PAGAMENTO, f.Status_Pagamento);
@@ -673,6 +780,7 @@
           linha("KM rodado", ehNum(f.Total_KM_Rodado) ? fmtN(f.Total_KM_Rodado, 1) + " km" : null) +
           linha("Locais trabalhados", f.Locais_Trabalhados) +
         "</dl>" +
+        infoViagensFech(f) +
         grupo("Composição do valor") +
         "<dl>" +
           linhaM("Diárias", f.Valor_Total_Diarias) +
@@ -690,6 +798,34 @@
         "</dl>" +
         [link(f.Link_Relatorio_PDF, "Relatório PDF"), link(f.Link_Relatorio_Editavel, "Relatório editável")].filter(Boolean).join(" &nbsp; ");
       mostrarDrawer(f.Tecnico_Nome || f.Title || "(sem técnico)", periodo, f.Status_Pagamento, c, corpo, f);
+    }
+
+    // B6 — seção "Viagem compartilhada" do drawer da diária: papel, demais
+    // participantes do mesmo Viagem_ID no período carregado e divergências.
+    function secaoViagem(o) {
+      const f = o.fields || {};
+      const vid = viagemId(f);
+      if (!vid) return "";
+      const g = viagemGrupos[vid] || { itens: [], semCondutor: false, multiCondutor: false };
+      const outros = g.itens.filter(x => x.id !== o.id).map(x => {
+        const xf = x.fields || {};
+        return tecNome(xf.TecnicoLookupId) + " (" + (xf.Papel_Viagem || "sem papel") + ")";
+      });
+      let divergencias = "";
+      if (g.semCondutor)
+        divergencias += "<div class='diverge'>⚠️ Viagem sem condutor: nenhum participante deste Viagem_ID está marcado como Condutor — não dá para saber de quem é o KM do veículo.</div>";
+      if (g.multiCondutor)
+        divergencias += "<div class='diverge'>⚠️ Viagem com mais de um condutor: " + esc(g.condutores.length) + " participantes marcados como Condutor no mesmo Viagem_ID.</div>";
+      if (f.Papel_Viagem === "Passageiro" && ehNum(f.KM_Rodado) && num(f.KM_Rodado) > 0)
+        divergencias += "<div class='diverge'>⚠️ KM em passageiro (" + esc(fmtN(f.KM_Rodado, 1)) + " km): passageiro não gera reembolso próprio — indício de apontamento errado.</div>";
+      return grupo("Viagem compartilhada") +
+        "<dl>" +
+          linha("Viagem", vid) +
+          linha("Papel nesta viagem", f.Papel_Viagem || "sem papel") +
+          linha("Outros participantes", outros.length ? outros.join("; ") : "nenhum outro no período carregado") +
+        "</dl>" +
+        "<div class='hint'>Reembolso de KM é único por viagem — pago ao condutor.</div>" +
+        divergencias;
     }
 
     function abrirDiarDrawer(o) {
@@ -739,6 +875,7 @@
           linha("Reembolso aprovado por", f.Reembolso_Aprovado_Por) +
         "</dl>" +
         avisoKm +
+        secaoViagem(o) +
         grupo("Valores do dia") +
         "<dl>" +
           linhaM("Base do dia", f.Valor_Base_Dia) +
@@ -917,6 +1054,9 @@
       abrirFechDrawer, abrirDiarDrawer, abrirVeicDrawer,
       blocoDecisao, ligarDecisao, decidirVeiculo,
       mesIdx, dKey, num, media, urlSeguro, fmtN, cel,
+      // B6 — viagens compartilhadas
+      viagemId, montarViagens, kmPorViagem, secaoViagem, infoViagensFech, celViagem,
+      getViagemGrupos: () => viagemGrupos,
       forcarCarregado: (v) => { carregado = v !== false; },
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
     };
