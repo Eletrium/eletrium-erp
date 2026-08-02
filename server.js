@@ -4,7 +4,9 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 
-const PORT = 3000;
+// PORT do ambiente primeiro: 3000 pode cair na faixa de exclusão do Windows
+// (Hyper-V reserva faixas após reboot) — visto em 02/08/2026.
+const PORT = Number(process.env.PORT) || 3000;
 const ROOT = __dirname;
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml; charset=utf-8" };
 

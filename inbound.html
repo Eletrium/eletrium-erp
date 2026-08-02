@@ -4,7 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="description" content="Solicite um orçamento de instalação elétrica industrial, SPDA, laudo NR-10 ou adequação NR-12 com a Eletrium." />
-  <meta name="robots" content="index,follow" />
+  <!-- F1 (contenção CRM v1.1, 02/08/2026): noindex até a captura resiliente (F2)
+       estar comprovada — página pública indexada + captura frágil = lead perdido.
+       Reverter para "index,follow" só junto com ENVIO_HABILITADO=true. -->
+  <meta name="robots" content="noindex,nofollow" />
   <title>Eletrium — Solicite seu orçamento</title>
   <link rel="stylesheet" href="app.css" />
   <!--
@@ -288,6 +291,12 @@
        "Configuração pendente" em vez de falhar com erro de rede.
        NUNCA acrescente token/API key/secret nesta página — ela é pública.
        ====================================================================== */
+    // F1 (contenção CRM v1.1, 02/08/2026): envio DESABILITADO até a captura
+    // resiliente do F2 estar comprovada (persistir o lead ANTES de classificar,
+    // com trilha de erro e retry). Hoje um POST aceito pelo webhook com o cenário
+    // pausado/quebrado é lead perdido em silêncio. Reativar = true, junto com o
+    // robots "index,follow" no <head>.
+    const ENVIO_HABILITADO = false;
     const WEBHOOK_URL = "https://hook.us2.make.com/a10t2t8iq54n667dk66t7mawvtzovr9b";
 
     const WEBHOOK_PLACEHOLDER = "COLE_AQUI_A_URL_DO_WEBHOOK_MAKE";
@@ -659,6 +668,18 @@
 
       const payload = montarPayload();
 
+      // ---- GUARD F1: envio desabilitado até a captura resiliente (F2) ----
+      if (!ENVIO_HABILITADO) {
+        setMensagem(
+          "No momento não estamos recebendo solicitações por este formulário. " +
+          "Seus dados não foram enviados — por favor, fale com nossa equipe pelos " +
+          "canais habituais de contato que retornamos normalmente.",
+          "warn"
+        );
+        console.warn("[inbound] ENVIO_HABILITADO=false (contenção F1) — POST bloqueado. Payload que seria enviado:", payload);
+        return;   // formulário preservado: nada é limpo
+      }
+
       // ---- GUARD: webhook do Make ainda não configurado ----
       if (!webhookConfigurado()) {
         setMensagem(
@@ -718,6 +739,18 @@
 
     // estado inicial
     aplicarTipo();
+    if (!ENVIO_HABILITADO) {
+      // aviso visível já na carga (não só no clique) + botão desabilitado:
+      // ninguém digita um formulário inteiro para descobrir no fim que não envia
+      setMensagem(
+        "Este formulário está temporariamente indisponível. " +
+        "Fale com nossa equipe pelos canais habituais de contato.",
+        "warn"
+      );
+      btn.disabled = true;
+      btn.textContent = "Envio temporariamente indisponível";
+      console.warn("[inbound] ENVIO_HABILITADO=false (contenção F1).");
+    }
     if (!webhookConfigurado()) {
       console.warn("[inbound] WEBHOOK_URL ainda é o placeholder. O formulário valida mas não envia.");
     }
