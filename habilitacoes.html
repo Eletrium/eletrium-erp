@@ -102,9 +102,16 @@
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
     const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-    /* ===== valores reais de Choice (batem caractere a caractere com o SharePoint) ===== */
-    const STATUS_VALIDADE = ["Válido", "Atenção — vence em 30 dias", "Vencido"];
+    /* ===== valores reais de Choice (batem caractere a caractere com o SharePoint) =====
+       São as CHAVES do cálculo de cobertura, sempre comparadas por igualdade exata de rótulo:
+         - TecnicosMEI.Nivel_Tecnico  ×  Nivel_Qualificacoes_Exigidas.Nivel_Tecnico
+         - Tecnico_Qualificacoes.Tipo_Qualificacao  ×  Nivel_Qualificacoes_Exigidas.Tipo_Qualificacao
+       Um caractere divergente entre as listas = lacuna falsa ou requisito que nunca casa, em silêncio.
+       (Status_Validade NÃO é validado de propósito: a situação exibida é derivada da DATA
+       em situacao(), e o campo só aparece cru no drawer — validar Choice que não decide
+       nada nesta tela era ruído no choiceWarn.) */
     const NIVEIS = ["Ajudante de Eletricista", "Auxiliar Técnico", "Eletricista Predial", "Eletricista Industrial", "Eletrotécnico"];
+    const TIPOS_QUALIFICACAO = ["NR-10 Básico", "NR-10 Complementar SEP", "NR-12", "NR-33", "NR-35", "ASO", "CNH", "Curso Técnico", "Graduação", "Especialização", "Outro"];
 
     /* Cores por situação. A situação é derivada da DATA (imune a divergência de rótulo)
        e não do campo Status_Validade — que só existe depois que o flow diário roda. */
@@ -148,14 +155,65 @@
     // uma lista que falha não derruba a tela inteira
     const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
 
+    /* ===== consistência cruzada dos Choices da cobertura =====
+       renderAvisosChoices compara cada coluna com a lista local; aqui comparamos as
+       duas colunas de cada chave ENTRE SI, usando os choices REAIS do servidor que
+       travarChoices já devolveu em v.choices (nenhuma chamada extra ao Graph).
+       Valor presente só de um lado nunca casa no cruzamento por igualdade exata:
+       vira requisito insatisfazível ou técnico/certificação que nunca conta. */
+    function avisarInconsistenciaCruzada(el, pares) {
+      if (!el) return;
+      // coluna indisponível (não é Choice / Graph falhou) => sem choices reais, nada a comparar
+      const ch = (i) => (pares[i] && pares[i].v && !pares[i].v.indisponivel) ? pares[i].v.choices : null;
+      const cod = (arr) => arr.map(x => "<code>" + esc(x) + "</code>").join(" ");
+      const blocos = [];
+      const compara = (a, b, rotulo, soAmsg, soBmsg) => {
+        if (!a || !b) return;
+        const soA = a.filter(c => !b.includes(c));
+        const soB = b.filter(c => !a.includes(c));
+        if (!soA.length && !soB.length) return;
+        const partes = [];
+        if (soA.length) partes.push(soAmsg + ": " + cod(soA));
+        if (soB.length) partes.push(soBmsg + ": " + cod(soB));
+        blocos.push("<br><em>" + esc(rotulo) + "</em> — " + partes.join(" · "));
+      };
+      compara(ch(0), ch(1), "Nível Técnico — TecnicosMEI × exigências",
+        "só em TecnicosMEI (técnico deste nível nunca encontra regra de exigência)",
+        "só nas exigências (regra que não se aplica a técnico algum)");
+      compara(ch(2), ch(3), "Tipo de Qualificação — certificações × exigências",
+        "só nas certificações (tipo que nenhuma regra exige)",
+        "só nas exigências (requisito que NENHUMA certificação cadastrável satisfaz)");
+      if (!blocos.length) return;
+      // renderAvisosChoices pode ter escondido/limpado o elemento (tudo ok) ou
+      // deixado avisos próprios — nos dois casos o aviso cruzado é APENSADO.
+      el.insertAdjacentHTML("beforeend",
+        (el.hidden ? "" : "<br>") +
+        "<strong>⚠️ Choices divergentes entre as listas da cobertura</strong> (o cruzamento é por igualdade exata — estes valores nunca casam):" +
+        blocos.join(""));
+      el.hidden = false;
+    }
+
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando habilitações...");
-        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
+        // EG.travarChoices (padrão novo do repo) valida o que a cobertura REALMENTE
+        // cruza: as DUAS pontas de Nivel_Tecnico e as DUAS de Tipo_Qualificacao.
+        // Como o cruzamento é 100% dinâmico (igualdade registro a registro, nenhum
+        // rótulo hardcoded participa da lógica), cada coluna é validada contra a
+        // lista documentada acima E, em seguida, as duas pontas são comparadas
+        // ENTRE SI: valor que só existe de um lado é cruzamento que nunca casa.
         Promise.all([
-          EG.validarChoices("Tecnico_Qualificacoes", "Status_Validade", STATUS_VALIDADE).then(v => ({ v, rotulo: "Status de Validade" })),
-          EG.validarChoices("Nivel_Qualificacoes_Exigidas", "Nivel_Tecnico", NIVEIS).then(v => ({ v, rotulo: "Nível Técnico (exigências)" }))
-        ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
+          EG.travarChoices("TecnicosMEI", "Nivel_Tecnico", NIVEIS).then(v => ({ v, rotulo: "Nível Técnico (TecnicosMEI — chave da cobertura)" })),
+          EG.travarChoices("Nivel_Qualificacoes_Exigidas", "Nivel_Tecnico", NIVEIS).then(v => ({ v, rotulo: "Nível Técnico (exigências — chave da cobertura)" })),
+          EG.travarChoices("Tecnico_Qualificacoes", "Tipo_Qualificacao", TIPOS_QUALIFICACAO).then(v => ({ v, rotulo: "Tipo de Qualificação (certificações — chave da cobertura)" })),
+          EG.travarChoices("Nivel_Qualificacoes_Exigidas", "Tipo_Qualificacao", TIPOS_QUALIFICACAO).then(v => ({ v, rotulo: "Tipo de Qualificação (exigências — chave da cobertura)" }))
+        ]).then(pares => {
+          const el = $("choiceWarn");
+          EG.renderAvisosChoices(el, pares);
+          // ordem dos pares: 0=TecnicosMEI.Nivel, 1=Exigidas.Nivel, 2=TecQual.Tipo, 3=Exigidas.Tipo
+          avisarInconsistenciaCruzada(el, pares);
+        }).catch(() => {});
 
         const [q, t, x] = await Promise.all([
           soft(EG.listItems("Tecnico_Qualificacoes"), "Tecnico_Qualificacoes"),

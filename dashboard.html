@@ -227,10 +227,26 @@
       const backlog = {};                             // Tipo_OS -> {Status: contagem}
       const porCategoria = {};                        // Categoria -> {rec, cus, n} (sem valor => SEM_CATEGORIA)
       let mttrSoma = 0, mttrN = 0, mttrIgnoradas = 0, corretivasSemConclusao = 0;
-      let semConclusao = 0, semValor = 0;
+      let semConclusao = 0, semValor = 0, canceladas = 0;
 
       list.forEach(it => {
         const f = (it && it.fields) || {};
+
+        // 7 — backlog por Tipo_OS x Status. Fica ANTES do corte de canceladas de
+        // propósito: aqui a OS aparece explicitamente sob o próprio status (inclusive
+        // "Cancelada", com cor própria em STATUS_COR) — é contagem, não soma financeira.
+        const tipo = (f.Tipo_OS == null || f.Tipo_OS === "") ? "(sem tipo)" : String(f.Tipo_OS);
+        const st = (f.Status == null || f.Status === "") ? "(sem status)" : String(f.Status);
+        const bt = backlog[tipo] || (backlog[tipo] = {});
+        bt[st] = (bt[st] || 0) + 1;
+
+        // OS cancelada NÃO entra em receita, custos, margem, mix, ranking de clientes
+        // nem MTTR: trabalho que não aconteceu não é resultado nem tempo de reparo.
+        // Usa o MESMO campo Status lido acima para o backlog (o dono do Status é a
+        // tela de OS — 1A; este dashboard só lê). A contagem vai para o hint
+        // ("N cancelada(s) fora das contas") — nada é descartado em silêncio.
+        if (f.Status === "Cancelada") { canceladas++; return; }
+
         const rec = receitaOS(f), cus = custoOS(f);
         // DataConclusao (camelCase, igual a DataAbertura/DataPrevista) e o campo de registro.
         // A coluna duplicada orfa Data_Conclusao foi REMOVIDA do SharePoint em 29/07/2026
@@ -238,13 +254,15 @@
         const dConc = parseD(f.DataConclusao);
         const dAbre = parseD(f.DataAbertura);
 
+        // contadores de alerta só sobre OS que CONTAM: cancelada sem conclusão/valor
+        // não é pendência de preenchimento, é OS fora das contas.
         if (!dConc) semConclusao++;
         if (!(rec > 0)) semValor++;
 
         // 1 / 6 — séries mensais
         if (dConc) bump(mIdx(dConc), rec, cus);
 
-        // 2 — por cliente (conta tudo, não só concluído: é rentabilidade da carteira)
+        // 2 — por cliente (tudo menos cancelada, não só concluído: é rentabilidade da carteira)
         const cid = (f.ClienteLookupId == null || f.ClienteLookupId === "") ? "__sem__" : String(f.ClienteLookupId);
         const c = porCliente[cid] || (porCliente[cid] = { rec: 0, cus: 0, n: 0 });
         c.rec += rec; c.cus += cus; c.n++;
@@ -267,12 +285,6 @@
         const cat = (f.Categoria == null || f.Categoria === "") ? SEM_CATEGORIA : String(f.Categoria);
         const g = porCategoria[cat] || (porCategoria[cat] = { rec: 0, cus: 0, n: 0 });
         g.rec += rec; g.cus += cus; g.n++;
-
-        // 7 — backlog por Tipo_OS x Status
-        const tipo = (f.Tipo_OS == null || f.Tipo_OS === "") ? "(sem tipo)" : String(f.Tipo_OS);
-        const st = (f.Status == null || f.Status === "") ? "(sem status)" : String(f.Status);
-        const bt = backlog[tipo] || (backlog[tipo] = {});
-        bt[st] = (bt[st] || 0) + 1;
       });
 
       const mesData = (i) => porMes[i] || { rec: 0, cus: 0, n: 0 };
@@ -344,7 +356,7 @@
 
       return {
         total: list.length,
-        semConclusao, semValor,
+        semConclusao, semValor, canceladas,
         mesAtual: { idx: idxAtual, label: mLabel(idxAtual), rec: atual.rec, cus: atual.cus, n: atual.n, margem: margemPct(atual.rec, atual.cus) },
         mesAnterior: { idx: idxAtual - 1, label: mLabel(idxAtual - 1), rec: anterior.rec, cus: anterior.cus, n: anterior.n },
         deltaRec, serie6, max6,
@@ -532,8 +544,12 @@
       const alertas = [];
       if (m.semConclusao) alertas.push(m.semConclusao + " sem Data de Conclusão");
       if (m.semValor) alertas.push(m.semValor + " sem Valor da OS");
+      // sub-rótulo das canceladas: elas saem de receita/margem/mix/clientes/MTTR
+      // de propósito, mas a exclusão fica VISÍVEL aqui (nada some em silêncio).
       $("hint").textContent = m.total
-        ? m.total + " OS carregada(s)" + (alertas.length ? " · " + alertas.join(" · ") + " — cards financeiros ficam parciais até esses campos serem preenchidos" : "")
+        ? m.total + " OS carregada(s)"
+          + (m.canceladas ? " · " + m.canceladas + " cancelada(s) fora das contas (receita, margem, mix e tempos)" : "")
+          + (alertas.length ? " · " + alertas.join(" · ") + " — cards financeiros ficam parciais até esses campos serem preenchidos" : "")
         : "Nenhuma OS na lista.";
       $("dgrid").hidden = false; $("topbar").hidden = false;
     }
