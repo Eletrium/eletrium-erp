@@ -179,6 +179,13 @@
          Tipo_Pessoa / Documento_Liquidacao .......................... cadastro de técnicos
        - Tarifas_Versoes ............................................. cadastro de tarifas (B5)
        - OS_Medicoes_Lotes / OS_Medicoes_Itens ....................... ESTA TELA, só no "Fechar lote" (B8)
+       - OrdensDeServico.Estado_Financeiro_Prestador ................. ESTA TELA, só no "Fechar lote"
+         (B4: "Em análise" se o lote tem item Em análise, senão "Liberado",
+         nas OS incluídas no lote — PATCH mínimo por OS; falha registra e segue)
+       - OrdensDeServico.Estado_Cliente_Qualidade .................... SEM ESCRITOR por ora — o dono
+         é o aceite do cliente/NCs (módulo futuro); NENHUMA tela grava
+       - Clientes_Locais / OrdensDeServico.Local_Atendimento ......... tela de OS (aqui só LEITURA,
+         p/ resolver o endereço do atendimento no Espelho)
        Fora do fechamento de lote, esta tela apenas LÊ, agrega e exporta.
 
        REGRA DA MEDIÇÃO (C3 — 3 grupos, horas SEMPRE preservadas):
@@ -274,8 +281,8 @@
     };
 
     /* ============================== estado ============================== */
-    let equipe = [], tecnicos = [], ordens = [], clientes = [], tarifas = [], lotes = [];
-    let mapTec = {}, mapOS = {}, nomeCliente = {}, mapTarifa = {};
+    let equipe = [], tecnicos = [], ordens = [], clientes = [], tarifas = [], lotes = [], locais = [];
+    let mapTec = {}, mapOS = {}, nomeCliente = {}, mapTarifa = {}, mapCliente = {}, mapLocal = {};
     let mapReg = {};          // id da linha de OS_Equipe -> registro calculado (para o drawer)
     let mapLote = {};         // id do lote -> item (para o drawer de lote)
     let carregado = false;
@@ -295,6 +302,45 @@
       const cid = (o.fields || {}).ClienteLookupId;
       return cid == null ? null : (nomeCliente[cid] || ("cliente #" + cid));
     };
+
+    /* ==================================================================
+       Parte 3 — ENDEREÇO DO CLIENTE ATENDIDO, por OS (o Espelho exige):
+       1) local da OS (Clientes_Locais via Local_AtendimentoLookupId) com o
+          endereço COMPLETO (nome do local · endereço · cidade/UF · CEP);
+       2) fallback: Clientes.Endereco/Cidade do cliente da OS — marcado com
+          origem "cadastro" (badge "endereço do cadastro — OS sem local").
+       Aparece no drawer da linha, no Calculation_JSON congelado
+       (enderecoAtendimento por linha) e no XLS ("Endereço do atendimento").
+       ================================================================== */
+    function enderecoAtendimento(osLookupId) {
+      const o = osDe(osLookupId);
+      if (!o) return { texto: null, origem: null };
+      const f = o.fields || {};
+      if (f.Local_AtendimentoLookupId != null) {
+        const l = mapLocal[String(f.Local_AtendimentoLookupId)];
+        if (l) {
+          const lf = l.fields || {};
+          const cidade = [lf.Cidade, lf.Estado_UF].filter(v => temValor(v)).join("/");
+          const partes = [lf.Title, lf.Endereco, cidade, temValor(lf.CEP) ? "CEP " + lf.CEP : null]
+            .filter(v => temValor(v));
+          if (partes.length) return { texto: partes.join(" · "), origem: "local" };
+        }
+        // referência existe mas o item não veio (Clientes_Locais não carregou?)
+        return { texto: "local #" + f.Local_AtendimentoLookupId + " (não carregado)", origem: "local" };
+      }
+      const c = f.ClienteLookupId != null ? mapCliente[String(f.ClienteLookupId)] : null;
+      if (c) {
+        const cf = c.fields || {};
+        const partes = [cf.Endereco, cf.Cidade].filter(v => temValor(v));
+        if (partes.length) return { texto: partes.join(" · "), origem: "cadastro" };
+      }
+      return { texto: null, origem: null };
+    }
+    const MARCA_END_CADASTRO = "endereço do cadastro — OS sem local";
+    // versão "achatada" p/ XLS e Calculation_JSON: fallback ganha o sufixo da marca
+    const enderecoTexto = (r) => r.endereco
+      ? r.endereco + (r.enderecoOrigem === "cadastro" ? " (" + MARCA_END_CADASTRO + ")" : "")
+      : null;
 
     /* ============ C7 — dimensões do prestador (Tipo_Pessoa / Documento) ============ */
     const tipoPessoaRotulo = (tp) => tp === "PF_AUTONOMO" ? "PF (autônomo)" : (tp === "PJ_MEI" ? "PJ (MEI)" : (tp || null));
@@ -337,15 +383,20 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando medição...");
-        const [eq, te, os, cl, ta, lo] = await Promise.all([
+        // OrdensDeServico e Clientes usam o expand padrão de EG.listItems
+        // ("expand=fields&$top=500"), que já traz Local_AtendimentoLookupId
+        // na OS e Endereco/Cidade no cliente — insumos do endereço do
+        // atendimento (Parte 3). Clientes_Locais entra na mesma leva (soft).
+        const [eq, te, os, cl, ta, lo, lc] = await Promise.all([
           soft(EG.listItems("OS_Equipe"), "OS_Equipe"),
           soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
           soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
           soft(EG.listItems("Clientes"), "Clientes"),
           soft(EG.listItems("Tarifas_Versoes"), "Tarifas_Versoes"),
-          soft(EG.listItems("OS_Medicoes_Lotes"), "OS_Medicoes_Lotes")
+          soft(EG.listItems("OS_Medicoes_Lotes"), "OS_Medicoes_Lotes"),
+          soft(EG.listItems("Clientes_Locais"), "Clientes_Locais")
         ]);
-        setDados(eq, te, os, cl, ta, lo);
+        setDados(eq, te, os, cl, ta, lo, lc);
         carregado = true;
         $("conteudo").hidden = false;
         montarFiltros();
@@ -353,18 +404,21 @@
         render();
         setStatus("OK — " + equipe.length + " linha(s) de equipe, " + tecnicos.length + " técnico(s), " +
                   ordens.length + " OS, " + clientes.length + " cliente(s), " +
-                  tarifas.length + " tarifa(s), " + lotes.length + " lote(s) fechado(s).");
+                  tarifas.length + " tarifa(s), " + lotes.length + " lote(s) fechado(s), " +
+                  locais.length + " local(is) de cliente.");
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
     // separado da carga para poder ser exercitado com dados falsos (window.MED.setDados)
-    function setDados(eq, te, os, cl, ta, lo) {
+    function setDados(eq, te, os, cl, ta, lo, lc) {
       equipe = eq || []; tecnicos = te || []; ordens = os || []; clientes = cl || [];
-      tarifas = ta || []; lotes = lo || [];
+      tarifas = ta || []; lotes = lo || []; locais = lc || [];
       mapTec = {}; tecnicos.forEach(t => { mapTec[t.id] = t; });
       mapOS = {}; ordens.forEach(o => { mapOS[o.id] = o; });
       nomeCliente = {}; clientes.forEach(c => { nomeCliente[c.id] = (c.fields || {}).Title; });
+      mapCliente = {}; clientes.forEach(c => { mapCliente[String(c.id)] = c; });   // item inteiro (Endereco/Cidade p/ fallback do endereço)
       mapTarifa = {}; tarifas.forEach(t => { mapTarifa[t.id] = t; });
+      mapLocal = {}; locais.forEach(l => { mapLocal[String(l.id)] = l; });         // Clientes_Locais (endereço do atendimento)
     }
 
     function montarFiltros() {
@@ -477,10 +531,14 @@
       const status = motivosFora.length ? null
         : (bloqueios.length ? "Bloqueado" : (pendencias.length ? "Em análise" : "Aprovado"));
 
+      // Parte 3 — endereço do cliente atendido (local da OS -> fallback cadastro)
+      const end = enderecoAtendimento(f.OSLookupId);
+
       return {
         id: item.id, item, f, tf,
         tecId: f.TecnicoLookupId, tecNome: tecNome(f.TecnicoLookupId),
         osId: f.OSLookupId, osTitle: osTitulo(f.OSLookupId), cliente: clienteDaOS(f.OSLookupId),
+        endereco: end.texto, enderecoOrigem: end.origem,
         dataBase: dataBase(item),
         horas: ehNum(f.Horas_Trabalhadas) ? num(f.Horas_Trabalhadas) : null,
         vh, vhFonte, tarifaTitle, valor,
@@ -741,7 +799,10 @@
               valorHora: r.vh,
               origemValorHora: r.vhFonte,
               status: r.status,
-              pendencias: r.bloqueios.concat(r.pendencias)
+              pendencias: r.bloqueios.concat(r.pendencias),
+              // Parte 3 — endereço do cliente atendido CONGELADO por linha
+              // (o Espelho exige por OS; fallback já leva a marca no texto)
+              enderecoAtendimento: enderecoTexto(r)
             }))
           };
           const fieldsLote = {
@@ -796,6 +857,30 @@
             try { await EG.createItem("OS_Medicoes_Itens", fi); }
             catch (e) { falhas.push("item " + fi.Chave_Item + ": " + e.message); }   // registra e segue
           }
+
+          // B4 — DONO: OrdensDeServico.Estado_Financeiro_Prestador é DESTA
+          // tela, gravado SÓ aqui (fechamento de lote): "Em análise" se o
+          // lote tem item Em análise, senão "Liberado", nas OS incluídas no
+          // lote. PATCH mínimo por OS (pula quando o valor já é o alvo);
+          // falha registra e segue — o lote já está fechado e congelado.
+          // Estado_Cliente_Qualidade segue SEM escritor (aceite do cliente/
+          // NCs — módulo futuro; ver o mapa de dono de campo no topo).
+          const estadoFin = temAnalise ? "Em análise" : "Liberado";
+          for (const osId of porOS.keys()) {
+            const osItem = mapOS[osId];
+            if (osItem && (osItem.fields || {}).Estado_Financeiro_Prestador === estadoFin) continue;
+            try {
+              await EG.patchItemFields("OrdensDeServico", osId, { Estado_Financeiro_Prestador: estadoFin });
+              // releitura do servidor (padrão do repo) — cache local mostra o REAL
+              const sid = await EG.resolveSite();
+              const relido = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + osId + "?expand=fields");
+              mapOS[osId] = relido;
+              const iOS = ordens.findIndex(x => String(x.id) === String(osId));
+              if (iOS > -1) ordens[iOS] = relido;
+            } catch (e) {
+              falhas.push("Estado_Financeiro_Prestador da " + osTitulo(osId) + " (" + estadoFin + "): " + e.message);
+            }
+          }
         }
 
         // releitura: o que vale é o que foi persistido — recarrega e mostra
@@ -831,6 +916,11 @@
           linha("Documento de liquidação", tf.Documento_Liquidacao) +
           linha("OS", r.osTitle) +
           linha("Cliente", r.cliente) +
+          // Parte 3 — endereço do atendimento: local da OS; fallback marcado
+          // com a badge "endereço do cadastro — OS sem local"
+          "<dt>Endereço do atendimento</dt><dd>" + esc(r.endereco || "—") +
+            (r.enderecoOrigem === "cadastro" ? " <span class='badge warn'>" + esc(MARCA_END_CADASTRO) + "</span>" : "") +
+          "</dd>" +
           linha("Função", f.Funcao) +
         "</dl>" +
         grupo("Jornada") +
@@ -1002,8 +1092,10 @@
           ["Tipo de pessoa", tipoPessoaRotulo(tf.Tipo_Pessoa) || "—"],
           ["Documento de liquidação", tf.Documento_Liquidacao || "—"],
           [],
+          // Parte 3 — "Endereço do atendimento" é exigido por OS no Espelho:
+          // local da OS; fallback do cadastro leva a marca no próprio texto
           ["OS", "Cliente", "Função", "Check-in", "Check-out", "Horas", "Valor-hora (R$)", "Valor (R$)",
-           "Status", "Pendências", "Origem do valor-hora"]
+           "Status", "Pendências", "Origem do valor-hora", "Endereço do atendimento"]
         ];
         g.regs.forEach(r => {
           aoa.push([
@@ -1012,7 +1104,8 @@
             r.horas, r.vh, r.valor,
             r.status,
             r.bloqueios.concat(r.pendencias).join("; "),
-            vhOrigemRotulo(r)
+            vhOrigemRotulo(r),
+            enderecoTexto(r) || "—"
           ]);
         });
         aoa.push([]);
@@ -1022,7 +1115,7 @@
         if (nB) aoa.push(["Bloqueadas (não entram)", "", "", "", "", "", "", "", nB + " linha(s)", "", ""]);
         const ws = XLSX.utils.aoa_to_sheet(aoa);
         ws["!cols"] = [{ wch: 24 }, { wch: 22 }, { wch: 14 }, { wch: 16 }, { wch: 16 },
-                       { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 34 }];
+                       { wch: 8 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 40 }, { wch: 34 }, { wch: 48 }];
         XLSX.utils.book_append_sheet(wb, ws, nomeAba(g.tecNome, usados));
       });
 
@@ -1033,11 +1126,11 @@
     };
 
     /* Exposto para testar a lógica sem login (dados falsos):
-       MED.setDados(equipe, tecnicos, ordens, clientes, tarifas, lotes);
+       MED.setDados(equipe, tecnicos, ordens, clientes, tarifas, lotes, locais);
        MED.forcarCarregado(); MED.montarFiltros(); MED.render(); */
     window.MED = {
       setDados, montarFiltros, render, classificar, calcularLinha, tarifaVigente, fecharLote,
-      mKey, dataBase, num, ehNum, cel, celBRL, nomeAba,
+      mKey, dataBase, num, ehNum, cel, celBRL, nomeAba, enderecoAtendimento,
       forcarCarregado: (v) => { carregado = v !== false; $("conteudo").hidden = !carregado; habilitarBotoes(); }
     };
 

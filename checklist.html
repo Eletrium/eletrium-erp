@@ -34,6 +34,18 @@
           (trilha de auditoria preservada), mas pode surpreender quem
           espera 1 linha por pergunta.
 
+      OrdensDeServico.Estado_Seguranca (B4 — Onda 2)
+        - escrita AQUI, e SÓ aqui: A SEGURANÇA NASCE DO CHECKLIST. Ao
+          completar a fase "Pré-Execução" de uma OS (toda pergunta ativa da
+          fase com resposta vigente): alguma resposta vigente com
+          Gerou_NC=true -> "Bloqueado"; sem NC e sem alerta de parâmetro
+          pendente -> "Liberado". PATCH mínimo na OS após gravar a resposta
+          que fecha a fase. NENHUM outro campo de OrdensDeServico é escrito
+          por esta tela; os outros 3 estados B4 têm outros donos
+          (Estado_Operacional: os.html; Estado_Financeiro_Prestador:
+          medicao.html; Estado_Cliente_Qualidade: sem escritor — módulo
+          futuro de aceite do cliente/NCs).
+
     REGRAS DE ESCRITA desta tela:
       - Execução: só CREATE em OS_Respostas (append). NUNCA edita resposta:
         "Corrigir" cria uma NOVA linha — a trilha é preservada e a leitura
@@ -710,10 +722,58 @@
         corrigindo[pid] = false;
         renderExecKeep();
         setStatus("Resposta gravada — P" + pid + (alerta ? " (com ALERTA de parâmetro)" : "") + ".");
+        // B4 — a segurança nasce do checklist: se esta resposta fechou a fase
+        // Pré-Execução, sincroniza Estado_Seguranca na OS (PATCH mínimo).
+        await sincronizarEstadoSeguranca();
       } catch (e) {
         falha("Falha ao gravar: " + e.message);
       } finally {
         gravandoResp = false;
+      }
+    }
+
+    /* ==================================================================
+       B4 — Estado_Seguranca da OS: A SEGURANÇA NASCE DO CHECKLIST.
+       Esta tela é o ÚNICO escritor de OrdensDeServico.Estado_Seguranca
+       (mapa completo dos 4 estados no comentário do topo do arquivo).
+       Regra: quando a fase "Pré-Execução" da OS fica COMPLETA (toda
+       pergunta ativa da fase com resposta vigente):
+         - alguma resposta vigente da fase com Gerou_NC=true -> "Bloqueado";
+         - sem NC e sem alerta de parâmetro pendente         -> "Liberado".
+       Alerta de parâmetro SEM NC não decide (não ocorre por esta tela —
+       Gerou_NC acompanha o alerta — mas o PWA pode divergir): não grava.
+       PATCH mínimo (só quando o valor efetivamente muda) + releitura da OS.
+       "Corrigir" que remove a NC re-libera pelo MESMO caminho (a vigente é
+       a resposta mais recente por Pergunta_ID). Falha aqui NÃO desfaz a
+       resposta já gravada: registra e segue.
+       ================================================================== */
+    async function sincronizarEstadoSeguranca() {
+      const os = mapOS[osSelId];
+      if (!os) return;
+      const pergsPre = perguntasAtivas().filter(p => faseDe(p.fields || {}) === FASES[0]);
+      if (!pergsPre.length) return;                              // fase sem perguntas: nada a decidir
+      const ult = ultimaPorPergunta();
+      if (!pergsPre.every(p => ult[String(p.id)])) return;       // Pré-Execução ainda incompleta
+      const vigentes = pergsPre.map(p => ult[String(p.id)]);
+      const temNC = vigentes.some(r => (r.fields || {}).Gerou_NC === true);
+      const temAlerta = vigentes.some(r => (r.fields || {}).Alerta_Parametro === true);
+      const novo = temNC ? "Bloqueado" : (temAlerta ? null : "Liberado");
+      if (!novo) return;                                         // alerta sem NC: não decide
+      if ((os.fields || {}).Estado_Seguranca === novo) return;   // PATCH mínimo: só quando muda
+      try {
+        await EG.patchItemFields("OrdensDeServico", osSelId, { Estado_Seguranca: novo });
+        // releitura do servidor (padrão do repo) — o cache local mostra o REAL
+        const sid = await EG.resolveSite();
+        const relido = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + osSelId + "?expand=fields");
+        mapOS[osSelId] = relido;
+        const i = oss.findIndex(x => String(x.id) === String(osSelId));
+        if (i > -1) oss[i] = relido;
+        setStatus("Pré-Execução completa — Estado_Seguranca da OS " +
+                  (((relido.fields || {}).Title) || osSelId) + ": " + novo + ".",
+                  novo === "Bloqueado" ? "err" : "");
+      } catch (e) {
+        console.warn("B4: falha ao gravar Estado_Seguranca:", e.message);
+        setStatus("Resposta gravada, mas Estado_Seguranca da OS NÃO atualizou: " + e.message, "err");
       }
     }
 
@@ -992,7 +1052,7 @@
     window.CHK = {
       setDados, montarFiltros, renderExec, renderEdit, mostrarSec,
       faseDe, classificarTipo, checarParametro, ultimaPorPergunta, perguntasAtivas,
-      tituloDe, paraGraph, urlSeguro,
+      tituloDe, paraGraph, urlSeguro, sincronizarEstadoSeguranca,
       setOS: (id) => { osSelId = String(id); },
       forcarCarregado: (v) => { carregado = v !== false; },
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }

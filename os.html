@@ -137,6 +137,8 @@
     let equipe = [];       // itens crus de OS_Equipe (de TODAS as OS) — filtrados por OSLookupId no drawer
     let choiceEq = {};     // choices de OS_Equipe (Funcao) lidos de EG.listColumns("OS_Equipe")
     let equipeCarregada = false; // distingue "lista vazia" de "falha ao carregar OS_Equipe"
+    let locaisCli = [], mapLocal = {};   // itens crus de Clientes_Locais (Parte 2 — locais de atendimento)
+    let locaisCarregados = false;        // distingue "sem locais" de "falha ao carregar Clientes_Locais"
 
     /* =================================================================
        DONO DE CAMPO — OrdensDeServico é reescrita pelo cenário Make "1A"
@@ -172,7 +174,23 @@
          Origem_OS (lookup — OS concluída que a retificação corrige, C6),
          Motivo_Retorno (obrigatório na retificação, C6),
          Snapshot_Manifesto, Snapshot_SHA256, Snapshot_Confirmado_Em
-           (snapshot verificável do fechamento, B7 — gravados só por concluirOS).
+           (snapshot verificável do fechamento, B7 — gravados só por concluirOS),
+         Local_AtendimentoLookupId (lookup p/ Clientes_Locais — só o editor
+           da OS grava; Parte 2 da Onda 2),
+         Estado_Operacional (B4 — ver o mapa dos 4 estados logo abaixo).
+
+       B4 — 4 ESTADOS INDEPENDENTES da OS (mesmo padrão dos 3 status
+       ortogonais do CRM: CADA TELA ESCREVE SÓ O SEU, com comentário de dono
+       em cada escrita; os demais são leitura em badge no drawer):
+         Estado_Operacional ............. ESTA TELA — "Em Andamento" quando o
+           1º check-in de equipe é salvo (se o estado atual for vazio/
+           Pendente); "Concluído" junto do PATCH de concluirOS.
+         Estado_Seguranca ............... checklist.html (a segurança nasce do
+           checklist: fase Pré-Execução) — aqui é SÓ LEITURA, mas
+           "Liberado" é PRÉ-REQUISITO do Concluir OS.
+         Estado_Financeiro_Prestador .... medicao.html (fechamento de lote).
+         Estado_Cliente_Qualidade ....... SEM escritor por ora — o dono é o
+           aceite do cliente/NCs (módulo futuro); nenhuma tela grava.
 
        A lista OS_Equipe INTEIRA é escrita por esta tela (e, no futuro, pelo
        app mobile de campo): nenhum cenário Make escreve nela hoje.
@@ -208,6 +226,10 @@
       // (input disabled é pulado pelo dirty tracking de salvarOS — não grava).
       { campo: "OS_AnteriorLookupId",       el: "eOS_Anterior",       tipo: "lookup" },
       { campo: "Lider_EletricistaLookupId", el: "eLider_Eletricista", tipo: "lookup" },
+      // Parte 2 — local de atendimento (Clientes_Locais). Grava como lookup
+      // numérico; select desabilitado (OS sem cliente / lista não carregada)
+      // fica FORA do dirty tracking de salvarOS — não grava.
+      { campo: "Local_AtendimentoLookupId", el: "eLocal_Atendimento", tipo: "lookup" },
       { campo: "KM_Inicial",        el: "eKM_Inicial",         tipo: "num" },
       { campo: "KM_Final",          el: "eKM_Final",           tipo: "num" },
       { campo: "Descricao",         el: "eDescricao",          tipo: "texto" },
@@ -244,7 +266,7 @@
         // As colunas entram na mesma leva para popular os selects de Choice DINAMICAMENTE
         // (Prioridade/Tipo_OS/Categoria — nada de rótulo hardcodado; Categoria é novo e mudaria por baixo).
         // Falha na leitura de colunas não derruba a tela: só desabilita os selects de Choice.
-        const [os, cli, tec, cols, eq, colsEq] = await Promise.all([
+        const [os, cli, tec, cols, eq, colsEq, loc] = await Promise.all([
           EG.listItems("OrdensDeServico"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
           // Valor_Hora_Contratado entra no $select: é a fonte do Valor_Hora_Snapshot
@@ -253,7 +275,10 @@
           EG.listColumns("OrdensDeServico").catch(e => { console.warn("Falha ao ler colunas:", e.message); return []; }),
           // OS_Equipe falhando não derruba a tela: a seção Equipe avisa e não grava
           EG.listItems("OS_Equipe").catch(e => { console.warn("Falha ao carregar OS_Equipe:", e.message); return null; }),
-          EG.listColumns("OS_Equipe").catch(e => { console.warn("Falha ao ler colunas de OS_Equipe:", e.message); return []; })
+          EG.listColumns("OS_Equipe").catch(e => { console.warn("Falha ao ler colunas de OS_Equipe:", e.message); return []; }),
+          // Parte 2 — Clientes_Locais (soft): falha não derruba a tela, só
+          // desabilita o select "Local de atendimento" do editor.
+          EG.listItems("Clientes_Locais").catch(e => { console.warn("Falha ao carregar Clientes_Locais:", e.message); return null; })
         ]);
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
         nomeTecnico = {}; tec.forEach(t => nomeTecnico[t.id] = t.fields && t.fields.Title);
@@ -264,13 +289,17 @@
         equipe = eq || [];
         choiceEq = {};
         (colsEq || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceEq[c.name] = c.choice.choices; });
+        locaisCarregados = loc != null;
+        locaisCli = loc || [];
+        mapLocal = {}; locaisCli.forEach(l => { mapLocal[String(l.id)] = l; });
         itemMap = {}; os.forEach(o => itemMap[o.id] = o);
         todas = os.slice().sort((a, b) => new Date(b.fields && b.fields.DataAbertura || 0) - new Date(a.fields && a.fields.DataAbertura || 0));
         indicadores(todas);
         $("kpis").hidden = false; $("toolbar").hidden = false;
         aplicarFiltro();
         setStatus("OK — " + todas.length + " OS carregada(s)" +
-                  (equipeCarregada ? ", " + equipe.length + " linha(s) de equipe." : ". Aviso: OS_Equipe não carregou."));
+                  (equipeCarregada ? ", " + equipe.length + " linha(s) de equipe" : ". Aviso: OS_Equipe não carregou") +
+                  (locaisCarregados ? ", " + locaisCli.length + " local(is) de cliente." : ". Aviso: Clientes_Locais não carregou."));
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
@@ -327,6 +356,8 @@
 
       const gerais = [
         rowD("Cliente", cliNome(f)), rowD("Técnico", tecNome(f)),
+        // Parte 2 — local de atendimento resolvido (nome + endereço/cidade)
+        rowD("Local de atendimento", localResumo(f)),
         rowD("Tipo", f.Tipo_OS), rowD("Tipo (completo)", f.Tipo_OS_Completo),
         rowD("Categoria", f.Categoria), rowD("Prioridade", f.Prioridade),
         rowD("Status atual", f.Status_Atual), rowD("Status do dia", f.Status_OS_Dia),
@@ -360,6 +391,7 @@
         </div>
         <div class="drawer-body">
           <dl>${gerais}</dl>
+          ${blocoEstados(f)}
           ${custos ? '<div class="k" style="color:#8b949e;font-size:.76rem;text-transform:uppercase;letter-spacing:.04em">Custos (realizado + EPI + ferramentas)</div>' + custos : ""}
           ${blocoEdicao()}
           ${blocoKM(f)}
@@ -440,6 +472,11 @@
             <label>Custo ferramentas (R$) <input type="number" step="0.01" id="eCusto_Ferr_OS" /></label>
             <label>OS anterior (cadeia de KM) <select id="eOS_Anterior"></select></label>
             <label>Líder eletricista <select id="eLider_Eletricista"></select></label>
+            <!-- Parte 2 — locais ATIVOS do Cliente da OS (Clientes_Locais);
+                 OS sem cliente -> desabilitado com hint (não há como filtrar) -->
+            <label><span>Local de atendimento</span>
+              <select id="eLocal_Atendimento"></select>
+              <span class="ed-msg" id="eLocalHint"></span></label>
             <label><span>KM inicial <span id="eKM_IniLock" class="lock" hidden title="herdado da OS anterior — use Romper cadeia (seção KM) para liberar">🔒</span></span>
               <input type="number" step="0.1" id="eKM_Inicial" /></label>
             <label>KM final <input type="number" step="0.1" id="eKM_Final" /></label>
@@ -530,6 +567,49 @@
         selAnt.appendChild(op);
       }
       selAnt.value = f.OS_AnteriorLookupId == null ? "" : String(f.OS_AnteriorLookupId);
+
+      // Parte 2 — Local de atendimento: só locais ATIVOS do Cliente da OS.
+      // OS sem cliente (ou Clientes_Locais não carregado) -> select DESABILITADO
+      // com hint; disabled fica fora do dirty tracking de salvarOS (não grava).
+      // Valor atual fora da lista (local inativo/de outro cliente) continua
+      // visível e selecionável — mesma regra do popularChoice.
+      const selLoc = $("eLocal_Atendimento"), hintLoc = $("eLocalHint");
+      selLoc.innerHTML = "";
+      const semLoc = document.createElement("option");
+      semLoc.value = ""; semLoc.textContent = "(sem local)"; selLoc.appendChild(semLoc);
+      if (f.ClienteLookupId == null) {
+        selLoc.disabled = true;
+        hintLoc.textContent = "OS sem cliente — defina o Cliente para escolher o local";
+      } else if (!locaisCarregados) {
+        selLoc.disabled = true;
+        hintLoc.textContent = "Clientes_Locais não carregou — recarregue a página";
+      } else {
+        selLoc.disabled = false;
+        hintLoc.textContent = "";
+        locaisCli
+          .filter(l => {
+            const lf = l.fields || {};
+            return lf.Ativo === true && String(lf.ClienteLookupId ?? "") === String(f.ClienteLookupId);
+          })
+          .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"))
+          .forEach(l => {
+            const lf = l.fields || {};
+            const op = document.createElement("option");
+            op.value = String(l.id);
+            op.textContent = (lf.Title || ("local #" + l.id)) + (temTexto(lf.Cidade) ? " — " + lf.Cidade : "");
+            selLoc.appendChild(op);
+          });
+      }
+      if (f.Local_AtendimentoLookupId != null && ![...selLoc.options].some(op => op.value === String(f.Local_AtendimentoLookupId))) {
+        const lAtual = mapLocal[String(f.Local_AtendimentoLookupId)];
+        const op = document.createElement("option");
+        op.value = String(f.Local_AtendimentoLookupId);
+        op.textContent = lAtual && (lAtual.fields || {}).Title
+          ? (lAtual.fields || {}).Title + " (fora da lista — inativo ou de outro cliente)"
+          : "local #" + f.Local_AtendimentoLookupId;
+        selLoc.appendChild(op);
+      }
+      selLoc.value = f.Local_AtendimentoLookupId == null ? "" : String(f.Local_AtendimentoLookupId);
 
       // KM — inicial BLOQUEADO quando herdado da OS anterior (só Romper cadeia
       // libera). Input disabled fica FORA do dirty tracking de salvarOS().
@@ -671,6 +751,47 @@
     };
     const liderNomeDe = (f) => f.Lider_EletricistaLookupId != null
       ? (nomeTecnico[f.Lider_EletricistaLookupId] || ("técnico #" + f.Lider_EletricistaLookupId)) : "—";
+
+    /* ==================================================================
+       B4 — painel "Estados da OS" (leitura). Os 4 estados independentes
+       viram badges coloridas; vazio vira "—". Dono de cada estado no mapa
+       de DONO DE CAMPO do topo — esta tela só ESCREVE Estado_Operacional.
+       Valor fora do choice conhecido ganha cor neutra (nunca some).
+       ================================================================== */
+    const ESTADOS_OS = [
+      { campo: "Estado_Operacional", rotulo: "Operacional",
+        cores: { "Pendente": "#8b949e", "Em Andamento": "#F0883E", "Concluído": "#22B573" } },
+      { campo: "Estado_Seguranca", rotulo: "Segurança",
+        cores: { "Pendente": "#8b949e", "Liberado": "#22B573", "Bloqueado": "#F85149" } },
+      { campo: "Estado_Cliente_Qualidade", rotulo: "Cliente/Qualidade",
+        cores: { "Pendente": "#8b949e", "Aprovado": "#22B573", "Contestado": "#F85149" } },
+      { campo: "Estado_Financeiro_Prestador", rotulo: "Financeiro (prestador)",
+        cores: { "Pendente": "#8b949e", "Em análise": "#D29922", "Liberado": "#22B573", "Pago": "#58A6FF" } }
+    ];
+    function blocoEstados(f) {
+      const badges = ESTADOS_OS.map(e => {
+        const v = f[e.campo];
+        const vazio = v == null || String(v).trim() === "";
+        const cor = vazio ? "#8b949e" : (e.cores[v] || "#8b949e");
+        return `<span class="badge" style="border-color:${cor};color:${cor}">${esc(e.rotulo)}: ${esc(vazio ? "—" : v)}</span>`;
+      }).join(" ");
+      return `<div class="grupo">Estados da OS</div>
+        <div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${badges}</div>`;
+    }
+
+    // Parte 2 — local de atendimento resolvido: nome + endereço/cidade.
+    // Sem lookup devolve null (a linha some do <dl>, padrão rowD); lookup sem
+    // item carregado mostra "local #id" — nunca esconde referência existente.
+    function localResumo(f) {
+      if (f.Local_AtendimentoLookupId == null) return null;
+      const l = mapLocal[String(f.Local_AtendimentoLookupId)];
+      if (!l) return "local #" + f.Local_AtendimentoLookupId;
+      const lf = l.fields || {};
+      const nome = lf.Title || lf.Tipo_Local || ("local #" + l.id);
+      const cidade = [lf.Cidade, lf.Estado_UF].filter(v => temTexto(v)).join("/");
+      const partes = [lf.Endereco, cidade].filter(v => temTexto(v));
+      return nome + (partes.length ? " — " + partes.join(" · ") : "");
+    }
 
     // relê a OS do servidor e atualiza tabela/KPIs — nunca confiar no eco local
     async function relerOS(id) {
@@ -969,13 +1090,21 @@
        ================================================================== */
     function reqFechamento(f) {
       const fotos = contarFotos(f.Fotos_Evidencia);
-      return { laudo: temTexto(f.Laudo_URL), fotos, fotosOk: fotos >= 2, assinatura: temTexto(f.Assinatura_URL) };
+      return {
+        laudo: temTexto(f.Laudo_URL), fotos, fotosOk: fotos >= 2, assinatura: temTexto(f.Assinatura_URL),
+        // B4 — pré-requisito de segurança: só Estado_Seguranca="Liberado"
+        // satisfaz; vazio/Pendente/Bloqueado entram na lista de faltas.
+        // O DONO do campo é checklist.html (Pré-Execução) — aqui só se LÊ.
+        segurancaOk: f.Estado_Seguranca === "Liberado",
+        segurancaValor: temTexto(f.Estado_Seguranca) ? f.Estado_Seguranca : "—"
+      };
     }
     function faltasFechamento(r) {
       const faltas = [];
       if (!r.laudo) faltas.push("laudo (Laudo_URL)");
       if (!r.fotosOk) faltas.push("fotos de evidência (" + r.fotos + " de 2 mínimas em Fotos_Evidencia)");
       if (!r.assinatura) faltas.push("assinatura do cliente (Assinatura_URL)");
+      if (!r.segurancaOk) faltas.push("segurança liberada pelo checklist (Estado_Seguranca: " + r.segurancaValor + " — exige “Liberado”)");
       return faltas;
     }
     function blocoFechamento(f) {
@@ -990,6 +1119,7 @@
           ${item(r.laudo, "Laudo anexado (Laudo_URL)")}
           ${item(r.fotosOk, "Fotos de evidência: " + r.fotos + " (mínimo 2)")}
           ${item(r.assinatura, "Assinatura do cliente (Assinatura_URL)")}
+          ${item(r.segurancaOk, "Segurança liberada pelo checklist (Estado_Seguranca: " + r.segurancaValor + ")")}
         </ul>
         <div style="margin-top:6px">${[linkSeguro(f.Laudo_URL, "abrir laudo"), linkSeguro(f.Assinatura_URL, "abrir assinatura")].filter(Boolean).join(" &nbsp; ")}</div>
         <div class="ed" style="margin-top:8px">
@@ -1089,6 +1219,9 @@
         await EG.patchItemFields("OrdensDeServico", o.id, {
           Status: "Concluída",
           DataConclusao: agora,
+          // B4 — DONO: Estado_Operacional é DESTA tela (1º check-in + aqui).
+          // "Concluído" vai junto do mesmo PATCH da conclusão — nunca sozinho.
+          Estado_Operacional: "Concluído",
           Snapshot_Manifesto: manifesto,
           Snapshot_SHA256: sha,
           Snapshot_Confirmado_Em: agora
@@ -1401,8 +1534,27 @@
         msg.className = "ed-msg"; msg.textContent = "Gravando...";
         await EG.patchItemFields("OS_Equipe", r.id, campos);
         await relerLinhaEquipe(r.id); // releitura do servidor — nunca o eco local
+        // B4 — DONO: Estado_Operacional é DESTA tela. Check-in de equipe salvo
+        // NESTE PATCH liga "Em Andamento" na OS — só quando o estado atual está
+        // vazio/Pendente (é o 1º check-in que move o estado; os seguintes não
+        // regravam). PATCH mínimo separado (a linha é de OS_Equipe, o estado é
+        // da OS); falha aqui NÃO desfaz a linha gravada: registra e segue.
+        let estadoOpMsg = "";
+        if (campos.Checkin_Hora != null) {
+          const estAtual = (((itemMap[String(o.id)] || o).fields || {}).Estado_Operacional);
+          if (estAtual == null || String(estAtual).trim() === "" || estAtual === "Pendente") {
+            try {
+              await EG.patchItemFields("OrdensDeServico", o.id, { Estado_Operacional: "Em Andamento" });
+              await relerOS(o.id); // releitura do servidor — tabela/KPIs/cache reais
+              estadoOpMsg = " Estado_Operacional da OS: Em Andamento (1º check-in).";
+            } catch (eEst) {
+              console.warn("B4: falha ao gravar Estado_Operacional=Em Andamento:", eEst.message);
+              estadoOpMsg = " Aviso: linha gravada, mas Estado_Operacional não atualizou (" + eEst.message + ").";
+            }
+          }
+        }
         renderEquipe(o);
-        setStatus("Equipe da OS " + (((o.fields || {}).Title) || o.id) + ": linha atualizada (" + Object.keys(campos).join(", ") + ").");
+        setStatus("Equipe da OS " + (((o.fields || {}).Title) || o.id) + ": linha atualizada (" + Object.keys(campos).join(", ") + ")." + estadoOpMsg);
       } catch (e) {
         msg.className = "ed-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
       } finally { eqOcupado = false; }
