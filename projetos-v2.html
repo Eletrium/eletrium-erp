@@ -1,0 +1,944 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Projetos</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; }
+    .kpi .k { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .kpi .v { font-size: 1.35rem; font-weight: 600; margin-top: 4px; }
+    .kpi .sub { color: #8b949e; font-size: .74rem; margin-top: 2px; }
+
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    select {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit; max-width: 420px;
+    }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .toolbar .hint.right { margin-left: auto; }
+
+    .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
+    .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
+    .tab:hover { color: #e6edf3; }
+    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+
+    .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
+    .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
+
+    td .badge { white-space: nowrap; margin-top: 0; }
+    td.n { text-align: right; white-space: nowrap; }
+    td.dim { color: #8b949e; }
+    tr.tot-row td { border-top: 1px solid #30363d; font-weight: 600; }
+
+    .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
+
+    .aviso-ro { margin: 0 0 14px; padding: 10px 14px; border-radius: 8px; font-size: .85rem; line-height: 1.5;
+                border: 1px solid #58a6ff44; background: #58a6ff14; color: #a5d0ff; }
+    .aviso-ro strong { color: #e6edf3; }
+
+    /* árvore da EAP: indentação por nível */
+    td .eap-ind { color: #30363d; }
+    td .eap-cod { color: #58a6ff; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .84rem; }
+
+    .neg { color: #F85149; }
+    .pos { color: #3fb950; }
+    .warn { color: #D29922; }
+
+    .bar { display: inline-block; width: 90px; height: 8px; background: #21262d; border-radius: 4px; vertical-align: middle; margin-right: 6px; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: #1f6feb; }
+    .bar i.cheio { background: #22B573; }
+    .bar i.estouro { background: #F0883E; }
+
+    .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html">Checklist</a>
+      <a href="projetos-v2.html" class="active">Projetos</a>
+      <a href="documentos-os.html">Documentos</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+  <div id="estado"></div>
+
+  <main>
+    <div class="aviso-ro" id="avisoRo" hidden>
+      <strong>Tela somente leitura.</strong> A escrita transacional da Frente Projetos (EAP, medições,
+      custos, aditivos…) entra pelo gateway B1 — até lá esta tela não grava <strong>nada</strong> no SharePoint.
+    </div>
+
+    <div class="toolbar" id="barProjeto" hidden>
+      <label for="selProjeto">Projeto</label>
+      <select id="selProjeto"></select>
+      <span class="hint right"><span class="ro">somente leitura — escrita via gateway B1</span></span>
+    </div>
+
+    <div class="kpis" id="kpis" hidden>
+      <div class="kpi"><div class="k">Status</div><div class="v" id="kStatus" style="font-size:1.05rem">—</div><div class="sub" id="kCliente"></div></div>
+      <div class="kpi"><div class="k">Valor do contrato</div><div class="v" id="kContrato" style="color:#58a6ff">—</div><div class="sub" id="kContratoAjust"></div></div>
+      <div class="kpi"><div class="k">% medido do contrato</div><div class="v" id="kMedido">—</div><div class="sub">soma medida × qtd. contratada (ponderado por valor)</div></div>
+      <div class="kpi"><div class="k">Custos lançados</div><div class="v" id="kCusto" style="color:#F0883E">—</div><div class="sub" id="kCustoSub">Projeto_Custos_Receitas</div></div>
+      <div class="kpi"><div class="k">Receitas lançadas</div><div class="v" id="kReceita" style="color:#3fb950">—</div></div>
+      <div class="kpi"><div class="k">Saldo (receita − custo)</div><div class="v" id="kSaldo">—</div></div>
+    </div>
+
+    <div class="tabs" id="tabs" hidden>
+      <button class="tab active" data-sec="eap" id="tabEap">EAP</button>
+      <button class="tab" data-sec="aloc" id="tabAloc">Alocações</button>
+      <button class="tab" data-sec="mat" id="tabMat">Materiais</button>
+      <button class="tab" data-sec="ctr" id="tabCtr">Contrato &amp; medições</button>
+      <button class="tab" data-sec="cxr" id="tabCxr">Custos × Receitas</button>
+      <button class="tab" data-sec="adt" id="tabAdt">Aditivos</button>
+    </div>
+
+    <!-- ============================ 1. EAP ============================ -->
+    <section id="sec_eap" hidden>
+      <div class="secao">Estrutura Analítica do Projeto <span>— árvore indentada por EAP_Pai; ordem: Ordem, depois Código</span></div>
+      <table id="eTbl" hidden>
+        <thead><tr>
+          <th>Código / Item</th><th>Tipo</th><th>Status</th><th>Peso (%)</th><th>Descrição</th>
+        </tr></thead>
+        <tbody id="eTbody"></tbody>
+      </table>
+      <div class="empty" id="eEmpty" hidden></div>
+    </section>
+
+    <!-- ======================== 2. ALOCAÇÕES ========================== -->
+    <section id="sec_aloc" hidden>
+      <div class="secao">Alocações de equipe <span>— técnicos por item da EAP</span></div>
+      <table id="aTbl" hidden>
+        <thead><tr>
+          <th>Técnico</th><th>Papel</th><th>Item da EAP</th><th>Início</th><th>Fim</th><th>Horas previstas</th>
+        </tr></thead>
+        <tbody id="aTbody"></tbody>
+      </table>
+      <div class="empty" id="aEmpty" hidden></div>
+    </section>
+
+    <!-- ======================== 3. MATERIAIS ========================== -->
+    <section id="sec_mat" hidden>
+      <div class="secao">Materiais <span>— previsto × aplicado, com desvio de quantidade e de custo</span></div>
+      <table id="mTbl" hidden>
+        <thead><tr>
+          <th>Produto</th><th>Item da EAP</th><th>Qtd. prevista</th><th>Qtd. aplicada</th><th>Desvio qtd.</th>
+          <th>Custo previsto</th><th>Custo real</th><th>Desvio custo</th>
+        </tr></thead>
+        <tbody id="mTbody"></tbody>
+      </table>
+      <div class="empty" id="mEmpty" hidden></div>
+    </section>
+
+    <!-- =================== 4. CONTRATO & MEDIÇÕES ===================== -->
+    <section id="sec_ctr" hidden>
+      <div class="secao">Itens de contrato <span>— % medido = soma de Qtd_Medida das medições do item ÷ Qtd_Contratada</span></div>
+      <table id="cTbl" hidden>
+        <thead><tr>
+          <th>Código</th><th>Descrição</th><th>Un.</th><th>Qtd. contratada</th><th>Preço unit.</th>
+          <th>Valor contratado</th><th>Qtd. medida</th><th>% medido</th><th>Medições</th>
+        </tr></thead>
+        <tbody id="cTbody"></tbody>
+      </table>
+      <div class="empty" id="cEmpty" hidden></div>
+
+      <div class="secao" id="qSec" hidden>Medições quantitativas <span>— lançamentos por item e competência</span></div>
+      <table id="qTbl" hidden>
+        <thead><tr>
+          <th>Item de contrato</th><th>Competência</th><th>Qtd. medida</th><th>Status</th><th>Chave</th>
+        </tr></thead>
+        <tbody id="qTbody"></tbody>
+      </table>
+    </section>
+
+    <!-- ==================== 5. CUSTOS × RECEITAS ====================== -->
+    <section id="sec_cxr" hidden>
+      <div class="secao">Resumo por competência <span>— totais e saldo (receita − custo)</span></div>
+      <table id="rTbl" hidden>
+        <thead><tr>
+          <th>Competência</th><th>Custos</th><th>Receitas</th><th>Saldo</th><th>Saldo acumulado</th>
+        </tr></thead>
+        <tbody id="rTbody"></tbody>
+      </table>
+      <div class="empty" id="rEmpty" hidden></div>
+
+      <div class="secao" id="lSec" hidden>Lançamentos <span>— itens crus de Projeto_Custos_Receitas</span></div>
+      <table id="lTbl" hidden>
+        <thead><tr>
+          <th>Competência</th><th>Tipo</th><th>Categoria</th><th>Valor</th><th>Origem</th><th>Título</th>
+        </tr></thead>
+        <tbody id="lTbody"></tbody>
+      </table>
+    </section>
+
+    <!-- ========================= 6. ADITIVOS ========================== -->
+    <section id="sec_adt" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Aditivos aprovados</div><div class="v" id="adK_apr">0</div><div class="sub" id="adK_tot"></div></div>
+        <div class="kpi"><div class="k">Δ valor acumulado (aprovados)</div><div class="v" id="adK_valor">—</div></div>
+        <div class="kpi"><div class="k">Δ prazo acumulado (aprovados)</div><div class="v" id="adK_dias">—</div></div>
+        <div class="kpi"><div class="k">Valor do contrato atualizado</div><div class="v" id="adK_atual" style="color:#58a6ff">—</div><div class="sub">contrato original + Δ valor aprovado</div></div>
+      </div>
+      <div class="secao">Aditivos <span>— deltas de valor/prazo por aditivo; acumulado considera só os aprovados</span></div>
+      <table id="adTbl" hidden>
+        <thead><tr>
+          <th>Nº</th><th>Tipo</th><th>Status</th><th>Δ valor</th><th>Δ prazo (dias)</th><th>Aprovado em</th><th>Descrição</th>
+        </tr></thead>
+        <tbody id="adTbody"></tbody>
+      </table>
+      <div class="empty" id="adEmpty" hidden></div>
+    </section>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    /* ===================================================================
+       PROJETOS v2 — Onda 3, Frente Projetos (§14). TELA 100% SOMENTE LEITURA.
+
+       DONO DA ESCRITA: a escrita transacional (criar/editar EAP, alocações,
+       materiais, itens de contrato, medições, custos/receitas e aditivos)
+       entra pelo GATEWAY B1 — até o gateway existir, esta tela NÃO grava
+       NADA: nenhum patchItemFields/createItem aparece (nem deve aparecer)
+       neste arquivo. Qualquer botão de escrita futuro nasce depois do B1.
+
+       Listas lidas (todas via EG.listItems):
+         Projetos (raiz LEGADA, reutilizada — não modificada),
+         Projeto_EAP, Projeto_Alocacoes, Projeto_Materiais, Contrato_Itens,
+         Medicoes_Quantitativas, Projeto_Custos_Receitas, Projeto_Aditivos,
+         TecnicosMEI e Produtos (rótulos de lookup).
+       =================================================================== */
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* Choices — batem CARACTERE A CARACTERE com o schema criado (criar-schema-projetos.ps1).
+       Divergência é denunciada por EG.validarChoices em vez de falhar em silêncio. */
+    const TIPO_ITEM = ["Fase", "Entrega", "Pacote de Trabalho", "Atividade"];
+    const COR_TIPO = { "Fase": "#A371F7", "Entrega": "#58A6FF", "Pacote de Trabalho": "#D29922", "Atividade": "#8B949E" };
+
+    const STATUS_ITEM = ["Planejado", "Em Andamento", "Concluído", "Cancelado"];
+    const COR_STATUS_ITEM = { "Planejado": "#8B949E", "Em Andamento": "#58A6FF", "Concluído": "#22B573", "Cancelado": "#F85149" };
+
+    const PAPEL = ["Líder", "Eletricista", "Ajudante", "Apoio"];
+    const COR_PAPEL = { "Líder": "#A371F7", "Eletricista": "#58A6FF", "Ajudante": "#D29922", "Apoio": "#8B949E" };
+
+    const STATUS_MEDICAO = ["Aberta", "Aprovada", "Faturada"];
+    const COR_MEDICAO = { "Aberta": "#D29922", "Aprovada": "#58A6FF", "Faturada": "#22B573" };
+
+    const TIPO_LANC = ["Custo", "Receita"];
+    const CATEGORIA = ["Mão de Obra", "Material", "Equipamento", "Terceiros", "Outros"];
+
+    const TIPO_ADITIVO = ["Prazo", "Valor", "Escopo", "Misto"];
+    const STATUS_ADITIVO = ["Proposto", "Aprovado", "Rejeitado"];
+    const COR_ADITIVO = { "Proposto": "#D29922", "Aprovado": "#22B573", "Rejeitado": "#F85149" };
+
+    // Status do projeto (lista LEGADA Projetos — campo Status_Projeto)
+    const COR_PROJETO = { "Planejamento": "#8B949E", "Em Execução": "#58A6FF", "Pausado": "#D29922", "Concluído": "#22B573", "Cancelado": "#F85149" };
+
+    const cor = (mapa, v) => mapa[v] || "#8b949e";
+
+    /* ================= helpers numéricos / de data (padrão do repo) ================= */
+    const num = (v) => {
+      if (typeof v === "number") return isFinite(v) ? v : 0;
+      if (v == null || v === "") return 0;
+      const n = Number(v);
+      return isFinite(n) ? n : 0;
+    };
+    const temValor = (v) => v != null && v !== "";
+    const ehNum = (v) => temValor(v) && isFinite(Number(v));
+    const fmtN = (v, casas) => num(v).toLocaleString("pt-BR", { minimumFractionDigits: casas || 0, maximumFractionDigits: casas || 0 });
+    const cel = (v, casas) => ehNum(v) ? fmtN(v, casas) : "—";
+    const brl = (v) => EG.BRL(num(v));
+    const celBRL = (v) => ehNum(v) ? brl(v) : "—";
+    const pct = (v, casas) => ehNum(v) ? fmtN(v, casas == null ? 1 : casas) + " %" : "—";
+
+    /* ============================== estado ============================== */
+    let projetos = [], eap = [], alocacoes = [], materiais = [], contratoItens = [], medicoes = [], lancamentos = [], aditivos = [];
+    let tecnicos = [], produtos = [];
+    let nomeTecnico = {}, nomeProduto = {}, mapEapId = {}, mapCtrId = {};
+    let mapItem = {};        // "tipo:id" -> item (drawer)
+    let carregado = false;
+    let projetoAtual = "";   // id (string) do projeto selecionado
+
+    const tecNome = (id) => id == null ? "—" : (nomeTecnico[id] || ("técnico #" + id));
+    const prodNome = (id) => id == null ? "—" : (nomeProduto[id] || ("produto #" + id));
+    const eapRotulo = (id) => {
+      if (id == null) return "—";
+      const it = mapEapId[id]; if (!it) return "item EAP #" + id;
+      const f = it.fields || {};
+      return [f.Codigo_EAP, f.Title].filter(Boolean).join(" — ") || ("item EAP #" + id);
+    };
+    const ctrRotulo = (id) => {
+      if (id == null) return "—";
+      const it = mapCtrId[id]; if (!it) return "item de contrato #" + id;
+      const f = it.fields || {};
+      return [f.Codigo_Item, f.Title].filter(Boolean).join(" — ") || ("item de contrato #" + id);
+    };
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; }
+      catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    // uma lista que falha não derruba as outras seções
+    const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
+
+    /* ============================== abas ============================== */
+    let secAtual = "eap";
+    document.querySelectorAll(".tab").forEach(b => { b.onclick = () => mostrarSec(b.dataset.sec); });
+    function mostrarSec(id) {
+      secAtual = id;
+      document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.sec === id));
+      ["eap", "aloc", "mat", "ctr", "cxr", "adt"].forEach(s => { $("sec_" + s).hidden = !carregado || (s !== id); });
+    }
+
+    /* ============================== carga ============================== */
+    $("btnLoad").onclick = carregar;
+    async function carregar() {
+      try {
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando Frente Projetos…" });
+        setStatus("Carregando projetos…");
+
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — só AVISA; leitura nunca grava
+        Promise.all([
+          EG.validarChoices("Projeto_EAP", "Tipo_Item", TIPO_ITEM).then(v => ({ v, rotulo: "Tipo do Item (Projeto_EAP)" })),
+          EG.validarChoices("Projeto_EAP", "Status_Item", STATUS_ITEM).then(v => ({ v, rotulo: "Status do Item (Projeto_EAP)" })),
+          EG.validarChoices("Projeto_Alocacoes", "Papel", PAPEL).then(v => ({ v, rotulo: "Papel (Projeto_Alocacoes)" })),
+          EG.validarChoices("Medicoes_Quantitativas", "Status_Medicao", STATUS_MEDICAO).then(v => ({ v, rotulo: "Status da Medição (Medicoes_Quantitativas)" })),
+          EG.validarChoices("Projeto_Custos_Receitas", "Tipo_Lancamento", TIPO_LANC).then(v => ({ v, rotulo: "Tipo de Lançamento (Projeto_Custos_Receitas)" })),
+          EG.validarChoices("Projeto_Custos_Receitas", "Categoria", CATEGORIA).then(v => ({ v, rotulo: "Categoria (Projeto_Custos_Receitas)" })),
+          EG.validarChoices("Projeto_Aditivos", "Tipo_Aditivo", TIPO_ADITIVO).then(v => ({ v, rotulo: "Tipo do Aditivo (Projeto_Aditivos)" })),
+          EG.validarChoices("Projeto_Aditivos", "Status_Aditivo", STATUS_ADITIVO).then(v => ({ v, rotulo: "Status do Aditivo (Projeto_Aditivos)" }))
+        ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
+
+        const [pr, ea, al, ma, ci, me, la, ad, te, pd] = await Promise.all([
+          soft(EG.listItems("Projetos"), "Projetos"),
+          soft(EG.listItems("Projeto_EAP"), "Projeto_EAP"),
+          soft(EG.listItems("Projeto_Alocacoes"), "Projeto_Alocacoes"),
+          soft(EG.listItems("Projeto_Materiais"), "Projeto_Materiais"),
+          soft(EG.listItems("Contrato_Itens"), "Contrato_Itens"),
+          soft(EG.listItems("Medicoes_Quantitativas"), "Medicoes_Quantitativas"),
+          soft(EG.listItems("Projeto_Custos_Receitas"), "Projeto_Custos_Receitas"),
+          soft(EG.listItems("Projeto_Aditivos"), "Projeto_Aditivos"),
+          soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
+          soft(EG.listItems("Produtos"), "Produtos")
+        ]);
+        setDados(pr, ea, al, ma, ci, me, la, ad, te, pd);
+        carregado = true;
+        EG.renderEstado($("estado"), "ok");
+        $("avisoRo").hidden = false;
+        $("barProjeto").hidden = false;
+        $("tabs").hidden = false;
+        montarSeletor();
+        renderTudo();
+        mostrarSec(secAtual);
+        setStatus("OK — " + projetos.length + " projeto(s), " + eap.length + " item(ns) de EAP, " +
+                  contratoItens.length + " item(ns) de contrato, " + medicoes.length + " medição(ões), " +
+                  lancamentos.length + " lançamento(s), " + aditivos.length + " aditivo(s).");
+      } catch (e) {
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar: " + e.message, onRetry: carregar });
+        setStatus("Falha: " + e.message, "err");
+      }
+    }
+
+    // separado da carga para poder ser exercitado com dados falsos (window.PRJ.setDados)
+    function setDados(pr, ea, al, ma, ci, me, la, ad, te, pd) {
+      projetos = pr || []; eap = ea || []; alocacoes = al || []; materiais = ma || [];
+      contratoItens = ci || []; medicoes = me || []; lancamentos = la || []; aditivos = ad || [];
+      tecnicos = te || []; produtos = pd || [];
+      nomeTecnico = {}; tecnicos.forEach(t => { nomeTecnico[t.id] = (t.fields || {}).Title; });
+      nomeProduto = {}; produtos.forEach(p => { const f = p.fields || {}; nomeProduto[p.id] = [f.Codigo_Interno || f.Codigo, f.Title].filter(Boolean).join(" — ") || f.Title; });
+      mapEapId = {}; eap.forEach(i => { mapEapId[i.id] = i; });
+      mapCtrId = {}; contratoItens.forEach(i => { mapCtrId[i.id] = i; });
+      mapItem = {};
+      const reg = (tipo, lista) => lista.forEach(i => { mapItem[tipo + ":" + i.id] = i; });
+      reg("eap", eap); reg("aloc", alocacoes); reg("mat", materiais); reg("ctr", contratoItens);
+      reg("med", medicoes); reg("lanc", lancamentos); reg("adt", aditivos); reg("proj", projetos);
+    }
+
+    function montarSeletor() {
+      const opts = projetos.slice()
+        .sort((a, b) => String((a.fields || {}).Codigo_Projeto || (a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Codigo_Projeto || (b.fields || {}).Title || ""), "pt-BR"))
+        .map(p => {
+          const f = p.fields || {};
+          const rot = [f.Codigo_Projeto, f.Title].filter(Boolean).join(" — ") || ("projeto #" + p.id);
+          return "<option value='" + esc(p.id) + "'>" + esc(rot) + "</option>";
+        }).join("");
+      $("selProjeto").innerHTML = opts || "<option value=''>(nenhum projeto na lista Projetos)</option>";
+      if (!projetoAtual || !projetos.some(p => String(p.id) === String(projetoAtual)))
+        projetoAtual = projetos.length ? String(projetos[0].id) : "";
+      $("selProjeto").value = projetoAtual;
+    }
+    $("selProjeto").addEventListener("change", () => { projetoAtual = $("selProjeto").value; renderTudo(); });
+
+    // filtro base: itens da lista cujo lookup Projeto aponta para o projeto selecionado
+    const doProjeto = (lista) => lista.filter(o => String((o.fields || {}).ProjetoLookupId ?? "") === String(projetoAtual));
+    const projSel = () => projetos.find(p => String(p.id) === String(projetoAtual)) || null;
+
+    /* ==================== agregações compartilhadas ==================== */
+    // soma de Qtd_Medida por item de contrato (todas as medições do projeto)
+    function medidoPorItem() {
+      const m = {};
+      doProjeto(medicoes).forEach(o => {
+        const f = o.fields || {};
+        const cid = f.Contrato_ItemLookupId;
+        if (cid == null) return;
+        (m[cid] = m[cid] || { qtd: 0, qtdePorStatus: {}, itens: [] });
+        m[cid].qtd += num(f.Qtd_Medida);
+        m[cid].qtdePorStatus[f.Status_Medicao || "(sem status)"] = (m[cid].qtdePorStatus[f.Status_Medicao || "(sem status)"] || 0) + num(f.Qtd_Medida);
+        m[cid].itens.push(o);
+      });
+      return m;
+    }
+    // deltas acumulados dos aditivos APROVADOS do projeto
+    function deltasAprovados() {
+      const apr = doProjeto(aditivos).filter(o => (o.fields || {}).Status_Aditivo === "Aprovado");
+      return {
+        qtd: apr.length,
+        valor: apr.reduce((s, o) => s + num((o.fields || {}).Valor_Delta), 0),
+        dias: apr.reduce((s, o) => s + num((o.fields || {}).Dias_Delta), 0)
+      };
+    }
+
+    function renderTudo() { renderKpis(); renderEap(); renderAloc(); renderMat(); renderCtr(); renderCxr(); renderAdt(); atualizarAbas(); }
+    function atualizarAbas() {
+      $("tabEap").textContent = "EAP (" + doProjeto(eap).length + ")";
+      $("tabAloc").textContent = "Alocações (" + doProjeto(alocacoes).length + ")";
+      $("tabMat").textContent = "Materiais (" + doProjeto(materiais).length + ")";
+      $("tabCtr").textContent = "Contrato & medições (" + doProjeto(contratoItens).length + ")";
+      $("tabCxr").textContent = "Custos × Receitas (" + doProjeto(lancamentos).length + ")";
+      $("tabAdt").textContent = "Aditivos (" + doProjeto(aditivos).length + ")";
+    }
+
+    /* ============================== KPIs ============================== */
+    function renderKpis() {
+      $("kpis").hidden = !carregado;
+      const p = projSel();
+      const f = (p || {}).fields || {};
+      const c = cor(COR_PROJETO, f.Status_Projeto || f.Status);
+      $("kStatus").innerHTML = "<span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Status_Projeto || f.Status || "—") + "</span>";
+      $("kCliente").textContent = f.Cliente_Contato ? ("Contato: " + f.Cliente_Contato) : (f.Codigo_Projeto || "");
+      $("kContrato").textContent = celBRL(f.Valor_Contrato);
+      const d = deltasAprovados();
+      $("kContratoAjust").textContent = d.qtd
+        ? ("com aditivos aprovados: " + brl(num(f.Valor_Contrato) + d.valor))
+        : "sem aditivos aprovados";
+
+      // % medido do contrato ponderado por VALOR (qtd medida × preço unitário)
+      const med = medidoPorItem();
+      let valorContratado = 0, valorMedido = 0;
+      doProjeto(contratoItens).forEach(o => {
+        const cf = o.fields || {};
+        const vc = num(cf.Qtd_Contratada) * num(cf.Preco_Unitario);
+        valorContratado += vc;
+        const g = med[o.id];
+        if (g) valorMedido += g.qtd * num(cf.Preco_Unitario);
+      });
+      $("kMedido").textContent = valorContratado > 0 ? pct(valorMedido / valorContratado * 100) : "—";
+
+      const lan = doProjeto(lancamentos);
+      const custo = lan.filter(o => (o.fields || {}).Tipo_Lancamento === "Custo").reduce((s, o) => s + num((o.fields || {}).Valor), 0);
+      const receita = lan.filter(o => (o.fields || {}).Tipo_Lancamento === "Receita").reduce((s, o) => s + num((o.fields || {}).Valor), 0);
+      $("kCusto").textContent = brl(custo);
+      $("kCustoSub").textContent = lan.length + " lançamento(s)";
+      $("kReceita").textContent = brl(receita);
+      const saldo = receita - custo;
+      $("kSaldo").textContent = brl(saldo);
+      $("kSaldo").className = "v " + (saldo < 0 ? "neg" : "pos");
+    }
+
+    /* ==================================================================
+       1. EAP — árvore montada por EAP_PaiLookupId, indentada na tabela.
+       Ordenação em cada nível: Ordem (numérica), depois Codigo_EAP.
+       Guardas: pai fora do projeto vira raiz; ciclo é cortado (visitado).
+       ================================================================== */
+    function arvoreEap() {
+      const itens = doProjeto(eap);
+      const ids = new Set(itens.map(o => String(o.id)));
+      const filhos = {};
+      const raizes = [];
+      itens.forEach(o => {
+        const pai = (o.fields || {}).EAP_PaiLookupId;
+        if (pai != null && ids.has(String(pai))) (filhos[pai] = filhos[pai] || []).push(o);
+        else raizes.push(o); // sem pai OU pai de outro projeto (dado inconsistente — vira raiz visível)
+      });
+      const ordenar = (lst) => lst.slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        const d = num(fa.Ordem) - num(fb.Ordem);
+        if (d !== 0) return d;
+        return String(fa.Codigo_EAP || "").localeCompare(String(fb.Codigo_EAP || ""), "pt-BR", { numeric: true });
+      });
+      const linhas = [];
+      const visitado = new Set();
+      const desce = (lst, nivel) => {
+        ordenar(lst).forEach(o => {
+          if (visitado.has(String(o.id))) return; // ciclo: corta em vez de travar a aba
+          visitado.add(String(o.id));
+          linhas.push({ o, nivel });
+          desce(filhos[o.id] || [], nivel + 1);
+        });
+      };
+      desce(raizes, 0);
+      return { linhas, total: itens.length };
+    }
+
+    function renderEap() {
+      const { linhas, total } = arvoreEap();
+      if (!linhas.length) {
+        $("eTbody").innerHTML = ""; $("eTbl").hidden = true; $("eEmpty").hidden = false;
+        $("eEmpty").textContent = "Nenhum item de EAP para este projeto. A estrutura passa a ser gravada pelo gateway B1.";
+        return;
+      }
+      $("eEmpty").hidden = true; $("eTbl").hidden = false;
+      const somaPeso = linhas.reduce((s, l) => s + num((l.o.fields || {}).Peso_Pct), 0);
+      $("eTbody").innerHTML = linhas.map(({ o, nivel }) => {
+        const f = o.fields || {};
+        const ct = cor(COR_TIPO, f.Tipo_Item);
+        const cs = cor(COR_STATUS_ITEM, f.Status_Item);
+        const ind = nivel ? "<span class='eap-ind'>" + "│&nbsp;&nbsp;".repeat(nivel - 1) + "├─&nbsp;</span>" : "";
+        return "<tr data-tipo='eap' data-id='" + esc(o.id) + "'>" +
+          "<td>" + ind + "<span class='eap-cod'>" + esc(f.Codigo_EAP || "—") + "</span> " + esc(f.Title || "") + "</td>" +
+          "<td><span class='badge' style='border-color:" + ct + ";color:" + ct + "'>" + esc(f.Tipo_Item || "—") + "</span></td>" +
+          "<td><span class='badge' style='border-color:" + cs + ";color:" + cs + "'>" + esc(f.Status_Item || "—") + "</span></td>" +
+          "<td class='n'>" + cel(f.Peso_Pct, 1) + "</td>" +
+          "<td class='dim'>" + esc(String(f.Descricao || "").slice(0, 120)) + "</td>" +
+          "</tr>";
+      }).join("") +
+      (Math.abs(somaPeso - 100) > 0.01 && somaPeso > 0
+        ? "<tr class='tot-row'><td colspan='3'>Soma dos pesos</td><td class='n warn'>" + fmtN(somaPeso, 1) + "</td><td class='dim'>≠ 100 % — conferir pesos (informativo)</td></tr>"
+        : "") +
+      "<tr class='tot-row'><td colspan='5' class='dim'>" + total + " item(ns) na EAP</td></tr>";
+    }
+
+    /* ========================== 2. ALOCAÇÕES ========================== */
+    function renderAloc() {
+      const lista = doProjeto(alocacoes).slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        return String(fa.Data_Inicio || "").localeCompare(String(fb.Data_Inicio || "")) ||
+               String(tecNome(fa.TecnicoLookupId)).localeCompare(String(tecNome(fb.TecnicoLookupId)), "pt-BR");
+      });
+      if (!lista.length) {
+        $("aTbody").innerHTML = ""; $("aTbl").hidden = true; $("aEmpty").hidden = false;
+        $("aEmpty").textContent = "Nenhuma alocação para este projeto.";
+        return;
+      }
+      $("aEmpty").hidden = true; $("aTbl").hidden = false;
+      const totalH = lista.reduce((s, o) => s + num((o.fields || {}).Horas_Previstas), 0);
+      $("aTbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const cp = cor(COR_PAPEL, f.Papel);
+        return "<tr data-tipo='aloc' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(tecNome(f.TecnicoLookupId)) + "</td>" +
+          "<td><span class='badge' style='border-color:" + cp + ";color:" + cp + "'>" + esc(f.Papel || "—") + "</span></td>" +
+          "<td class='dim'>" + esc(f.EAPLookupId != null ? eapRotulo(f.EAPLookupId) : "—") + "</td>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Inicio) || "—") + "</td>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Fim) || "—") + "</td>" +
+          "<td class='n'>" + cel(f.Horas_Previstas, 1) + "</td>" +
+          "</tr>";
+      }).join("") +
+      "<tr class='tot-row'><td colspan='5'>Total de horas previstas</td><td class='n'>" + fmtN(totalH, 1) + "</td></tr>";
+    }
+
+    /* ========================== 3. MATERIAIS ========================== */
+    function renderMat() {
+      const lista = doProjeto(materiais);
+      if (!lista.length) {
+        $("mTbody").innerHTML = ""; $("mTbl").hidden = true; $("mEmpty").hidden = false;
+        $("mEmpty").textContent = "Nenhum material previsto/aplicado neste projeto.";
+        return;
+      }
+      $("mEmpty").hidden = true; $("mTbl").hidden = false;
+      let tPrev = 0, tReal = 0;
+      const linhas = lista.map(o => {
+        const f = o.fields || {};
+        tPrev += num(f.Custo_Previsto); tReal += num(f.Custo_Real);
+        // desvios só quando os DOIS lados existem — senão a coluna mentiria com 0
+        const dQtd = (ehNum(f.Qtd_Prevista) && ehNum(f.Qtd_Aplicada)) ? num(f.Qtd_Aplicada) - num(f.Qtd_Prevista) : null;
+        const dCusto = (ehNum(f.Custo_Previsto) && ehNum(f.Custo_Real)) ? num(f.Custo_Real) - num(f.Custo_Previsto) : null;
+        const clsQ = dQtd == null ? "dim" : (dQtd > 0 ? "neg" : (dQtd < 0 ? "pos" : "dim"));
+        const clsC = dCusto == null ? "dim" : (dCusto > 0 ? "neg" : (dCusto < 0 ? "pos" : "dim"));
+        return "<tr data-tipo='mat' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.ProdutoLookupId != null ? prodNome(f.ProdutoLookupId) : (f.Title || "—")) + "</td>" +
+          "<td class='dim'>" + esc(f.EAPLookupId != null ? eapRotulo(f.EAPLookupId) : "—") + "</td>" +
+          "<td class='n'>" + cel(f.Qtd_Prevista, 2) + "</td>" +
+          "<td class='n'>" + cel(f.Qtd_Aplicada, 2) + "</td>" +
+          "<td class='n " + clsQ + "'>" + (dQtd == null ? "—" : (dQtd > 0 ? "+" : "") + fmtN(dQtd, 2)) + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Custo_Previsto)) + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Custo_Real)) + "</td>" +
+          "<td class='n " + clsC + "'>" + (dCusto == null ? "—" : (dCusto > 0 ? "+" : "") + esc(brl(dCusto))) + "</td>" +
+          "</tr>";
+      }).join("");
+      const dTot = tReal - tPrev;
+      $("mTbody").innerHTML = linhas +
+        "<tr class='tot-row'><td colspan='5'>Totais de custo</td>" +
+        "<td class='n'>" + esc(brl(tPrev)) + "</td><td class='n'>" + esc(brl(tReal)) + "</td>" +
+        "<td class='n " + (dTot > 0 ? "neg" : "pos") + "'>" + (dTot > 0 ? "+" : "") + esc(brl(dTot)) + "</td></tr>";
+    }
+
+    /* =================== 4. CONTRATO & MEDIÇÕES ======================= */
+    function renderCtr() {
+      const lista = doProjeto(contratoItens).slice().sort((a, b) =>
+        String((a.fields || {}).Codigo_Item || "").localeCompare(String((b.fields || {}).Codigo_Item || ""), "pt-BR", { numeric: true }));
+      const med = medidoPorItem();
+      if (!lista.length) {
+        $("cTbody").innerHTML = ""; $("cTbl").hidden = true; $("cEmpty").hidden = false;
+        $("cEmpty").textContent = "Nenhum item de contrato para este projeto.";
+      } else {
+        $("cEmpty").hidden = true; $("cTbl").hidden = false;
+        let vTot = 0, vMed = 0;
+        const linhas = lista.map(o => {
+          const f = o.fields || {};
+          const g = med[o.id] || null;
+          const qtdMed = g ? g.qtd : null;
+          const vc = num(f.Qtd_Contratada) * num(f.Preco_Unitario);
+          vTot += vc;
+          if (g) vMed += g.qtd * num(f.Preco_Unitario);
+          const p = (g && num(f.Qtd_Contratada) > 0) ? g.qtd / num(f.Qtd_Contratada) * 100 : null;
+          const cls = p == null ? "" : (p > 100.01 ? "estouro" : (p >= 99.99 ? "cheio" : ""));
+          const barra = p == null ? "<span class='dim'>—</span>" :
+            "<span class='bar'><i class='" + cls + "' style='width:" + Math.min(100, Math.max(0, p)) + "%'></i></span>" +
+            "<span class='" + (p > 100.01 ? "warn" : "") + "'>" + fmtN(p, 1) + " %</span>";
+          return "<tr data-tipo='ctr' data-id='" + esc(o.id) + "'>" +
+            "<td><span class='eap-cod'>" + esc(f.Codigo_Item || "—") + "</span></td>" +
+            "<td>" + esc(String(f.Descricao || f.Title || "—").slice(0, 100)) + "</td>" +
+            "<td class='dim'>" + esc(f.Unidade || "—") + "</td>" +
+            "<td class='n'>" + cel(f.Qtd_Contratada, 2) + "</td>" +
+            "<td class='n'>" + esc(celBRL(f.Preco_Unitario)) + "</td>" +
+            "<td class='n'>" + esc(celBRL(vc)) + "</td>" +
+            "<td class='n'>" + (qtdMed == null ? "—" : fmtN(qtdMed, 2)) + "</td>" +
+            "<td class='n'>" + barra + "</td>" +
+            "<td class='n dim'>" + (g ? g.itens.length : 0) + "</td>" +
+            "</tr>";
+        }).join("");
+        $("cTbody").innerHTML = linhas +
+          "<tr class='tot-row'><td colspan='5'>Totais</td>" +
+          "<td class='n'>" + esc(brl(vTot)) + "</td><td></td>" +
+          "<td class='n'>" + (vTot > 0 ? fmtN(vMed / vTot * 100, 1) + " %" : "—") + "</td>" +
+          "<td class='n dim'>" + doProjeto(medicoes).length + "</td></tr>";
+      }
+
+      // tabela de medições cruas do projeto
+      const ms = doProjeto(medicoes).slice().sort((a, b) =>
+        String((b.fields || {}).Competencia || "").localeCompare(String((a.fields || {}).Competencia || "")));
+      $("qSec").hidden = ms.length === 0;
+      $("qTbl").hidden = ms.length === 0;
+      $("qTbody").innerHTML = ms.map(o => {
+        const f = o.fields || {};
+        const cs = cor(COR_MEDICAO, f.Status_Medicao);
+        return "<tr data-tipo='med' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Contrato_ItemLookupId != null ? ctrRotulo(f.Contrato_ItemLookupId) : "—") + "</td>" +
+          "<td>" + esc(f.Competencia || "—") + "</td>" +
+          "<td class='n'>" + cel(f.Qtd_Medida, 2) + "</td>" +
+          "<td><span class='badge' style='border-color:" + cs + ";color:" + cs + "'>" + esc(f.Status_Medicao || "—") + "</span></td>" +
+          "<td class='dim'>" + esc(f.Chave_Medicao || "—") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ===================== 5. CUSTOS × RECEITAS ======================= */
+    function renderCxr() {
+      const lista = doProjeto(lancamentos);
+      if (!lista.length) {
+        $("rTbody").innerHTML = ""; $("rTbl").hidden = true; $("rEmpty").hidden = false;
+        $("rEmpty").textContent = "Nenhum custo ou receita lançado para este projeto.";
+        $("lSec").hidden = true; $("lTbl").hidden = true; $("lTbody").innerHTML = "";
+        return;
+      }
+      $("rEmpty").hidden = true; $("rTbl").hidden = false;
+
+      // agrega por competência (AAAA-MM); sem competência entra como "(sem competência)" no fim.
+      // Sem Tipo_Lancamento o valor NÃO entra em nenhuma coluna: chutar custo ou
+      // receita mentiria no saldo — o lançamento cru continua visível na tabela abaixo.
+      const porComp = {};
+      lista.forEach(o => {
+        const f = o.fields || {};
+        const k = (f.Competencia || "").trim() || "(sem competência)";
+        porComp[k] = porComp[k] || { custo: 0, receita: 0 };
+        if (f.Tipo_Lancamento === "Receita") porComp[k].receita += num(f.Valor);
+        else if (f.Tipo_Lancamento === "Custo") porComp[k].custo += num(f.Valor);
+      });
+      const comps = Object.keys(porComp).sort((a, b) => {
+        if (a === "(sem competência)") return 1;
+        if (b === "(sem competência)") return -1;
+        return a.localeCompare(b); // AAAA-MM ordena certo lexicograficamente, ascendente p/ acumulado
+      });
+      let acum = 0, tC = 0, tR = 0;
+      $("rTbody").innerHTML = comps.map(k => {
+        const g = porComp[k];
+        const saldo = g.receita - g.custo;
+        acum += saldo; tC += g.custo; tR += g.receita;
+        return "<tr>" +
+          "<td>" + esc(k) + "</td>" +
+          "<td class='n'>" + esc(brl(g.custo)) + "</td>" +
+          "<td class='n'>" + esc(brl(g.receita)) + "</td>" +
+          "<td class='n " + (saldo < 0 ? "neg" : "pos") + "'>" + esc(brl(saldo)) + "</td>" +
+          "<td class='n " + (acum < 0 ? "neg" : "pos") + "'>" + esc(brl(acum)) + "</td>" +
+          "</tr>";
+      }).join("") +
+      "<tr class='tot-row'><td>Totais</td>" +
+      "<td class='n'>" + esc(brl(tC)) + "</td><td class='n'>" + esc(brl(tR)) + "</td>" +
+      "<td class='n " + (tR - tC < 0 ? "neg" : "pos") + "'>" + esc(brl(tR - tC)) + "</td><td></td></tr>";
+
+      // lançamentos crus (drawer por item)
+      const ord = lista.slice().sort((a, b) =>
+        String((b.fields || {}).Competencia || "").localeCompare(String((a.fields || {}).Competencia || "")));
+      $("lSec").hidden = false; $("lTbl").hidden = false;
+      $("lTbody").innerHTML = ord.map(o => {
+        const f = o.fields || {};
+        const ehRec = f.Tipo_Lancamento === "Receita";
+        const ct = ehRec ? "#3fb950" : (f.Tipo_Lancamento === "Custo" ? "#F0883E" : "#8b949e");
+        return "<tr data-tipo='lanc' data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(f.Competencia || "—") + "</td>" +
+          "<td><span class='badge' style='border-color:" + ct + ";color:" + ct + "'>" + esc(f.Tipo_Lancamento || "—") + "</span></td>" +
+          "<td class='dim'>" + esc(f.Categoria || "—") + "</td>" +
+          "<td class='n'>" + esc(celBRL(f.Valor)) + "</td>" +
+          "<td class='dim'>" + esc(f.Origem || "—") + "</td>" +
+          "<td class='dim'>" + esc(f.Title || "—") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ========================== 6. ADITIVOS =========================== */
+    function renderAdt() {
+      const lista = doProjeto(aditivos).slice().sort((a, b) => num((a.fields || {}).Numero_Aditivo) - num((b.fields || {}).Numero_Aditivo));
+      const d = deltasAprovados();
+      const f = (projSel() || {}).fields || {};
+      $("adK_apr").textContent = d.qtd;
+      $("adK_tot").textContent = "de " + lista.length + " aditivo(s)";
+      $("adK_valor").textContent = d.qtd ? (d.valor >= 0 ? "+" : "") + brl(d.valor) : "—";
+      $("adK_dias").textContent = d.qtd ? (d.dias >= 0 ? "+" : "") + fmtN(d.dias) + " dia(s)" : "—";
+      $("adK_atual").textContent = ehNum(f.Valor_Contrato) ? brl(num(f.Valor_Contrato) + d.valor) : "—";
+
+      if (!lista.length) {
+        $("adTbody").innerHTML = ""; $("adTbl").hidden = true; $("adEmpty").hidden = false;
+        $("adEmpty").textContent = "Nenhum aditivo para este projeto.";
+        return;
+      }
+      $("adEmpty").hidden = true; $("adTbl").hidden = false;
+      let acumV = 0, acumD = 0;
+      $("adTbody").innerHTML = lista.map(o => {
+        const af = o.fields || {};
+        const cs = cor(COR_ADITIVO, af.Status_Aditivo);
+        const aprovado = af.Status_Aditivo === "Aprovado";
+        if (aprovado) { acumV += num(af.Valor_Delta); acumD += num(af.Dias_Delta); }
+        return "<tr data-tipo='adt' data-id='" + esc(o.id) + "'>" +
+          "<td class='n'>" + cel(af.Numero_Aditivo) + "</td>" +
+          "<td class='dim'>" + esc(af.Tipo_Aditivo || "—") + "</td>" +
+          "<td><span class='badge' style='border-color:" + cs + ";color:" + cs + "'>" + esc(af.Status_Aditivo || "—") + "</span></td>" +
+          "<td class='n'>" + (ehNum(af.Valor_Delta) ? (num(af.Valor_Delta) >= 0 ? "+" : "") + esc(brl(af.Valor_Delta)) : "—") + "</td>" +
+          "<td class='n'>" + (ehNum(af.Dias_Delta) ? (num(af.Dias_Delta) >= 0 ? "+" : "") + fmtN(af.Dias_Delta) : "—") + "</td>" +
+          "<td>" + esc(EG.fmtDate(af.Aprovado_Em) || "—") + "</td>" +
+          "<td class='dim'>" + esc(String(af.Descricao || "").slice(0, 100)) + "</td>" +
+          "</tr>";
+      }).join("") +
+      "<tr class='tot-row'><td colspan='3'>Acumulado (só aprovados)</td>" +
+      "<td class='n'>" + (acumV >= 0 ? "+" : "") + esc(brl(acumV)) + "</td>" +
+      "<td class='n'>" + (acumD >= 0 ? "+" : "") + fmtN(acumD) + "</td><td colspan='2'></td></tr>";
+    }
+
+    /* ==================================================================
+       DRAWER — um por entidade, com os campos crus (Graph) no rodapé.
+       Nenhum botão de escrita aqui: leitura pura até o gateway B1.
+       ================================================================== */
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+    const linhaM = (l, v) => !ehNum(v) ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(brl(v)) + "</dd>";
+    const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
+
+    function mostrarDrawer(titulo, sub, badge, corBadge, corpoHtml, fields) {
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(titulo) +
+          (sub ? "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(sub) + "</div>" : "") +
+          (badge ? "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" : "") +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpoHtml +
+          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
+          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
+        "</div>";
+      $("dc").onclick = fechar;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    function abrirEap(o) {
+      const f = o.fields || {};
+      const corpo = "<dl>" +
+        linha("Código EAP", f.Codigo_EAP) +
+        linha("Item", f.Title) +
+        linha("Tipo", f.Tipo_Item) +
+        linha("Item pai", f.EAP_PaiLookupId != null ? eapRotulo(f.EAP_PaiLookupId) : "— (raiz)") +
+        linha("Ordem", cel(f.Ordem)) +
+        linha("Peso", ehNum(f.Peso_Pct) ? fmtN(f.Peso_Pct, 1) + " %" : null) +
+        linha("Descrição", f.Descricao) +
+        "</dl>";
+      mostrarDrawer(f.Codigo_EAP || f.Title || "Item da EAP", f.Title, f.Status_Item, cor(COR_STATUS_ITEM, f.Status_Item), corpo, f);
+    }
+    function abrirAloc(o) {
+      const f = o.fields || {};
+      const corpo = "<dl>" +
+        linha("Técnico", tecNome(f.TecnicoLookupId)) +
+        linha("Papel", f.Papel) +
+        linha("Item da EAP", f.EAPLookupId != null ? eapRotulo(f.EAPLookupId) : null) +
+        linha("Início", EG.fmtDate(f.Data_Inicio)) +
+        linha("Fim", EG.fmtDate(f.Data_Fim)) +
+        linha("Horas previstas", ehNum(f.Horas_Previstas) ? fmtN(f.Horas_Previstas, 1) + " h" : null) +
+        linha("Título", f.Title) +
+        "</dl>";
+      mostrarDrawer(tecNome(f.TecnicoLookupId), "Alocação", f.Papel, cor(COR_PAPEL, f.Papel), corpo, f);
+    }
+    function abrirMat(o) {
+      const f = o.fields || {};
+      const dQtd = (ehNum(f.Qtd_Prevista) && ehNum(f.Qtd_Aplicada)) ? num(f.Qtd_Aplicada) - num(f.Qtd_Prevista) : null;
+      const dCusto = (ehNum(f.Custo_Previsto) && ehNum(f.Custo_Real)) ? num(f.Custo_Real) - num(f.Custo_Previsto) : null;
+      const corpo = "<dl>" +
+        linha("Produto", f.ProdutoLookupId != null ? prodNome(f.ProdutoLookupId) : null) +
+        linha("Item da EAP", f.EAPLookupId != null ? eapRotulo(f.EAPLookupId) : null) +
+        linha("Título", f.Title) +
+        "</dl>" +
+        grupo("Quantidades") + "<dl>" +
+        linha("Prevista", cel(f.Qtd_Prevista, 2)) +
+        linha("Aplicada", cel(f.Qtd_Aplicada, 2)) +
+        linha("Desvio", dQtd == null ? null : (dQtd > 0 ? "+" : "") + fmtN(dQtd, 2)) +
+        "</dl>" +
+        grupo("Custos") + "<dl>" +
+        linhaM("Previsto", f.Custo_Previsto) +
+        linhaM("Real", f.Custo_Real) +
+        linha("Desvio", dCusto == null ? null : (dCusto > 0 ? "+" : "") + brl(dCusto)) +
+        "</dl>" +
+        (dQtd != null && dQtd > 0 ? "<div class='diverge'>⚠️ Aplicado acima do previsto (" + esc(fmtN(dQtd, 2)) + " a mais).</div>" : "");
+      mostrarDrawer(f.ProdutoLookupId != null ? prodNome(f.ProdutoLookupId) : (f.Title || "Material"), "Material do projeto", null, "#8b949e", corpo, f);
+    }
+    function abrirCtr(o) {
+      const f = o.fields || {};
+      const g = medidoPorItem()[o.id] || null;
+      const vc = num(f.Qtd_Contratada) * num(f.Preco_Unitario);
+      const p = (g && num(f.Qtd_Contratada) > 0) ? g.qtd / num(f.Qtd_Contratada) * 100 : null;
+      const porStatus = g ? Object.keys(g.qtdePorStatus).map(s => s + ": " + fmtN(g.qtdePorStatus[s], 2)).join(" · ") : null;
+      const corpo = "<dl>" +
+        linha("Código do item", f.Codigo_Item) +
+        linha("Descrição", f.Descricao) +
+        linha("Unidade", f.Unidade) +
+        linha("Chave (projetoId|codigo)", f.Chave_Item_Contrato) +
+        "</dl>" +
+        grupo("Contratado") + "<dl>" +
+        linha("Qtd. contratada", cel(f.Qtd_Contratada, 2)) +
+        linhaM("Preço unitário", f.Preco_Unitario) +
+        linhaM("Valor contratado", vc) +
+        "</dl>" +
+        grupo("Medido") + "<dl>" +
+        linha("Qtd. medida (soma)", g ? fmtN(g.qtd, 2) : "0") +
+        linha("% medido", p == null ? null : fmtN(p, 1) + " %") +
+        linha("Por status", porStatus) +
+        linha("Medições", g ? String(g.itens.length) : "0") +
+        "</dl>" +
+        (p != null && p > 100.01 ? "<div class='diverge'>⚠️ Medido acima do contratado (" + esc(fmtN(p, 1)) + " %). Confira as medições ou um aditivo de quantidade.</div>" : "");
+      mostrarDrawer(f.Codigo_Item || "Item de contrato", String(f.Descricao || f.Title || "").slice(0, 80), null, "#8b949e", corpo, f);
+    }
+    function abrirMed(o) {
+      const f = o.fields || {};
+      const corpo = "<dl>" +
+        linha("Item de contrato", f.Contrato_ItemLookupId != null ? ctrRotulo(f.Contrato_ItemLookupId) : null) +
+        linha("Competência", f.Competencia) +
+        linha("Qtd. medida", cel(f.Qtd_Medida, 2)) +
+        linha("Status", f.Status_Medicao) +
+        linha("Chave (contratoItemId|competencia)", f.Chave_Medicao) +
+        linha("Observações", f.Observacoes) +
+        linha("Título", f.Title) +
+        "</dl>";
+      mostrarDrawer("Medição " + (f.Competencia || ""), f.Contrato_ItemLookupId != null ? ctrRotulo(f.Contrato_ItemLookupId) : "", f.Status_Medicao, cor(COR_MEDICAO, f.Status_Medicao), corpo, f);
+    }
+    function abrirLanc(o) {
+      const f = o.fields || {};
+      const ct = f.Tipo_Lancamento === "Receita" ? "#3fb950" : "#F0883E";
+      const corpo = "<dl>" +
+        linha("Tipo", f.Tipo_Lancamento) +
+        linha("Categoria", f.Categoria) +
+        linha("Competência", f.Competencia) +
+        linhaM("Valor", f.Valor) +
+        linha("Origem", f.Origem) +
+        linha("Observações", f.Observacoes) +
+        linha("Título", f.Title) +
+        "</dl>";
+      mostrarDrawer(f.Title || (f.Tipo_Lancamento || "Lançamento"), (f.Categoria || "") + (f.Competencia ? " · " + f.Competencia : ""), f.Tipo_Lancamento, ct, corpo, f);
+    }
+    function abrirAdt(o) {
+      const f = o.fields || {};
+      const corpo = "<dl>" +
+        linha("Número", cel(f.Numero_Aditivo)) +
+        linha("Tipo", f.Tipo_Aditivo) +
+        linha("Descrição", f.Descricao) +
+        linha("Δ valor", ehNum(f.Valor_Delta) ? (num(f.Valor_Delta) >= 0 ? "+" : "") + brl(f.Valor_Delta) : null) +
+        linha("Δ prazo", ehNum(f.Dias_Delta) ? (num(f.Dias_Delta) >= 0 ? "+" : "") + fmtN(f.Dias_Delta) + " dia(s)" : null) +
+        linha("Status", f.Status_Aditivo) +
+        linha("Aprovado em", EG.fmtDate(f.Aprovado_Em)) +
+        linha("Título", f.Title) +
+        "</dl>";
+      mostrarDrawer("Aditivo " + (ehNum(f.Numero_Aditivo) ? "nº " + fmtN(f.Numero_Aditivo) : ""), f.Tipo_Aditivo, f.Status_Aditivo, cor(COR_ADITIVO, f.Status_Aditivo), corpo, f);
+    }
+
+    const ABRIR = { eap: abrirEap, aloc: abrirAloc, mat: abrirMat, ctr: abrirCtr, med: abrirMed, lanc: abrirLanc, adt: abrirAdt };
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      const el = e.target.closest("[data-tipo][data-id]");
+      if (!el) return;
+      const it = mapItem[el.dataset.tipo + ":" + el.dataset.id];
+      if (it && ABRIR[el.dataset.tipo]) ABRIR[el.dataset.tipo](it);
+    });
+    $("overlay").onclick = fechar;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+
+    /* Exposto para exercitar a lógica sem login (dados falsos):
+       PRJ.setDados(...); PRJ.forcarCarregado(); PRJ.montarSeletor(); PRJ.renderTudo(); */
+    window.PRJ = {
+      setDados, montarSeletor, renderTudo, mostrarSec,
+      arvoreEap, medidoPorItem, deltasAprovados, doProjeto,
+      renderEap, renderAloc, renderMat, renderCtr, renderCxr, renderAdt,
+      abrirEap, abrirAloc, abrirMat, abrirCtr, abrirMed, abrirLanc, abrirAdt,
+      num, cel, celBRL, pct,
+      setProjeto: (id) => { projetoAtual = String(id); renderTudo(); },
+      forcarCarregado: (v) => { carregado = v !== false; }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
