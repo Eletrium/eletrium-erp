@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Documentos de OS</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <!--
+    ==========================================================================
+    DOCUMENTOS DE OS — Onda 3, Frente Documentos (§13, parte de baixo)
+
+    MODELO (nasce aqui; schema criado via PnP em 03/08/2026):
+      OS_Documentos          -> 1 linha por documento da OS (estado + ponteiro
+                                Versao_Atual). Choices: Tipo_Documento e
+                                Estado_Documento (default Rascunho).
+      OS_Documentos_Versoes  -> ledger APPEND-ONLY. Versão NUNCA é editada nem
+                                apagada: revisão = NOVA linha com Chave_Versao
+                                ÚNICA no servidor ("<documentoId>|v<numero>",
+                                EnforceUniqueValues). Duas pessoas criando a
+                                mesma vN ao mesmo tempo -> o SharePoint recusa
+                                a segunda (colisão de chave) e a tela avisa
+                                "revisão concorrente, recarregue".
+      Versao_Atual em OS_Documentos é ponteiro DENORMALIZADO: a fonte de
+      verdade da numeração é o histórico (max Numero_Versao). A próxima versão
+      é calculada do histórico, e o ponteiro é atualizado por PATCH MÍNIMO
+      depois que a linha da versão já existe. Divergência ponteiro x histórico
+      é denunciada na tela, nunca corrigida em silêncio.
+
+    SHA256: o campo existe DESDE JÁ para a publicação futura de PDF com
+      manifesto (o manifesto referenciará o hash da versão publicada).
+      ATENÇÃO — internal name é Hash_SHA256: o SharePoint rejeita o nome
+      literal "SHA256" (vira "_x0053_HA256" em qualquer caminho de criação;
+      testado em 03/08/2026). DisplayName segue "SHA256".
+
+    SEM UPLOAD: Arquivo_URL é TEXTO colado (link http/https). Upload de
+      arquivo / geração de PDF com manifesto é integração FUTURA — nenhum
+      escritor de PDF existe hoje.
+
+    ESTADOS (transição gravada aqui):
+      Rascunho | Em Revisão | Aprovado | Publicado | Obsoleto
+      - sair de Publicado EXIGE motivo (vai anexado em Observacoes);
+      - Obsoleto é TERMINAL: saída bloqueada com aviso; as opções do select
+        ficam disabled mas NUNCA são removidas (o modelo completo permanece
+        visível).
+
+    LEGADA: Clientes_Documentos (biblioteca, 12 arquivos, Tipo_Documento em
+      texto livre e Numero_Revisao MUTÁVEL no próprio item) foi apenas
+      SURVEYADA — não é lida nem tocada por esta tela. O modelo novo substitui
+      exatamente o anti-padrão dela: revisão vira linha nova, não número
+      sobrescrito.
+    ==========================================================================
+  -->
+  <style>
+    /* estilos locais desta tela (app.css e graph.js são compartilhados — não são editados aqui) */
+    [hidden] { display: none !important; }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    select, input[type=text] {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 6px 10px; font-size: .86rem; font-family: inherit;
+    }
+    .hint { color: #8b949e; font-size: .8rem; }
+    .toolbar .hint.right { margin-left: auto; }
+    #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
+    #estado .eg-estado-erro { color: #F85149; }
+    #estado .eg-estado-retry { margin-left: 6px; }
+
+    td .badge { white-space: nowrap; margin-top: 0; }
+    td.dim { color: #8b949e; }
+    td.n { text-align: right; white-space: nowrap; }
+    a.lnk { color: #58a6ff; font-size: .8rem; text-decoration: none; white-space: nowrap; }
+    a.lnk:hover { text-decoration: underline; }
+
+    .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+
+    /* histórico de versões (append-only) */
+    .ver { border: 1px solid #30363d; border-radius: 8px; padding: 9px 12px; margin-top: 8px; }
+    .ver .vt { font-weight: 600; font-size: .88rem; }
+    .ver .vs { color: #8b949e; font-size: .78rem; margin-top: 2px; line-height: 1.45; }
+    .ver .sha { font-family: ui-monospace, monospace; font-size: .74rem; color: #8b949e; }
+    .ver.atual { border-color: #1f6feb55; background: #1f6feb12; }
+
+    /* blocos de escrita do drawer (estado / nova revisão / novo documento) */
+    .acao { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+    .acao input, .acao select, .acao textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 8px 10px; font-size: .88rem; font-family: inherit;
+    }
+    .acao input:focus, .acao select:focus, .acao textarea:focus { outline: 0; border-color: #1f6feb; }
+    .acao textarea { min-height: 60px; resize: vertical; }
+    .acao label { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .acao label .req { color: #F85149; }
+    .acao-btns { display: flex; gap: 8px; }
+    .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .acao-msg.err { color: #F85149; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html">Checklist</a>
+      <a href="projetos-v2.html">Projetos</a>
+      <a href="documentos-os.html" class="active">Documentos</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+
+  <main>
+    <div class="toolbar">
+      <button id="btnNovo" disabled>＋ Novo documento</button>
+      <label for="fOS">OS</label>
+      <select id="fOS"><option value="">(Todas)</option></select>
+      <button class="sec" id="fLimpar">Limpar</button>
+      <span class="hint right" id="fContador"></span>
+    </div>
+    <!-- estados de carga (EG.renderEstado): carregando | erro (com retry) | vazio; "ok" esconde -->
+    <div id="estado" hidden></div>
+
+    <table id="tbl" hidden>
+      <thead><tr>
+        <th>OS</th><th>Tipo</th><th>Título</th><th>Estado</th><th>Versão atual</th><th>Responsável</th>
+      </tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </main>
+
+  <div class="overlay" id="overlay"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+    /* ===================================================================
+       Choices — fallback hard-coded, batem CARACTERE A CARACTERE com o
+       schema provisionado (PnP, 03/08/2026). Em runtime os selects são
+       repopulados com o que EG.listColumns("OS_Documentos") devolver.
+       Esta tela GRAVA os dois Choices (Tipo_Documento no novo documento;
+       Estado_Documento na transição) -> EG.travarChoices arma a trava
+       fail-closed: valor que não existe no servidor é bloqueado ANTES da
+       rede, em vez de virar dado órfão no SharePoint.
+       =================================================================== */
+    const FALLBACK_CHOICES = {
+      Tipo_Documento: ["Laudo", "Relatório", "ART", "Certificado", "Foto", "Assinatura", "Outro"],
+      Estado_Documento: ["Rascunho", "Em Revisão", "Aprovado", "Publicado", "Obsoleto"]
+    };
+    const CHOICES = {};
+    Object.keys(FALLBACK_CHOICES).forEach(n => { CHOICES[n] = FALLBACK_CHOICES[n].slice(); });
+
+    const COR_ESTADO = {
+      "Rascunho": "#8B949E",
+      "Em Revisão": "#D29922",
+      "Aprovado": "#22B573",
+      "Publicado": "#58A6FF",
+      "Obsoleto": "#F85149"
+    };
+    const cor = (v) => COR_ESTADO[v] || "#8b949e";
+    const ESTADO_TERMINAL = "Obsoleto";   // saída bloqueada — ver blocoEstado/mudarEstado
+
+    let choicesOk = false;
+    async function carregarChoices() {
+      if (choicesOk) return;
+      try {
+        const cols = await EG.listColumns("OS_Documentos");
+        Object.keys(FALLBACK_CHOICES).forEach(n => {
+          const col = (cols || []).find(c => c.name === n);
+          if (col && col.choice && Array.isArray(col.choice.choices) && col.choice.choices.length)
+            CHOICES[n] = col.choice.choices;
+        });
+        choicesOk = true;
+      } catch (e) { console.warn("[documentos-os] listColumns falhou, usando enums de fallback:", e.message); }
+      // trava fail-closed nos 2 Choices que a tela grava + aviso de divergência
+      Promise.all(Object.keys(FALLBACK_CHOICES).map(n =>
+        EG.travarChoices("OS_Documentos", n, FALLBACK_CHOICES[n]).then(v => ({ v, rotulo: n + " (OS_Documentos)" }))
+      )).then(p => EG.renderAvisosChoices($("choiceWarn"), p)).catch(() => {});
+    }
+
+    /* ===================== helpers (padrão fechamentos.html) ===================== */
+    const num = (v) => { const n = Number(v); return isFinite(n) ? n : 0; };
+    const parseD = (s) => {
+      if (!s) return null; const d = new Date(s); if (isNaN(d.getTime())) return null;
+      return EG.ehDataPura(s) ? new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) : d;
+    };
+    const fmtDT = (s) => { const d = parseD(s); return d ? d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : (s || null); };
+
+    /* URL segura: só http/https vira link (nada de javascript:). O campo é
+       Text (texto colado) — upload/PDF com manifesto é integração futura. */
+    const urlSeguro = (v) => {
+      if (!v) return null;
+      const s = String(v).trim();
+      return /^https?:\/\//i.test(s) ? s : null;
+    };
+    const link = (v, rotulo) => {
+      const u = urlSeguro(v);
+      return u ? "<a class='lnk' href='" + esc(u) + "' target='_blank' rel='noopener'>" + esc(rotulo) + " ↗</a>" : "";
+    };
+    const shaCurto = (s) => {
+      if (!s) return null;
+      const t = String(s).trim();
+      return t.length > 16 ? t.slice(0, 16) + "…" : t;
+    };
+
+    /* ============================== estado ============================== */
+    let documentos = [], versoes = [], oss = [];
+    let mapDoc = {}, mapOS = {}, versoesPorDoc = {};
+    let carregado = false, gravando = false;
+    let usuarioNome = "", usuarioEmail = "";
+
+    const autor = () => (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : "");
+    const osNome = (lookupId) => {
+      if (lookupId == null) return "—";
+      const o = mapOS[lookupId];
+      return o ? ((o.fields || {}).Title || ("OS #" + lookupId)) : ("OS #" + lookupId);
+    };
+
+    function setDados(docs, vers, listaOS) {
+      documentos = docs || []; versoes = vers || []; oss = listaOS || [];
+      mapDoc = {}; documentos.forEach(i => { mapDoc[i.id] = i; });
+      mapOS = {}; oss.forEach(i => { mapOS[i.id] = i; });
+      indexarVersoes();
+    }
+    // histórico por documento, mais recente primeiro (append-only: só cresce)
+    function indexarVersoes() {
+      versoesPorDoc = {};
+      versoes.forEach(v => {
+        const did = (v.fields || {}).DocumentoLookupId;
+        if (did == null) return;
+        (versoesPorDoc[did] = versoesPorDoc[did] || []).push(v);
+      });
+      Object.values(versoesPorDoc).forEach(arr =>
+        arr.sort((a, b) => num((b.fields || {}).Numero_Versao) - num((a.fields || {}).Numero_Versao)));
+    }
+    // fonte de verdade da numeração é o HISTÓRICO (max Numero_Versao), não o
+    // ponteiro Versao_Atual: se a v1 falhou na criação do documento, a próxima
+    // continua sendo 1 (autocorreção); carga defasada é pega pela chave única.
+    const proximaVersao = (docId) => {
+      const vs = versoesPorDoc[docId] || [];
+      return vs.reduce((m, o) => Math.max(m, num((o.fields || {}).Numero_Versao)), 0) + 1;
+    };
+    const maxVersaoHistorico = (docId) => {
+      const vs = versoesPorDoc[docId] || [];
+      return vs.length ? num((vs[0].fields || {}).Numero_Versao) : null;
+    };
+    function upsertDoc(novo) {
+      const idx = documentos.findIndex(i => i.id === novo.id);
+      if (idx > -1) documentos[idx] = novo; else documentos.unshift(novo);
+      mapDoc[novo.id] = novo;
+    }
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); usuarioNome = u.nome; usuarioEmail = u.email || ""; $("user").textContent = "👤 " + u.nome; }
+      catch { usuarioNome = EG.getAccount().username; usuarioEmail = ""; $("user").textContent = "👤 " + usuarioNome; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+
+    /* ============================== carga ============================== */
+    // Função nomeada (não handler anônimo) para servir de onRetry do estado "erro".
+    async function carregarDados() {
+      try {
+        setStatus("Carregando documentos de OS...");
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando documentos…" });
+        carregarChoices();   // em paralelo — selects usam fallback até chegar
+        // documentos e versões são o núcleo: falha derruba a carga (erro + retry).
+        // OrdensDeServico é apoio (filtro/rótulo): falha vira aviso, não bloqueio.
+        const [docs, vers, listaOS] = await Promise.all([
+          EG.listItems("OS_Documentos"),
+          EG.listItems("OS_Documentos_Versoes"),
+          EG.listItems("OrdensDeServico").catch(e => { console.warn("Falha ao carregar OrdensDeServico:", e.message); return []; })
+        ]);
+        setDados(docs, vers, listaOS);
+        carregado = true;
+        montarFiltro();
+        render();
+        $("btnNovo").disabled = false;
+        setStatus("OK — " + documentos.length + " documento(s), " + versoes.length + " versão(ões), " + oss.length + " OS.");
+        EG.renderEstado($("estado"), documentos.length ? "ok" : "vazio",
+          { mensagem: "Nenhum documento registrado ainda. Use “＋ Novo documento” para criar o primeiro (registro + versão 1)." });
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar documentos: " + e.message, onRetry: carregarDados });
+      }
+    }
+    $("btnLoad").onclick = carregarDados;
+
+    /* ============================ filtro por OS ============================ */
+    function montarFiltro() {
+      const atual = $("fOS").value;
+      const ord = oss.slice().sort((a, b) =>
+        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      $("fOS").innerHTML = '<option value="">(Todas)</option>' +
+        ord.map(o => '<option value="' + esc(o.id) + '">' + esc((o.fields || {}).Title || ("OS #" + o.id)) + "</option>").join("");
+      if (atual && mapOS[atual]) $("fOS").value = atual;
+    }
+    function filtrar() {
+      const fo = $("fOS").value;
+      return documentos.filter(o => {
+        const f = o.fields || {};
+        if (fo && String(f.OSLookupId ?? "") !== String(fo)) return false;
+        return true;
+      });
+    }
+    $("fOS").addEventListener("change", render);
+    $("fLimpar").onclick = () => { $("fOS").value = ""; render(); };
+
+    /* ============================== tabela ============================== */
+    function render() {
+      if (!carregado) return;
+      const lista = filtrar().slice().sort((a, b) => {
+        const fa = a.fields || {}, fb = b.fields || {};
+        const dos = String(osNome(fa.OSLookupId)).localeCompare(String(osNome(fb.OSLookupId)), "pt-BR");
+        if (dos !== 0) return dos;
+        return String(fa.Titulo || fa.Title || "").localeCompare(String(fb.Titulo || fb.Title || ""), "pt-BR");
+      });
+      $("fContador").textContent = lista.length + " de " + documentos.length + " documento(s)";
+
+      if (documentos.length) EG.renderEstado($("estado"), lista.length ? "ok" : "vazio",
+        { mensagem: "Nenhum documento para a OS filtrada." });
+      $("tbl").hidden = !lista.length;
+      $("tbody").innerHTML = lista.map(o => {
+        const f = o.fields || {};
+        const c = cor(f.Estado_Documento);
+        // ponteiro divergente do histórico é DENUNCIADO, nunca corrigido em silêncio
+        const maxH = maxVersaoHistorico(o.id);
+        const vAtual = f.Versao_Atual != null ? "v" + esc(f.Versao_Atual) : "—";
+        const alerta = (maxH != null && f.Versao_Atual != null && num(f.Versao_Atual) !== maxH)
+          ? " <span class='badge' style='border-color:#D29922;color:#D29922' title='ponteiro Versao_Atual difere do histórico (max v" + esc(maxH) + ")'>≠ histórico</span>"
+          : "";
+        return "<tr data-id='" + esc(o.id) + "'>" +
+          "<td>" + esc(osNome(f.OSLookupId)) + "</td>" +
+          "<td class='dim'>" + esc(f.Tipo_Documento || "—") + "</td>" +
+          "<td>" + esc(f.Titulo || f.Title || "—") + "</td>" +
+          "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Estado_Documento || "—") + "</span></td>" +
+          "<td class='n'>" + vAtual + alerta + "</td>" +
+          "<td class='dim'>" + esc(f.Responsavel || "—") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+
+    /* ==================================================================
+       DRAWER DO DOCUMENTO — detalhe + histórico (append-only) + escritas
+       ================================================================== */
+    const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
+    const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
+
+    function historicoHtml(o) {
+      const f = o.fields || {};
+      const vs = versoesPorDoc[o.id] || [];   // já ordenado: mais recente primeiro
+      const maxH = maxVersaoHistorico(o.id);
+      let aviso = "";
+      if (maxH != null && f.Versao_Atual != null && num(f.Versao_Atual) !== maxH)
+        aviso = "<div class='diverge'>⚠️ Ponteiro divergente: Versao_Atual = v" + esc(f.Versao_Atual) +
+          ", mas o histórico vai até v" + esc(maxH) + ". Provável revisão concorrente ou falha após criar a versão — confira o histórico abaixo (nada é corrigido em silêncio).</div>";
+      if (!vs.length)
+        return grupo("Histórico de versões") + aviso +
+          "<div class='hint'>Nenhuma versão registrada para este documento (a v1 pode ter falhado na criação — “Nova revisão” criará a v1).</div>";
+      return grupo("Histórico de versões (append-only — versões nunca são editadas ou apagadas)") + aviso +
+        vs.map(v => {
+          const vf = v.fields || {};
+          const ehAtual = f.Versao_Atual != null && num(vf.Numero_Versao) === num(f.Versao_Atual);
+          const sha = shaCurto(vf.Hash_SHA256);
+          return "<div class='ver" + (ehAtual ? " atual" : "") + "'>" +
+            "<div class='vt'>v" + esc(vf.Numero_Versao ?? "?") + (ehAtual ? " · atual" : "") +
+              (vf.Estado_Na_Epoca ? " <span class='hint'>(estado na época: " + esc(vf.Estado_Na_Epoca) + ")</span>" : "") + "</div>" +
+            "<div class='vs'>" +
+              esc(fmtDT(vf.Criada_Em) || "sem data") + " · " + esc(vf.Autor || "autor não registrado") +
+              (vf.Motivo_Revisao ? "<br>Motivo: " + esc(vf.Motivo_Revisao) : "") +
+              (sha ? "<br><span class='sha' title='" + esc(vf.Hash_SHA256) + "'>sha256: " + esc(sha) + "</span>" : "") +
+              (urlSeguro(vf.Arquivo_URL)
+                ? "<br>" + link(vf.Arquivo_URL, "Arquivo")
+                : (vf.Arquivo_URL ? "<br><span class='hint'>URL não-http ignorada: " + esc(shaCurto(vf.Arquivo_URL)) + "</span>" : "")) +
+            "</div></div>";
+        }).join("");
+    }
+
+    /* -------- transição de Estado_Documento (select dinâmico) --------
+       Regras: Obsoleto é TERMINAL — com o documento obsoleto, toda saída fica
+       bloqueada e as demais opções ficam disabled (NUNCA removidas: o modelo
+       completo permanece visível). Sair de Publicado exige motivo, que é
+       ANEXADO em Observacoes (trilha), junto do autor e da transição. */
+    function blocoEstado(f) {
+      const atual = f.Estado_Documento || "Rascunho";
+      const terminal = atual === ESTADO_TERMINAL;
+      const opts = (CHOICES.Estado_Documento || []).map(e => {
+        const ehAtual = e === atual;
+        const desab = terminal && !ehAtual;
+        return "<option value='" + esc(e) + "'" + (ehAtual ? " selected" : "") + (desab ? " disabled" : "") + ">" +
+          esc(e) + (ehAtual ? " (atual)" : "") + "</option>";
+      }).join("");
+      return grupo("Transição de estado") +
+        "<div class='acao'>" +
+          "<label for='eDestino'>Novo estado</label>" +
+          "<select id='eDestino'" + (terminal ? " disabled" : "") + ">" + opts + "</select>" +
+          "<label for='eMotivo'>Motivo" + (atual === "Publicado" ? " <span class='req'>* (obrigatório para sair de Publicado — vai para Observações)</span>" : " (opcional — vai para Observações)") + "</label>" +
+          "<input id='eMotivo' type='text' maxlength='255'" + (terminal ? " disabled" : "") + " placeholder='" +
+            (atual === "Publicado" ? "por que este documento sai de Publicado?" : "motivo da transição (opcional)") + "' />" +
+          (terminal ? "<div class='diverge'>⚠️ Obsoleto é terminal — a saída deste estado é bloqueada. As opções continuam visíveis (disabled) de propósito.</div>" : "") +
+          "<div class='acao-btns'><button id='eAplicar'" + (terminal ? " disabled" : "") + ">Aplicar transição</button></div>" +
+          "<div id='eMsg' class='acao-msg'></div>" +
+        "</div>";
+    }
+
+    async function mudarEstado(o) {
+      if (gravando) return;
+      const f = o.fields || {};
+      const atual = f.Estado_Documento || "Rascunho";
+      const destino = $("eDestino").value;
+      const motivo = ($("eMotivo") && $("eMotivo").value.trim()) || "";
+      const msg = $("eMsg");
+      // guarda em código além do disabled do DOM — disabled é contornável
+      if (atual === ESTADO_TERMINAL) { msg.className = "acao-msg err"; msg.textContent = "Obsoleto é terminal — a saída é bloqueada."; return; }
+      if (!destino || destino === atual) { msg.className = "acao-msg err"; msg.textContent = "Escolha um estado diferente do atual."; return; }
+      if (atual === "Publicado" && !motivo) {
+        msg.className = "acao-msg err"; msg.textContent = "Sair de Publicado exige motivo (fica registrado em Observações).";
+        $("eMotivo").focus(); return;
+      }
+      // PATCH MÍNIMO: só Estado_Documento (+ Observacoes quando há motivo).
+      const campos = { Estado_Documento: destino };
+      if (motivo) {
+        campos.Observacoes = (f.Observacoes ? String(f.Observacoes) + "\n" : "") +
+          "[" + new Date().toLocaleString("pt-BR") + "] " + atual + " → " + destino + " — " + motivo + " (" + autor() + ")";
+      }
+      try {
+        gravando = true; $("eAplicar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("OS_Documentos", o.id, campos);
+        const novo = await relerDoc(o.id);
+        upsertDoc(novo); render(); abrirDocDrawer(novo);
+        setStatus("Documento “" + ((novo.fields || {}).Titulo || o.id) + "”: " + atual + " → " + destino + ".");
+      } catch (e) {
+        msg.className = "acao-msg err";
+        msg.textContent = "Falha ao gravar: " + e.message;
+        $("eAplicar").disabled = false;
+      } finally { gravando = false; }
+    }
+
+    /* -------- nova revisão (append-only) --------
+       Cria NOVA linha em OS_Documentos_Versoes com Numero_Versao = max do
+       histórico + 1 e Chave_Versao única "<docId>|v<n>". Colisão da chave no
+       SharePoint (EnforceUniqueValues) = revisão concorrente -> a tela manda
+       recarregar. Só DEPOIS da linha existir, Versao_Atual é atualizado por
+       PATCH mínimo. Sem upload: Arquivo_URL é texto colado; SHA256 (internal
+       name Hash_SHA256) é opcional e servirá à publicação futura com manifesto. */
+    function blocoRevisao(docId) {
+      const n = proximaVersao(docId);
+      return grupo("Nova revisão") +
+        "<div class='acao'>" +
+          "<div class='hint'>Cria a v" + esc(n) + " como NOVA linha do histórico (nada é editado). Upload de arquivo/PDF é integração futura — cole a URL.</div>" +
+          "<label for='rUrl'>URL do arquivo (http/https, texto colado)</label>" +
+          "<input id='rUrl' type='text' maxlength='255' placeholder='https://...' />" +
+          "<label for='rSha'>SHA256 (opcional — usado pela publicação futura com manifesto)</label>" +
+          "<input id='rSha' type='text' maxlength='255' placeholder='hash sha256 do arquivo, se conhecido' />" +
+          "<label for='rMotivo'>Motivo da revisão <span class='req'>*</span></label>" +
+          "<textarea id='rMotivo' placeholder='o que mudou nesta revisão?'></textarea>" +
+          "<div class='acao-btns'><button id='rCriar'>Criar revisão v" + esc(n) + "</button></div>" +
+          "<div id='rMsg' class='acao-msg'></div>" +
+        "</div>";
+    }
+
+    const ehColisaoChave = (e) =>
+      e && (e.status === 400 || e.status === 409) && /duplicate|duplicad/i.test(String(e.message || "") + String(e.corpo || ""));
+
+    async function criarRevisao(o) {
+      if (gravando) return;
+      const f = o.fields || {};
+      const msg = $("rMsg");
+      const url = $("rUrl").value.trim();
+      const sha = $("rSha").value.trim();
+      const motivo = $("rMotivo").value.trim();
+      if (!motivo) { msg.className = "acao-msg err"; msg.textContent = "Informe o motivo da revisão (trilha append-only)."; $("rMotivo").focus(); return; }
+      if (url && !urlSeguro(url)) { msg.className = "acao-msg err"; msg.textContent = "URL inválida: só http/https é aceito."; $("rUrl").focus(); return; }
+      const n = proximaVersao(o.id);
+      const chave = o.id + "|v" + n;
+      // POST só com chaves COM valor (padrão nova-proposta/clientes)
+      const campos = {
+        Title: chave,
+        DocumentoLookupId: Number(o.id),
+        Numero_Versao: n,
+        Chave_Versao: chave,
+        Autor: autor(),
+        Criada_Em: new Date().toISOString(),
+        Motivo_Revisao: motivo,
+        Estado_Na_Epoca: f.Estado_Documento || "Rascunho"
+      };
+      if (url) campos.Arquivo_URL = url;
+      if (sha) campos.Hash_SHA256 = sha;
+      try {
+        gravando = true; $("rCriar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Criando v" + n + "...";
+        let versao;
+        try {
+          versao = await EG.createItem("OS_Documentos_Versoes", campos);
+        } catch (e) {
+          if (ehColisaoChave(e)) {
+            msg.className = "acao-msg err";
+            msg.textContent = "Revisão concorrente: a v" + n + " já foi criada por outra pessoa/processo — recarregue os dados e tente de novo.";
+            $("rCriar").disabled = false;
+            return;
+          }
+          throw e;
+        }
+        // versão existe no servidor -> agora (e só agora) o ponteiro, por PATCH mínimo
+        try {
+          await EG.patchItemFields("OS_Documentos", o.id, { Versao_Atual: n });
+        } catch (e2) {
+          msg.className = "acao-msg err";
+          msg.textContent = "A v" + n + " foi criada, mas o ponteiro Versao_Atual não foi atualizado (" + e2.message +
+            "). Recarregue — a divergência fica sinalizada na tela até ser resolvida.";
+        }
+        // relê do servidor em vez de confiar no eco local
+        const sid = await EG.resolveSite();
+        const vNova = versao && versao.id
+          ? await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OS_Documentos_Versoes") + "/items/" + versao.id + "?expand=fields")
+          : null;
+        if (vNova) versoes.push(vNova);
+        indexarVersoes();
+        const novo = await relerDoc(o.id);
+        upsertDoc(novo); render(); abrirDocDrawer(novo);
+        setStatus("Revisão v" + n + " criada para “" + ((novo.fields || {}).Titulo || o.id) + "”.");
+      } catch (e) {
+        msg.className = "acao-msg err";
+        msg.textContent = "Falha ao criar a revisão: " + e.message;
+        const b = $("rCriar"); if (b) b.disabled = false;
+      } finally { gravando = false; }
+    }
+
+    async function relerDoc(id) {
+      const sid = await EG.resolveSite();
+      return EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OS_Documentos") + "/items/" + id + "?expand=fields");
+    }
+
+    function abrirDocDrawer(o) {
+      const f = o.fields || {};
+      const c = cor(f.Estado_Documento);
+      const corpo =
+        "<dl>" +
+          linha("OS", osNome(f.OSLookupId)) +
+          linha("Tipo", f.Tipo_Documento) +
+          linha("Título", f.Titulo || f.Title) +
+          linha("Versão atual", f.Versao_Atual != null ? "v" + f.Versao_Atual : null) +
+          linha("Responsável", f.Responsavel) +
+          linha("Observações", f.Observacoes) +
+        "</dl>" +
+        blocoEstado(f) +
+        blocoRevisao(o.id) +
+        historicoHtml(o);
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>" + esc(f.Titulo || f.Title || "(sem título)") +
+          "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(osNome(f.OSLookupId)) + " · " + esc(f.Tipo_Documento || "sem tipo") + "</div>" +
+          "<div style='margin-top:6px'><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Estado_Documento || "—") + "</span></div>" +
+        "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'>" + corpo +
+          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
+          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre>" +
+        "</div>";
+      $("dc").onclick = fecharDrawer;
+      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("eAplicar").onclick = () => mudarEstado(o);
+      $("rCriar").onclick = () => criarRevisao(o);
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+    function fecharDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
+
+    /* ==================================================================
+       NOVO DOCUMENTO — registro em OS_Documentos + versão 1 no histórico.
+       Estado_Documento NÃO é enviado no POST: o default do schema
+       (Rascunho) age no servidor — padrão "não gravar por cima do default".
+       ================================================================== */
+    $("btnNovo").onclick = () => abrirFormNovo();
+
+    function abrirFormNovo() {
+      const optsOS = oss.slice()
+        .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"))
+        .map(o => "<option value='" + esc(o.id) + "'>" + esc((o.fields || {}).Title || ("OS #" + o.id)) + "</option>").join("");
+      const optsTipo = (CHOICES.Tipo_Documento || []).map(t => "<option value='" + esc(t) + "'>" + esc(t) + "</option>").join("");
+      $("drawer").innerHTML =
+        "<div class='drawer-head'><div class='t'>Novo documento</div><button class='x' id='dc'>Fechar ✕</button></div>" +
+        "<div class='drawer-body'><div class='acao'>" +
+          (oss.length ? "" : "<div class='diverge'>⚠️ A lista de OS não carregou — sem OS não dá para criar o documento (o vínculo é obrigatório). Recarregue.</div>") +
+          "<label for='nOS'>OS <span class='req'>*</span></label>" +
+          "<select id='nOS'><option value=''></option>" + optsOS + "</select>" +
+          "<label for='nTipo'>Tipo de documento <span class='req'>*</span></label>" +
+          "<select id='nTipo'><option value=''></option>" + optsTipo + "</select>" +
+          "<label for='nTitulo'>Título <span class='req'>*</span></label>" +
+          "<input id='nTitulo' type='text' maxlength='255' placeholder='ex.: Laudo de aterramento — subestação A' />" +
+          "<label for='nResp'>Responsável</label>" +
+          "<input id='nResp' type='text' maxlength='255' value='" + esc(usuarioNome || "") + "' />" +
+          "<label for='nObs'>Observações</label>" +
+          "<textarea id='nObs'></textarea>" +
+          "<div class='grupo'>Versão 1 (criada junto — histórico append-only)</div>" +
+          "<div class='hint'>Sem upload: cole a URL do arquivo (http/https). Upload/geração de PDF com manifesto é integração futura.</div>" +
+          "<label for='nUrl'>URL do arquivo</label>" +
+          "<input id='nUrl' type='text' maxlength='255' placeholder='https://...' />" +
+          "<label for='nSha'>SHA256 (opcional)</label>" +
+          "<input id='nSha' type='text' maxlength='255' />" +
+          "<div class='acao-btns'>" +
+            "<button id='nCriar'>Criar documento + v1</button>" +
+            "<button type='button' class='sec' id='nCancelar'>Cancelar</button>" +
+          "</div>" +
+          "<div id='nMsg' class='acao-msg'></div>" +
+        "</div></div>";
+      $("dc").onclick = fecharDrawer;
+      $("nCancelar").onclick = fecharDrawer;
+      $("nCriar").onclick = criarDocumento;
+      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+    }
+
+    async function criarDocumento() {
+      if (gravando) return;
+      const msg = $("nMsg");
+      const osId = $("nOS").value, tipo = $("nTipo").value, titulo = $("nTitulo").value.trim();
+      const resp = $("nResp").value.trim(), obs = $("nObs").value.trim();
+      const url = $("nUrl").value.trim(), sha = $("nSha").value.trim();
+      const falha = (m, foco) => { msg.className = "acao-msg err"; msg.textContent = m; if (foco && $(foco)) $(foco).focus(); };
+      if (!osId) return falha("Escolha a OS (vínculo obrigatório).", "nOS");
+      if (!tipo) return falha("Escolha o tipo de documento.", "nTipo");
+      if (!titulo) return falha("Informe o título.", "nTitulo");
+      if (url && !urlSeguro(url)) return falha("URL inválida: só http/https é aceito.", "nUrl");
+      // POST só com chaves COM valor; Estado_Documento fica de fora de
+      // propósito -> o default do schema (Rascunho) age no servidor.
+      const campos = { Title: titulo, OSLookupId: Number(osId), Tipo_Documento: tipo, Titulo: titulo, Versao_Atual: 1 };
+      if (resp) campos.Responsavel = resp;
+      if (obs) campos.Observacoes = obs;
+      try {
+        gravando = true; $("nCriar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Criando documento...";
+        const criado = await EG.createItem("OS_Documentos", campos);
+        const id = criado && criado.id;
+        if (!id) throw new Error("o Graph não devolveu o id do documento criado");
+        const doc = await relerDoc(id);
+        upsertDoc(doc);
+
+        // versão 1 — mesma mecânica da revisão (chave única protege contra duplo clique)
+        msg.textContent = "Documento criado. Registrando a v1...";
+        const chave = String(id) + "|v1";
+        const camposV1 = {
+          Title: chave, DocumentoLookupId: Number(id), Numero_Versao: 1, Chave_Versao: chave,
+          Autor: autor(), Criada_Em: new Date().toISOString(),
+          Motivo_Revisao: "Versão inicial",
+          Estado_Na_Epoca: (doc.fields || {}).Estado_Documento || "Rascunho"
+        };
+        if (url) camposV1.Arquivo_URL = url;
+        if (sha) camposV1.Hash_SHA256 = sha;
+        try {
+          const v1 = await EG.createItem("OS_Documentos_Versoes", camposV1);
+          if (v1 && v1.id) {
+            const sid = await EG.resolveSite();
+            versoes.push(await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OS_Documentos_Versoes") + "/items/" + v1.id + "?expand=fields"));
+            indexarVersoes();
+          }
+        } catch (eV) {
+          // documento existe, v1 não: a tela denuncia (histórico vazio + aviso)
+          // e "Nova revisão" cria a v1 (a numeração segue o HISTÓRICO, não o ponteiro).
+          console.warn("v1 não criada:", eV.message);
+          setStatus("Documento criado, mas a v1 falhou: " + eV.message + " — abra o documento e use “Nova revisão” (criará a v1).", "err");
+        }
+        render();
+        abrirDocDrawer(mapDoc[id]);
+        setStatus("Documento “" + titulo + "” criado (v1 no histórico).");
+      } catch (e) {
+        msg.className = "acao-msg err";
+        msg.textContent = "Falha ao criar: " + e.message;
+        const b = $("nCriar"); if (b) b.disabled = false;
+      } finally { gravando = false; }
+    }
+
+    /* ============================ interação ============================ */
+    document.addEventListener("click", (e) => {
+      if (e.target.closest("a")) return;
+      const tr = e.target.closest("#tbody tr[data-id]");
+      if (tr && mapDoc[tr.dataset.id]) abrirDocDrawer(mapDoc[tr.dataset.id]);
+    });
+    $("overlay").onclick = fecharDrawer;
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") fecharDrawer(); });
+
+    /* Exposto para exercitar a lógica sem login (dados falsos):
+       DOCOS.setDados([...], [...], [...]); DOCOS.forcarCarregado(); DOCOS.montarFiltro(); DOCOS.render(); */
+    window.DOCOS = {
+      setDados, montarFiltro, render, filtrar,
+      proximaVersao, maxVersaoHistorico, indexarVersoes,
+      abrirDocDrawer, abrirFormNovo, blocoEstado, blocoRevisao, historicoHtml,
+      mudarEstado, criarRevisao, criarDocumento,
+      urlSeguro, shaCurto, ehColisaoChave, num,
+      forcarCarregado: (v) => { carregado = v !== false; },
+      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>
