@@ -67,6 +67,8 @@
       <div class="kpi"><div class="k">Vencem em 30 dias</div><div class="v" id="k30" style="color:#F0883E">—</div></div>
       <div class="kpi"><div class="k">Válidas</div><div class="v" id="kOk" style="color:#22B573">—</div></div>
       <div class="kpi"><div class="k">Técnicos bloqueados p/ OS</div><div class="v" id="kBloq" style="color:#F85149">—</div></div>
+      <!-- pilar CFT: conta ausente OU vencido (qualquer pendência do registro) -->
+      <div class="kpi"><div class="k">Técnicos sem CFT</div><div class="v" id="kCft" style="color:#F0883E">—</div></div>
     </div>
 
     <div class="toolbar" id="toolbar" hidden>
@@ -143,6 +145,31 @@
       return "valido";
     };
 
+    /* ===== Registro CFT — um dos 4 pilares de habilitação do técnico =====
+       Campos de TecnicosMEI (schema 03/08): Registro_CFT (Text) e
+       Registro_CFT_Validade (DateOnly). Semáforo:
+         - número preenchido + validade vazia OU >= hoje  -> ok
+         - número preenchido + validade < hoje            -> vencido
+         - número vazio                                   -> ausente (pendência)
+       Validade vazia NÃO é pendência de propósito: registro sem data de
+       vencimento cadastrada vale até alguém dizer o contrário — tratar como
+       pendente geraria falso alarme em cadastro legado.
+       A validade é DateOnly: passa por parseD (EG.ehDataPura) para não
+       escorregar um dia em Brasília; data inválida no campo é tratada como
+       vazia (mesma blindagem dos demais helpers de data desta tela). */
+    const cftInfo = (tf) => {
+      const f = tf || {};
+      const num = String(f.Registro_CFT || "").trim();
+      if (!num) return { s: "ausente", num: null, valRaw: null };
+      const valRaw = f.Registro_CFT_Validade;
+      const val = parseD(valRaw);
+      if (val) {
+        val.setHours(0, 0, 0, 0); // normaliza a ponta, como diasAte
+        if (val < hoje0()) return { s: "vencido", num, valRaw };
+      }
+      return { s: "ok", num, valRaw };
+    };
+
     async function boot() { if (await EG.init()) await onIn(); }
     async function onIn() {
       setStatus("Autenticado como " + EG.getAccount().username);
@@ -215,6 +242,9 @@
           avisarInconsistenciaCruzada(el, pares);
         }).catch(() => {});
 
+        // TecnicosMEI chega com TODOS os fields: EG.listItems usa
+        // "expand=fields" SEM $select (conferido em graph.js) — Registro_CFT e
+        // Registro_CFT_Validade já vêm no payload sem mudança de query.
         const [q, t, x] = await Promise.all([
           soft(EG.listItems("Tecnico_Qualificacoes"), "Tecnico_Qualificacoes"),
           soft(EG.listItems("TecnicosMEI"), "TecnicosMEI"),
@@ -244,6 +274,8 @@
       quals.forEach(q => { const s = situacao(q.fields || {}); if (s === "vencido") venc++; else if (s === "atencao") at++; else if (s === "valido") ok++; });
       $("kVenc").textContent = venc; $("k30").textContent = at; $("kOk").textContent = ok;
       $("kBloq").textContent = tecnicos.filter(t => (t.fields || {}).Bloqueado_OS === true).length;
+      // pilar CFT: ausente OU vencido conta como pendência — só "ok" fica de fora
+      $("kCft").textContent = tecnicos.filter(t => cftInfo(t.fields || {}).s !== "ok").length;
     }
 
     function filtradas() {
@@ -331,12 +363,37 @@
               "</div>";
           }).join("");
         }
+        // ===== linha FIXA do pilar CFT =====
+        // Independe do nível e das regras de exigência: o registro CFT é do
+        // TÉCNICO, não do nível — por isso aparece até em card "sem nível" /
+        // "sem regra", acima das linhas de exigência.
+        const cft = cftInfo(tf);
+        let cftLin;
+        if (cft.s === "ok") {
+          cftLin = "<div class='cob-lin'>" +
+            "<span class='cob-ic' style='color:" + COR.valido + "'>✓</span>" +
+            "<span class='nome'>Registro CFT: " + esc(cft.num) +
+            (cft.valRaw
+              ? " <span class='hint'>(válido até " + esc(EG.fmtDate(cft.valRaw)) + ")</span>"
+              : " <span class='hint'>(sem validade informada)</span>") +
+            "</span></div>";
+        } else if (cft.s === "vencido") {
+          cftLin = "<div class='cob-lin'>" +
+            "<span class='cob-ic' style='color:" + COR.vencido + "'>✗</span>" +
+            "<span class='nome'>Registro CFT: " + esc(cft.num) +
+            " <span style='color:" + COR.vencido + "'>vencido em " + esc(EG.fmtDate(cft.valRaw)) + "</span></span></div>";
+        } else { // ausente — âmbar: é pendência de habilitação, não "erro" vencido
+          cftLin = "<div class='cob-lin'>" +
+            "<span class='cob-ic' style='color:" + COR.atencao + "'>✗</span>" +
+            "<span class='nome' style='color:" + COR.atencao + "'>Registro CFT: sem registro CFT — pendência de habilitação</span>" +
+            "</div>";
+        }
         const bloq = tf.Bloqueado_OS === true
           ? "<span class='pill' style='background:#F85149'>bloqueado p/ OS</span>"
           : "";
         return "<div class='cob-card'><h3>" + esc(tf.Title || "(sem nome)") + " " + bloq + "</h3>" +
           "<div class='niv'>" + esc(nivel || "sem nível") + " · " + minhas.length + " certificação(ões) cadastrada(s)</div>" +
-          linhas + "</div>";
+          cftLin + linhas + "</div>";
       }).join("");
     }
 
@@ -378,7 +435,7 @@
     function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 
     // exposto p/ teste da lógica sem login
-    window.HAB = { situacao, diasAte, filtradas: () => filtradas(), set: (q, t, x) => { quals = q; tecnicos = t; exigencias = x; nomeTecnico = {}; t.forEach(i => nomeTecnico[i.id] = (i.fields || {}).Title); } };
+    window.HAB = { situacao, diasAte, cftInfo, renderKpis, renderCobertura, filtradas: () => filtradas(), set: (q, t, x) => { quals = q; tecnicos = t; exigencias = x; nomeTecnico = {}; t.forEach(i => nomeTecnico[i.id] = (i.fields || {}).Title); } };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>

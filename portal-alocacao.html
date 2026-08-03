@@ -215,6 +215,11 @@
         peça ao gestor para colar este Object ID no seu cadastro de técnico.
         <span id="parDicaEmail" hidden></span>
       </div>
+      <!-- Pilar CFT do parceiro logado (TecnicosMEI.Registro_CFT / _Validade).
+           Aviso PERSISTENTE (fica visível enquanto a pendência existir) e
+           INFORMATIVO: não bloqueia o aceite — promover pendência de CFT a
+           bloqueio de aceite é decisão futura do GESTOR, não desta tela. -->
+      <div class="aviso warn" id="parCftAviso" hidden></div>
       <div class="aviso" id="parIntro" hidden>
         Propostas de prestação de serviço enviadas para você. Abra uma proposta
         pendente para ler o escopo e <strong>decidir com autonomia</strong>:
@@ -285,6 +290,30 @@
     };
     const fmtDT = (s) => { const d = parseD(s); return d ? d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }) : (s || "—"); };
     const fmtD = (s) => EG.fmtDate(s) || "—";
+    // meia-noite local de hoje — par do parseD para comparar validade DateOnly
+    const hoje0 = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
+
+    /* ===== Registro CFT (TecnicosMEI) — mesmo semáforo de habilitacoes.html =====
+       Campos do schema 03/08: Registro_CFT (Text) e Registro_CFT_Validade
+       (DateOnly). Regra:
+         - número preenchido + validade vazia OU >= hoje  -> ok
+         - número preenchido + validade < hoje            -> vencido
+         - número vazio                                   -> ausente
+       Validade vazia NÃO é pendência (cadastro legado sem data não pode virar
+       alarme falso); a validade DateOnly passa por parseD/EG.ehDataPura para
+       não escorregar um dia em Brasília; data inválida conta como vazia. */
+    const cftInfo = (tf) => {
+      const f = tf || {};
+      const num = String(f.Registro_CFT || "").trim();
+      if (!num) return { s: "ausente", num: null, valRaw: null };
+      const valRaw = f.Registro_CFT_Validade;
+      const val = parseD(valRaw);
+      if (val) {
+        val.setHours(0, 0, 0, 0); // normaliza a ponta, como o resto da tela
+        if (val < hoje0()) return { s: "vencido", num, valRaw };
+      }
+      return { s: "ok", num, valRaw };
+    };
 
     // normaliza para comparação tolerante: minúsculas e sem acento
     // (\p{M} = marcas combinantes após NFD — evita range literal de diacríticos no fonte)
@@ -584,6 +613,32 @@
         : "";
       $("parIntro").hidden = semVinculo;
 
+      // ===== aviso persistente do pilar CFT (parceiro logado) =====
+      // Agregado entre os cadastros vinculados ao login (normalmente 1):
+      // basta UM cadastro com CFT ok para o aviso sumir. Sem vínculo, quem
+      // manda é o aviso amarelo acima — não faz sentido cobrar CFT de um
+      // cadastro que nem se sabe qual é.
+      // INFORMATIVO por decisão: NÃO bloqueia o aceite nem desabilita botão —
+      // promover pendência de CFT a bloqueio é decisão futura do gestor.
+      const infosCft = semVinculo ? [] : tecnicos
+        .filter(t => meusTecIds.includes(String(t.id)))
+        .map(t => cftInfo(t.fields || {}));
+      const cftOk = infosCft.some(i => i.s === "ok");
+      const avisoCft = $("parCftAviso");
+      if (semVinculo || cftOk) {
+        avisoCft.hidden = true; avisoCft.innerHTML = "";
+      } else {
+        // com vencido E ausente entre os cadastros, "vencido" ganha: há um
+        // número cadastrado, e a data é a informação acionável para o gestor
+        const venc = infosCft.find(i => i.s === "vencido");
+        avisoCft.innerHTML = venc
+          ? "<strong>Seu registro CFT está vencido" +
+            (venc.valRaw ? " desde " + esc(EG.fmtDate(venc.valRaw)) : "") +
+            ".</strong> Regularize com o gestor — alocações podem ser impactadas."
+          : "<strong>Seu registro CFT está ausente.</strong> Regularize com o gestor — alocações podem ser impactadas.";
+        avisoCft.hidden = false;
+      }
+
       const minhas = alocacoes.filter(o => ehMinha(o.fields || {}))
         .slice().sort((a, b) => String((b.fields || {}).Enviada_Em || "").localeCompare(String((a.fields || {}).Enviada_Em || "")));
 
@@ -694,6 +749,27 @@
         "</dl>";
     }
 
+    // linha "Registro CFT" do drawer de escopo do PARCEIRO — mesmo semáforo do
+    // aviso do topo da aba (cores locais: ok verde, vencido vermelho, ausente
+    // âmbar). Informativo: nunca desabilita os botões de decisão do aceite.
+    function blocoCft(tecLookupId) {
+      const c = cftInfo(tecF(tecLookupId));
+      let ic, corIc, txt;
+      if (c.s === "ok") {
+        ic = "✓"; corIc = "#22B573";
+        txt = esc(c.num) + (c.valRaw
+          ? " · válido até " + esc(EG.fmtDate(c.valRaw))
+          : " · sem validade informada");
+      } else if (c.s === "vencido") {
+        ic = "✗"; corIc = "#F85149";
+        txt = esc(c.num) + " · <span style='color:#F85149'>vencido em " + esc(EG.fmtDate(c.valRaw)) + "</span>";
+      } else {
+        ic = "✗"; corIc = "#F0883E";
+        txt = "<span style='color:#F0883E'>sem registro CFT — pendência de habilitação</span>";
+      }
+      return "<dl><dt>Registro CFT</dt><dd><span style='color:" + corIc + ";font-weight:700'>" + ic + "</span> " + txt + "</dd></dl>";
+    }
+
     function blocoResultado(f) {
       const st = statusEfetivo(f);
       if (st === "Proposta Enviada") return "";
@@ -772,6 +848,7 @@
       const pendente = st === "Proposta Enviada";
       const corpo =
         blocoEscopo(f) +
+        blocoCft(f.TecnicoLookupId) + // semáforo CFT no contexto da decisão
         blocoResultado(f) +
         (pendente
           ? grupo("Sua decisão") +
@@ -960,7 +1037,7 @@
       setDados, montarForm, renderTudo, mostrarSec,
       renderGes, renderPar, renderAge,
       abrirGesDrawer, abrirParDrawer, abrirAgeDrawer,
-      statusEfetivo, expirou, msRestante, countdown, osElegivel, tecAtivo, norm,
+      statusEfetivo, expirou, msRestante, countdown, osElegivel, tecAtivo, norm, cftInfo,
       expirarOnRead, relerAloc,
       forcarCarregado: (v) => { carregado = v !== false; },
       setUsuario: (n, e, oid) => { usuarioNome = n; usuarioEmail = e || ""; usuarioObjectId = oid || ""; }
