@@ -46,6 +46,12 @@
     .eo .eo-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .eo .eo-msg.err { color: #f85149; }
     .eo .eo-aviso { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; line-height: 1.45; }
+
+    /* --- camada operacional pós-aceite (solicitações / cotações / catálogo) --- */
+    .mini { padding: 2px 10px; font-size: .75rem; }
+    .ope-form { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
+    .ope-form .eo { border-top: none; padding-top: 0; margin-top: 0; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
   </style>
 </head>
 <body>
@@ -77,11 +83,13 @@
   </header>
   <div id="status">Não autenticado.</div>
   <div id="choiceWarn" class="choice-warn" hidden></div>
+  <div id="choiceWarnOpe" class="choice-warn" hidden></div>
 
   <main>
     <div class="tabs">
       <button class="tab on" id="tabOrc" data-tab="orc">Orçamentos de Material</button>
       <button class="tab" id="tabPrd" data-tab="prd">Produtos / Estoque</button>
+      <button class="tab" id="tabOpe" data-tab="ope">Operacional</button>
     </div>
 
     <!-- ===== ORÇAMENTOS ===== -->
@@ -117,6 +125,7 @@
         <label>Buscar <input type="text" id="fBusca" placeholder="código ou descrição" /></label>
         <label><input type="checkbox" id="fSemEstoque" /> só sem disponibilidade</label>
         <label><input type="checkbox" id="fSoAtivos" /> só ativos</label>
+        <button id="btnNovoPrd" class="sec">+ Novo produto</button>
         <span class="cnt" id="cntPrd"></span>
       </div>
       <table id="tblPrd" hidden>
@@ -127,6 +136,47 @@
         <tbody id="tbPrd"></tbody>
       </table>
       <div class="empty" id="emptyPrd">Carregue os dados para ver os produtos.</div>
+    </section>
+
+    <!-- ===== OPERACIONAL (pós-aceite: solicitações de compra + cotações) ===== -->
+    <section id="secOpe" hidden>
+      <div class="kpis">
+        <div class="kpi"><div class="k">Solicitações abertas</div><div class="v" id="kSolAbertas">—</div></div>
+        <div class="kpi"><div class="k">Aguardando cotação</div><div class="v" id="kSolAgCot">—</div></div>
+        <div class="kpi"><div class="k">Cotações recebidas</div><div class="v" id="kCotReceb">—</div></div>
+        <div class="kpi warn"><div class="k">Críticas (bloqueiam serviço)</div><div class="v" id="kSolCrit">—</div></div>
+      </div>
+      <div class="filters">
+        <label>Status
+          <select id="fSolStatus"><option value="">Todas</option></select>
+        </label>
+        <button id="btnNovaSol" class="sec">+ Nova solicitação</button>
+        <span class="cnt" id="cntSol"></span>
+      </div>
+      <div class="ope-form" id="formNovaSol" hidden>
+        <div class="eo">
+          <div class="eo-t">Nova solicitação de compra</div>
+          <div class="grid2">
+            <label>Título / descrição * <input type="text" id="nsTitulo" maxlength="255" /></label>
+            <label>Solicitante <input type="text" id="nsSolic" maxlength="255" /></label>
+            <label>Produto (catálogo) <select id="nsProduto"></select></label>
+            <label>Quantidade * <input type="number" id="nsQtd" min="0" step="any" /></label>
+            <label>OS vinculada <select id="nsOS"></select></label>
+            <label>Data de necessidade * <input type="date" id="nsData" /></label>
+            <label>Urgência <select id="nsUrg"></select></label>
+          </div>
+          <label>Justificativa / observações <textarea id="nsObs" maxlength="2000"></textarea></label>
+          <div class="eo-btns"><button id="nsSalvar">Criar solicitação</button><button id="nsCancelar" class="sec">Cancelar</button></div>
+          <div class="eo-msg" id="nsMsg"></div>
+        </div>
+      </div>
+      <div id="estSol"><span class="eg-estado">Carregue os dados para ver as solicitações de compra.</span></div>
+      <table id="tblSol" hidden>
+        <thead><tr>
+          <th>Título</th><th>Produto</th><th>Qtd</th><th>OS</th><th>Urgência</th><th>Necessidade</th><th>Status</th><th>Cotações</th>
+        </tr></thead>
+        <tbody id="tbSol"></tbody>
+      </table>
     </section>
   </main>
 
@@ -171,9 +221,36 @@
        Produtos
          · Estoque_Reservado é escrito pelo canvas Scr_Vendas_DetalheOrcamento
            (reserva no aceite). Mexer em estoque por aqui poderia divergir dessa
-           reserva -> aba de Produtos mantida somente leitura.
+           reserva -> campos de ESTOQUE (Estoque_Atual/Reservado/Disponivel,
+           Custo_Medio, Preco_Venda_Sugerido, Markup) seguem SOMENTE LEITURA.
+         · Campos de CATÁLOGO (Title, Codigo_Interno, Categoria, Unidade, Ativo,
+           Observacoes) — NENHUM escritor automatizado (grep 2026-08-03 em
+           CanvasApps/Telas/Src e Workflows) -> editáveis aqui (aba Produtos:
+           criar e editar; inativar = Ativo=false, NUNCA delete).
        Itens_Orcamento_Venda — criados pelo canvas Scr_Vendas_Novo; só leitura.
        Clientes — esta tela só lê Title (nomes para lookup).
+
+       --- CAMADA OPERACIONAL PÓS-ACEITE (aba "Operacional", 2026-08-03) ---
+       Survey PnP: listas LEGADAS reaproveitadas (nada foi duplicado). Campos
+       ADICIONADOS por serem claramente faltantes: Solicitacoes_Compra.OS_Origem
+       (Lookup->OrdensDeServico, indexado; Origem_Solicitacao já tinha a opção
+       "Ordem de Servico" mas nenhum campo apontava a OS) e
+       Cotacoes_Fornecedor.Status_Cotacao (Choice Recebida|Escolhida|Descartada,
+       default Recebida; o Boolean legado Selecionada não distingue descartada).
+       Solicitacoes_Compra — NENHUM escritor automatizado (grep 2026-08-03:
+         canvas Telas/Src e Workflows não referenciam a lista; Make só escreve
+         OrdensDeServico e Clientes). Esta tela é o escritor: criação (Status
+         inicial "Aguardando Cotacao") e transição de Status com GUARDA
+         ("Pedido Emitido" exige cotação Escolhida) + Fornecedor_Escolhido (ao
+         escolher cotação) + Data_Ultima_Mudanca_Status (trilha da transição).
+       Cotacoes_Fornecedor — NENHUM escritor automatizado (mesmo grep). Esta
+         tela cria (Status_Cotacao=Recebida) e marca Escolhida/Descartada.
+         Selecionada (Boolean legado) é mantido em SINCRONIA em toda gravação
+         (Escolhida->true, demais->false) para não órfanizar consumidores
+         futuros do campo antigo.
+       Fornecedores — faturamento.html lê Title; esta tela cria fornecedor
+         mínimo (Title, Ativo=true) a partir do formulário de cotação.
+       OrdensDeServico — esta tela só lê Title (opções do lookup OS_Origem).
        ===================================================================== */
     const $ = (id) => document.getElementById(id);
     const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
@@ -197,6 +274,32 @@
     let orcMap = {}, prdMap = {}, nomeCliente = {}, nomeProduto = {};
     let itensCols = {}; // displayName -> internalName (resolvido em runtime)
 
+    // --- estado da camada operacional (aba "Operacional") ---
+    let solicitacoes = [], cotacoes = [], fornecedores = [], ordens = [];
+    let solMap = {}, nomeFornecedor = {}, nomeOS = {};
+    let solCampoChoices = null, cotCampoChoices = null, prdCampoChoices = null; // internalName -> choices[] do servidor
+    let usuarioNome = ""; // preenche "Solicitante" por padrão
+
+    // Choices da camada operacional (rótulos SEM acento, como estão no SharePoint —
+    // validados/travados fail-closed em EG.travarChoices no carregamento).
+    const SOL_STATUS_CORES = {
+      "Aguardando Cotacao": "#D29922",
+      "Em Cotacao": "#58A6FF",
+      "Em Aprovacao": "#A371F7",
+      "Pedido Emitido": "#1ABFBF",
+      "Em Transito": "#388BFD",
+      "Recebido Parcial": "#D29922",
+      "Recebido Total": "#22B573",
+      "Entregue": "#22B573",
+      "Cancelada": "#F85149"
+    };
+    const SOL_STATUS_INICIAL = "Aguardando Cotacao";
+    const SOL_STATUS_PEDIDO = "Pedido Emitido"; // análogo de "Comprada": a guarda exige cotação Escolhida
+    const SOL_STATUS_FECHADOS = ["Recebido Total", "Entregue", "Cancelada"];
+    const URG_CORES = { "Normal": "#8B949E", "Urgente": "#D29922", "Critica - Bloqueia Servico": "#F85149" };
+    const COT_RECEBIDA = "Recebida", COT_ESCOLHIDA = "Escolhida", COT_DESCARTADA = "Descartada";
+    const COT_CORES = { "Recebida": "#58A6FF", "Escolhida": "#22B573", "Descartada": "#8B949E" };
+
     const num = (v) => (v == null || v === "") ? null : Number(v);
     const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 2 });
     const fmtPct = (v) => v == null ? "—" : Number(v).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + "%";
@@ -217,7 +320,7 @@
     async function onIn() {
       setStatus("Autenticado como " + EG.getAccount().username);
       $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
-      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; }
+      try { const u = await EG.me(); usuarioNome = u.nome || ""; $("user").textContent = "👤 " + u.nome; }
       catch { $("user").textContent = "👤 " + EG.getAccount().username; }
     }
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
@@ -226,8 +329,10 @@
     /* ---------- abas ---------- */
     document.querySelectorAll(".tab").forEach(b => b.onclick = () => {
       document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === b));
-      const orc = b.dataset.tab === "orc";
-      $("secOrc").hidden = !orc; $("secPrd").hidden = orc;
+      const t = b.dataset.tab;
+      $("secOrc").hidden = t !== "orc";
+      $("secPrd").hidden = t !== "prd";
+      $("secOpe").hidden = t !== "ope";
     });
 
     /* ---------- carga (leitura; a única escrita é a edição do orçamento no drawer) ---------- */
@@ -240,27 +345,63 @@
         EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", Object.keys(STATUS_CORES))
           .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de Orçamento"))
           .catch(() => {});
-        const [orc, prd, its, cli, cols, colsOrc] = await Promise.all([
+        // travas FAIL-CLOSED dos Choices que a camada operacional GRAVA:
+        // registradas em graph.js, bloqueiam PATCH/POST com rótulo divergente
+        // antes de ir à rede (ver EG.travarChoices).
+        EG.renderEstado($("estSol"), "carregando", { mensagem: "Carregando solicitações…" });
+        Promise.all([
+          EG.travarChoices("Solicitacoes_Compra", "Status", Object.keys(SOL_STATUS_CORES)),
+          EG.travarChoices("Solicitacoes_Compra", "Origem_Solicitacao", ["Ordem de Servico", "Solicitacao Manual"], { apenasSemChoice: true }),
+          EG.travarChoices("Solicitacoes_Compra", "Urgencia", Object.keys(URG_CORES)),
+          EG.travarChoices("Cotacoes_Fornecedor", "Status_Cotacao", [COT_RECEBIDA, COT_ESCOLHIDA, COT_DESCARTADA]),
+          EG.travarChoices("Cotacoes_Fornecedor", "Motivo_Selecao", [], { apenasSemChoice: true }),
+          EG.travarChoices("Produtos", "Categoria", [], { apenasSemChoice: true }),
+          EG.travarChoices("Produtos", "Unidade", [], { apenasSemChoice: true })
+        ]).then(vs => EG.renderAvisosChoices($("choiceWarnOpe"), [
+          { v: vs[0], rotulo: "Status de Solicitação" },
+          { v: vs[1], rotulo: "Origem da Solicitação" },
+          { v: vs[2], rotulo: "Urgência" },
+          { v: vs[3], rotulo: "Status de Cotação" }
+        ])).catch(() => {});
+        const [orc, prd, its, cli, cols, colsOrc, sol, cot, forn, oss, colsSol, colsCot, colsPrd] = await Promise.all([
           soft(EG.listItems("Orcamentos_Venda"), "Orcamentos_Venda"),
           soft(EG.listItems("Produtos"), "Produtos"),
           soft(EG.listItems("Itens_Orcamento_Venda"), "Itens_Orcamento_Venda"),
           soft(EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"), "Clientes"),
           soft(EG.listColumns("Itens_Orcamento_Venda"), "colunas de Itens_Orcamento_Venda"),
-          soft(EG.listColumns("Orcamentos_Venda"), "colunas de Orcamentos_Venda")
+          soft(EG.listColumns("Orcamentos_Venda"), "colunas de Orcamentos_Venda"),
+          soft(EG.listItems("Solicitacoes_Compra"), "Solicitacoes_Compra"),
+          soft(EG.listItems("Cotacoes_Fornecedor"), "Cotacoes_Fornecedor"),
+          soft(EG.listItems("Fornecedores", "expand=fields($select=Title,Ativo)&$top=500"), "Fornecedores"),
+          soft(EG.listItems("OrdensDeServico", "expand=fields($select=Title,Status)&$top=500"), "OrdensDeServico"),
+          soft(EG.listColumns("Solicitacoes_Compra"), "colunas de Solicitacoes_Compra"),
+          soft(EG.listColumns("Cotacoes_Fornecedor"), "colunas de Cotacoes_Fornecedor"),
+          soft(EG.listColumns("Produtos"), "colunas de Produtos")
         ]);
         aplicarColunasOrc(colsOrc);
+        solCampoChoices = extrairChoices(colsSol);
+        cotCampoChoices = extrairChoices(colsCot);
+        prdCampoChoices = extrairChoices(colsPrd);
         orcamentos = orc; produtos = prd; itens = its;
+        solicitacoes = sol; cotacoes = cot; fornecedores = forn; ordens = oss;
 
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = (c.fields || {}).Title);
         nomeProduto = {}; prd.forEach(p => nomeProduto[p.id] = (p.fields || {}).Title);
         orcMap = {}; orc.forEach(o => orcMap[o.id] = o);
         prdMap = {}; prd.forEach(p => prdMap[p.id] = p);
         itensCols = {}; cols.forEach(c => { if (c && c.displayName) itensCols[c.displayName] = c.name; });
+        solMap = {}; sol.forEach(s => solMap[s.id] = s);
+        nomeFornecedor = {}; forn.forEach(x => nomeFornecedor[x.id] = (x.fields || {}).Title);
+        nomeOS = {}; oss.forEach(x => nomeOS[x.id] = (x.fields || {}).Title);
 
-        montaFiltroStatus();
-        renderOrc(); renderPrd();
-        setStatus("OK — " + orc.length + " orçamento(s), " + prd.length + " produto(s), " + its.length + " item(ns) de orçamento.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
+        montaFiltroStatus(); montaFiltroSolStatus();
+        renderOrc(); renderPrd(); renderSol();
+        setStatus("OK — " + orc.length + " orçamento(s), " + prd.length + " produto(s), " + its.length + " item(ns) de orçamento, " +
+          sol.length + " solicitação(ões) de compra, " + cot.length + " cotação(ões).");
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("estSol"), "erro", { mensagem: "Não foi possível carregar: " + e.message, onRetry: () => $("btnLoad").click() });
+      }
     };
 
     /* ---------- orçamentos ---------- */
@@ -553,7 +694,9 @@
         rowD("Markup padrão", f.Markup_Padrao_Pct != null ? fmtPct(num(f.Markup_Padrao_Pct)) : null)
       ].join("");
       const alerta = (disp ?? 0) <= 0 ? `<div class="sub" style="color:#f85149;margin-top:8px">⚠ Sem disponibilidade em estoque.</div>` : "";
-      abreDrawer(f.Title ?? "(sem descrição)", `<dl>${rows}</dl>${alerta}`, f);
+      abreDrawer(f.Title ?? "(sem descrição)", `<dl>${rows}</dl>${alerta}${blocoEdicaoPrd(f)}`, f);
+      const sv = $("epSalvar");
+      if (sv) sv.onclick = () => gravarPrd(p);
     }
 
     function abreDrawer(titulo, corpo, f) {
@@ -571,6 +714,479 @@
     function closeDrawer() {
       $("drawer").classList.remove("open"); $("overlay").classList.remove("open");
       $("drawer").setAttribute("aria-hidden", "true");
+    }
+
+    /* ==================================================================
+       CAMADA OPERACIONAL PÓS-ACEITE — solicitações de compra, cotações e
+       catálogo de produtos (ver mapa de dono no topo). Toda gravação:
+       PATCH/POST mínimo + releitura do servidor; Choices travados
+       fail-closed no carregamento; nunca gravar "" (skip; limpeza
+       intencional = null comentado); nunca delete (inativar = flag).
+       ================================================================== */
+    const extrairChoices = (cols) => {
+      const m = {};
+      (cols || []).forEach(c => { if (c && c.name && c.choice && Array.isArray(c.choice.choices)) m[c.name] = c.choice.choices; });
+      return m;
+    };
+    // cor vem dos mapas locais (controlada), texto passa por esc()
+    const badge = (txt, cor) => txt ? '<span class="badge" style="border-color:' + cor + ';color:' + cor + '">' + esc(txt) + "</span>" : "—";
+    const hojeInputDate = () => isoParaInputDate(new Date().toISOString());
+
+    // ---------- hooks de teste (padrão do repo): funções PURAS usadas pelos
+    // fluxos reais, expostas em window.SUP para asserção via console/Node ----------
+    const SUP = {
+      /** total da cotação = preço unitário × quantidade solicitada; null se faltar lado */
+      totalCotacao: (preco, qtd) => (preco == null || qtd == null || isNaN(preco) || isNaN(qtd)) ? null : preco * qtd,
+      /** Origem_Solicitacao em função da OS vinculada */
+      origemSolicitacao: (osId) => osId ? "Ordem de Servico" : "Solicitacao Manual",
+      /** guarda de transição: "Pedido Emitido" (análogo de Comprada) exige cotação Escolhida */
+      guardaStatusSolicitacao: (novo, cots) => {
+        if (novo === SOL_STATUS_PEDIDO && !(cots || []).some(c => ((c.fields || {}).Status_Cotacao) === COT_ESCOLHIDA))
+          return { ok: false, motivo: "“" + SOL_STATUS_PEDIDO + "” exige uma cotação marcada como Escolhida nesta solicitação." };
+        return { ok: true, motivo: "" };
+      },
+      /** ids a descartar ao escolher uma cotação: todas as demais ainda não descartadas */
+      aDescartar: (cots, idEscolhida) => (cots || [])
+        .filter(c => String(c.id) !== String(idEscolhida) && ((c.fields || {}).Status_Cotacao) !== COT_DESCARTADA)
+        .map(c => c.id),
+      validarNovaSolicitacao: (c) => {
+        const erros = [];
+        if (!c || !c.titulo) erros.push("informe o título/descrição");
+        if (!(Number(c && c.qtd) > 0)) erros.push("quantidade deve ser maior que zero");
+        if (!c || !c.data) erros.push("informe a data de necessidade");
+        return { ok: !erros.length, erros };
+      },
+      validarNovaCotacao: (c) => {
+        const erros = [];
+        if (!c || !c.fornId) erros.push("selecione o fornecedor");
+        if (c && c.fornId === "__novo" && !c.fornNovo) erros.push("informe o nome do novo fornecedor");
+        if (!(Number(c && c.preco) > 0)) erros.push("preço unitário deve ser maior que zero");
+        const z = Number(c && c.prazo);
+        if (!c || c.prazo === "" || isNaN(z) || z < 0) erros.push("prazo de entrega (dias) deve ser 0 ou mais");
+        return { ok: !erros.length, erros };
+      },
+      validarNovoProduto: (c) => {
+        const erros = [];
+        if (!c || !c.titulo) erros.push("informe a descrição");
+        if (!c || !c.cod) erros.push("informe o código interno (campo obrigatório da lista)");
+        return { ok: !erros.length, erros };
+      }
+    };
+    window.SUP = SUP;
+
+    /* ---------- solicitações: filtro, KPIs e tabela ---------- */
+    const cotacoesDaSolicitacao = (id) => cotacoes.filter(c => String((c.fields || {}).SolicitacaoLookupId) === String(id));
+
+    function montaFiltroSolStatus() {
+      const atual = $("fSolStatus").value;
+      const vistos = new Set(solicitacoes.map(s => (s.fields || {}).Status).filter(Boolean));
+      const base = (solCampoChoices && solCampoChoices.Status && solCampoChoices.Status.length)
+        ? solCampoChoices.Status : Object.keys(SOL_STATUS_CORES);
+      const lista = base.concat([...vistos].filter(s => !base.includes(s)));
+      $("fSolStatus").innerHTML = '<option value="">Todas</option>' +
+        lista.map(s => "<option value='" + esc(s) + "'>" + esc(s) + "</option>").join("");
+      if (atual && lista.includes(atual)) $("fSolStatus").value = atual;
+    }
+    $("fSolStatus").onchange = () => renderSol();
+
+    function renderSol() {
+      const F = (s) => (s.fields || {});
+      const abertas = solicitacoes.filter(s => !SOL_STATUS_FECHADOS.includes(F(s).Status));
+      $("kSolAbertas").textContent = abertas.length;
+      $("kSolAgCot").textContent = solicitacoes.filter(s => F(s).Status === SOL_STATUS_INICIAL).length;
+      $("kCotReceb").textContent = cotacoes.filter(c => (c.fields || {}).Status_Cotacao === COT_RECEBIDA).length;
+      $("kSolCrit").textContent = abertas.filter(s => F(s).Urgencia === "Critica - Bloqueia Servico").length;
+
+      const filtro = $("fSolStatus").value;
+      const lista = filtro ? solicitacoes.filter(s => F(s).Status === filtro) : solicitacoes;
+      $("cntSol").textContent = lista.length + " de " + solicitacoes.length + " exibida(s)";
+
+      if (!lista.length) {
+        $("tblSol").hidden = true;
+        EG.renderEstado($("estSol"), "vazio", {
+          mensagem: solicitacoes.length ? "Nenhuma solicitação com o status selecionado." : "Nenhuma solicitação de compra cadastrada."
+        });
+        return;
+      }
+      EG.renderEstado($("estSol"), "ok");
+      $("tblSol").hidden = false;
+      $("tbSol").innerHTML = lista.map(s => {
+        const f = F(s);
+        const cots = cotacoesDaSolicitacao(s.id);
+        const temEscolhida = cots.some(c => (c.fields || {}).Status_Cotacao === COT_ESCOLHIDA);
+        return "<tr data-id='" + esc(s.id) + "'>" +
+          "<td>" + esc(f.Title ?? "—") + "</td>" +
+          "<td>" + esc(f.ProdutoLookupId ? (nomeProduto[f.ProdutoLookupId] || "produto #" + f.ProdutoLookupId) : "—") + "</td>" +
+          "<td>" + fmtNum(num(f.Quantidade_Solicitada)) + "</td>" +
+          "<td>" + esc(f.OS_OrigemLookupId ? (nomeOS[f.OS_OrigemLookupId] || "OS #" + f.OS_OrigemLookupId) : "—") + "</td>" +
+          "<td>" + badge(f.Urgencia, URG_CORES[f.Urgencia] || "#8B949E") + "</td>" +
+          "<td>" + esc(EG.fmtDate(f.Data_Necessidade) ?? "—") + "</td>" +
+          "<td>" + badge(f.Status, SOL_STATUS_CORES[f.Status] || "#8B949E") + "</td>" +
+          "<td>" + (cots.length ? cots.length + (temEscolhida ? " (1 escolhida)" : "") : "—") + "</td>" +
+          "</tr>";
+      }).join("");
+    }
+    $("tbSol").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr && solMap[tr.dataset.id]) drawerSol(solMap[tr.dataset.id]); });
+
+    // relê do servidor a solicitação e TODAS as cotações (estado real pós-gravação)
+    async function recarregarSol(id) {
+      const sid = await EG.resolveSite();
+      const [novo, cot] = await Promise.all([
+        EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Solicitacoes_Compra") + "/items/" + id + "?expand=fields"),
+        EG.listItems("Cotacoes_Fornecedor")
+      ]);
+      const i = solicitacoes.findIndex(x => String(x.id) === String(novo.id));
+      if (i > -1) solicitacoes[i] = novo; else solicitacoes.push(novo);
+      solMap[novo.id] = novo;
+      cotacoes = cot;
+      montaFiltroSolStatus(); renderSol();
+      return novo;
+    }
+
+    /* ---------- nova solicitação ---------- */
+    function montarFormNovaSol() {
+      const prds = produtos.filter(p => (p.fields || {}).Ativo !== false);
+      $("nsProduto").innerHTML = "<option value=''>(sem produto do catálogo)</option>" +
+        prds.map(p => "<option value='" + esc(p.id) + "'>" + esc((p.fields || {}).Title || ("#" + p.id)) + "</option>").join("");
+      $("nsOS").innerHTML = "<option value=''>(sem OS — solicitação manual)</option>" +
+        ordens.map(o => "<option value='" + esc(o.id) + "'>" + esc((o.fields || {}).Title || ("OS #" + o.id)) + "</option>").join("");
+      $("nsUrg").innerHTML = optsChoice((solCampoChoices || {}).Urgencia, null, "(não definida)");
+      if (!$("nsSolic").value && usuarioNome) $("nsSolic").value = usuarioNome;
+      if (!$("nsData").value) $("nsData").value = hojeInputDate();
+    }
+    $("btnNovaSol").onclick = () => {
+      const fm = $("formNovaSol");
+      fm.hidden = !fm.hidden;
+      if (!fm.hidden) montarFormNovaSol();
+    };
+    $("nsCancelar").onclick = () => { $("formNovaSol").hidden = true; };
+
+    let salvandoSol = false;
+    async function salvarNovaSol() {
+      if (salvandoSol) return;
+      const msg = $("nsMsg");
+      const c = {
+        titulo: $("nsTitulo").value.trim(), qtd: $("nsQtd").value, data: $("nsData").value,
+        prdId: $("nsProduto").value, osId: $("nsOS").value, urg: $("nsUrg").value,
+        solic: $("nsSolic").value.trim(), obs: $("nsObs").value.trim()
+      };
+      const v = SUP.validarNovaSolicitacao(c);
+      if (!v.ok) { msg.className = "eo-msg err"; msg.textContent = v.erros.join(" · "); return; }
+      try {
+        salvandoSol = true; $("nsSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Gravando...";
+        const campos = {
+          Title: c.titulo,
+          Origem_Solicitacao: SUP.origemSolicitacao(c.osId),
+          Quantidade_Solicitada: Number(c.qtd),
+          Data_Solicitacao: new Date().toISOString(),
+          Data_Necessidade: c.data + "T03:00:00Z", // meia-noite de Brasília (UTC-3): a data exibida não escorrega de dia
+          Status: SOL_STATUS_INICIAL
+        };
+        // só chaves com valor entram no POST (nunca gravar "")
+        if (c.prdId) campos.ProdutoLookupId = Number(c.prdId);
+        if (c.osId) campos.OS_OrigemLookupId = Number(c.osId);
+        if (c.urg) campos.Urgencia = c.urg;
+        if (c.solic) campos.Solicitante = c.solic;
+        if (c.obs) campos.Observacoes = c.obs;
+        const criado = await EG.createItem("Solicitacoes_Compra", campos);
+        const atual = await recarregarSol(criado.id); // releitura: a tela mostra o que o SharePoint gravou
+        $("formNovaSol").hidden = true;
+        ["nsTitulo", "nsQtd", "nsData", "nsObs"].forEach(id => $(id).value = "");
+        msg.className = "eo-msg"; msg.textContent = "";
+        setStatus("Solicitação “" + (((atual.fields || {}).Title) || criado.id) + "” criada.");
+      } catch (e) {
+        msg.className = "eo-msg err"; msg.textContent = "Falha ao criar: " + e.message;
+      } finally {
+        salvandoSol = false; $("nsSalvar").disabled = false;
+      }
+    }
+    $("nsSalvar").onclick = salvarNovaSol;
+
+    /* ---------- drawer da solicitação: detalhes + cotações + transição ---------- */
+    function drawerSol(s) {
+      const f = s.fields || {};
+      const cots = cotacoesDaSolicitacao(s.id);
+      const qtd = num(f.Quantidade_Solicitada);
+      const rows = [
+        rowD("Status", f.Status),
+        rowD("Origem", f.Origem_Solicitacao),
+        rowD("Produto", f.ProdutoLookupId ? (nomeProduto[f.ProdutoLookupId] || "produto #" + f.ProdutoLookupId) : null),
+        rowD("Quantidade", qtd != null ? fmtNum(qtd) : null),
+        rowD("OS vinculada", f.OS_OrigemLookupId ? (nomeOS[f.OS_OrigemLookupId] || "OS #" + f.OS_OrigemLookupId) : null),
+        rowD("Urgência", f.Urgencia),
+        rowD("Solicitante", f.Solicitante),
+        rowD("Solicitada em", EG.fmtDate(f.Data_Solicitacao)),
+        rowD("Necessidade", EG.fmtDate(f.Data_Necessidade)),
+        rowD("Fornecedor escolhido", f.Fornecedor_EscolhidoLookupId ? (nomeFornecedor[f.Fornecedor_EscolhidoLookupId] || "#" + f.Fornecedor_EscolhidoLookupId) : null),
+        rowD("Última mudança de status", EG.fmtDate(f.Data_Ultima_Mudanca_Status)),
+        rowD("Observações", f.Observacoes)
+      ].join("");
+
+      const linhasCot = cots.map(c => {
+        const g = c.fields || {};
+        // item legado sem Status_Cotacao: Selecionada=true equivale a Escolhida; sem nada -> "—"
+        const st = g.Status_Cotacao || (g.Selecionada === true ? COT_ESCOLHIDA : null);
+        const total = SUP.totalCotacao(num(g.Preco_Unitario), qtd);
+        return "<tr><td>" + esc(nomeFornecedor[g.FornecedorLookupId] || (g.FornecedorLookupId ? "#" + g.FornecedorLookupId : "—")) + "</td>" +
+          "<td class='num'>" + brl(num(g.Preco_Unitario)) + "</td>" +
+          "<td class='num'>" + (total != null ? brl(total) : "—") + "</td>" +
+          "<td>" + (num(g.Prazo_Entrega_Dias) != null ? fmtNum(num(g.Prazo_Entrega_Dias)) + " d" : "—") + "</td>" +
+          "<td>" + badge(st, COT_CORES[st] || "#8B949E") + "</td>" +
+          "<td>" + (st === COT_ESCOLHIDA ? "★" : "<button class='mini cot-escolher' data-cot='" + esc(c.id) + "'>Escolher</button>") + "</td></tr>";
+      }).join("");
+      const tabelaCot = cots.length
+        ? "<table style='margin-top:8px'><thead><tr><th>Fornecedor</th><th>Preço unit.</th><th>Total (× qtd)</th><th>Prazo</th><th>Status</th><th></th></tr></thead><tbody>" + linhasCot + "</tbody></table>"
+        : "<div class='sub' style='margin-top:8px'>Nenhuma cotação registrada para esta solicitação.</div>";
+      const motivoSel = cots.length
+        ? "<label>Motivo da escolha (aplicado ao clicar em Escolher) <select id='dcMotivo'>" + optsChoice((cotCampoChoices || {}).Motivo_Selecao, null, "(não informado)") + "</select></label>"
+        : "";
+      const blocoCots = "<div class='eo'><div class='eo-t'>Cotações</div>" + motivoSel + tabelaCot +
+        "<div class='sub'>Ao escolher uma cotação, as demais desta solicitação são marcadas como Descartada (uma a uma; falhas são reportadas sem rollback).</div>" +
+        "<div class='eo-msg' id='dcMsg'></div></div>";
+
+      const stChoices = solCampoChoices ? solCampoChoices.Status : null;
+      const blocoStatus = (stChoices && stChoices.length)
+        ? "<div class='eo'><div class='eo-t'>Transição de status</div>" +
+          "<label>Status <select id='dsStatus'>" + optsChoice(stChoices, f.Status) + "</select></label>" +
+          "<div class='sub'>“" + esc(SOL_STATUS_PEDIDO) + "” exige uma cotação Escolhida (guarda desta tela).</div>" +
+          "<div class='eo-btns'><button id='dsSalvar'>Gravar status</button></div>" +
+          "<div class='eo-msg' id='dsMsg'></div></div>"
+        : "<div class='eo'><div class='eo-msg'>Transição indisponível: as opções de Status não foram lidas do SharePoint — recarregue os dados.</div></div>";
+
+      abreDrawer(f.Title ?? "(sem título)", "<dl>" + rows + "</dl>" + blocoCots + blocoNovaCotacao() + blocoStatus, f);
+      ligarDrawerSol(s);
+    }
+
+    function blocoNovaCotacao() {
+      const opts = fornecedores
+        .filter(x => (x.fields || {}).Ativo !== false)
+        .map(x => "<option value='" + esc(x.id) + "'>" + esc((x.fields || {}).Title || ("#" + x.id)) + "</option>").join("");
+      return "<div class='eo'><div class='eo-t'>Registrar cotação</div>" +
+        "<label>Fornecedor * <select id='ncForn'><option value=''>(selecione)</option>" + opts + "<option value='__novo'>+ cadastrar fornecedor…</option></select></label>" +
+        "<label id='ncFornNovoL' hidden>Nome do novo fornecedor * <input type='text' id='ncFornNovo' maxlength='255' /></label>" +
+        "<label>Preço unitário (R$) * <input type='number' id='ncPreco' min='0' step='any' /></label>" +
+        "<label>Prazo de entrega (dias) * <input type='number' id='ncPrazo' min='0' step='1' /></label>" +
+        "<label>Condição de pagamento <input type='text' id='ncCond' maxlength='255' /></label>" +
+        "<label>Validade da cotação <input type='date' id='ncValidade' /></label>" +
+        "<label>Link/nota do anexo <textarea id='ncAnexo' maxlength='2000'></textarea></label>" +
+        "<div class='eo-btns'><button id='ncSalvar'>Registrar cotação</button></div>" +
+        "<div class='eo-msg' id='ncMsg'></div></div>";
+    }
+
+    function ligarDrawerSol(s) {
+      const sv = $("dsSalvar"); if (sv) sv.onclick = () => gravarStatusSol(s);
+      document.querySelectorAll(".cot-escolher").forEach(b => b.onclick = () => escolherCotacao(s, b.dataset.cot));
+      const fs = $("ncForn"); if (fs) fs.onchange = () => { $("ncFornNovoL").hidden = fs.value !== "__novo"; };
+      const nc = $("ncSalvar"); if (nc) nc.onclick = () => salvarCotacao(s);
+    }
+
+    /* ---------- transição de status da solicitação (com guarda) ---------- */
+    let gravandoSol = false;
+    async function gravarStatusSol(s) {
+      if (gravandoSol) return;
+      const f = s.fields || {}, msg = $("dsMsg");
+      const novo = $("dsStatus").value;
+      if (!novo || novo === (f.Status || "")) { msg.className = "eo-msg"; msg.textContent = "Nada foi alterado."; return; }
+      const g = SUP.guardaStatusSolicitacao(novo, cotacoesDaSolicitacao(s.id));
+      if (!g.ok) { msg.className = "eo-msg err"; msg.textContent = g.motivo; return; }
+      try {
+        gravandoSol = true; $("dsSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Gravando...";
+        // PATCH mínimo: status + trilha da transição (Data_Ultima_Mudanca_Status já existia na lista)
+        await EG.patchItemFields("Solicitacoes_Compra", s.id, { Status: novo, Data_Ultima_Mudanca_Status: new Date().toISOString() });
+        const atual = await recarregarSol(s.id);
+        drawerSol(atual);
+        setStatus("Solicitação “" + (((atual.fields || {}).Title) || s.id) + "” atualizada para " + novo + ".");
+      } catch (e) {
+        msg.className = "eo-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+        $("dsSalvar").disabled = false;
+      } finally { gravandoSol = false; }
+    }
+
+    /* ---------- escolher cotação (demais -> Descartada, sem rollback) ---------- */
+    let escolhendoCot = false;
+    async function escolherCotacao(s, cotId) {
+      if (escolhendoCot) return;
+      const cots = cotacoesDaSolicitacao(s.id);
+      const alvo = cots.find(c => String(c.id) === String(cotId));
+      if (!alvo) return;
+      const motivo = $("dcMotivo") ? $("dcMotivo").value : "";
+      const msg = $("dcMsg");
+      const erros = [];
+      let descartadas = 0, aDescartarIds = [];
+      try {
+        escolhendoCot = true;
+        document.querySelectorAll(".cot-escolher").forEach(b => b.disabled = true);
+        if (msg) { msg.className = "eo-msg"; msg.textContent = "Gravando escolha..."; }
+        // 1) a escolhida — Selecionada (Boolean legado) mantida em sincronia
+        const campos = { Status_Cotacao: COT_ESCOLHIDA, Selecionada: true };
+        if (motivo) campos.Motivo_Selecao = motivo;
+        try { await EG.patchItemFields("Cotacoes_Fornecedor", alvo.id, campos); }
+        catch (e) { erros.push("escolher cotação: " + e.message); }
+        if (!erros.length) {
+          // 2) demais -> Descartada, UMA A UMA; falha não desfaz o que já gravou
+          aDescartarIds = SUP.aDescartar(cots, alvo.id);
+          for (const id of aDescartarIds) {
+            try {
+              await EG.patchItemFields("Cotacoes_Fornecedor", id, { Status_Cotacao: COT_DESCARTADA, Selecionada: false });
+              descartadas++;
+            } catch (e) { erros.push("descartar cotação #" + id + ": " + e.message); }
+          }
+          // 3) espelho na solicitação: Fornecedor_Escolhido (campo legado próprio para isso)
+          const fid = (alvo.fields || {}).FornecedorLookupId;
+          if (fid) {
+            try { await EG.patchItemFields("Solicitacoes_Compra", s.id, { Fornecedor_EscolhidoLookupId: Number(fid) }); }
+            catch (e) { erros.push("Fornecedor_Escolhido na solicitação: " + e.message); }
+          }
+        }
+        const atual = await recarregarSol(s.id); // estado REAL do servidor, aconteça o que acontecer
+        drawerSol(atual);
+        const m2 = $("dcMsg"); // o drawer foi redesenhado — pega o elemento novo
+        if (erros.length) {
+          if (m2) { m2.className = "eo-msg err"; m2.textContent = "Concluído COM FALHAS (sem rollback — o estado acima é o real): " + erros.join(" · ") + (aDescartarIds.length ? " — descartadas " + descartadas + " de " + aDescartarIds.length + "." : ""); }
+        } else {
+          if (m2) { m2.className = "eo-msg"; m2.textContent = "Cotação escolhida; " + descartadas + " descartada(s)."; }
+          setStatus("Cotação escolhida para “" + (((atual.fields || {}).Title) || s.id) + "”.");
+        }
+      } finally { escolhendoCot = false; }
+    }
+
+    /* ---------- registrar cotação ---------- */
+    let salvandoCot = false;
+    async function salvarCotacao(s) {
+      if (salvandoCot) return;
+      const msg = $("ncMsg");
+      const c = {
+        fornId: $("ncForn").value, fornNovo: $("ncFornNovo").value.trim(),
+        preco: $("ncPreco").value, prazo: $("ncPrazo").value,
+        cond: $("ncCond").value.trim(), validade: $("ncValidade").value, anexo: $("ncAnexo").value.trim()
+      };
+      const v = SUP.validarNovaCotacao(c);
+      if (!v.ok) { msg.className = "eo-msg err"; msg.textContent = v.erros.join(" · "); return; }
+      try {
+        salvandoCot = true; $("ncSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Gravando...";
+        let fid = c.fornId, fnome = "";
+        if (c.fornId === "__novo") {
+          const nf = await EG.createItem("Fornecedores", { Title: c.fornNovo, Ativo: true });
+          fid = nf.id; fnome = c.fornNovo;
+          fornecedores.push(nf); nomeFornecedor[nf.id] = c.fornNovo;
+        } else {
+          fnome = nomeFornecedor[fid] || ("#" + fid);
+        }
+        const campos = {
+          Title: fnome + " — " + (((s.fields || {}).Title) || ("solicitação #" + s.id)),
+          Preco_Unitario: Number(c.preco),
+          Prazo_Entrega_Dias: Number(c.prazo),
+          Data_Cotacao: new Date().toISOString(),
+          Status_Cotacao: COT_RECEBIDA,
+          Selecionada: false, // espelho legado explícito (Boolean sem default na lista)
+          SolicitacaoLookupId: Number(s.id),
+          FornecedorLookupId: Number(fid)
+        };
+        // só chaves com valor entram no POST (nunca gravar "")
+        if (c.cond) campos.Condicao_Pagamento = c.cond;
+        if (c.validade) campos.Validade_Cotacao = c.validade + "T03:00:00Z";
+        if (c.anexo) campos.Anexo_Cotacao = c.anexo;
+        await EG.createItem("Cotacoes_Fornecedor", campos);
+        const atual = await recarregarSol(s.id);
+        drawerSol(atual);
+        setStatus("Cotação de " + fnome + " registrada.");
+      } catch (e) {
+        msg.className = "eo-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+        $("ncSalvar").disabled = false;
+      } finally { salvandoCot = false; }
+    }
+
+    /* ---------- catálogo de produtos: editar e criar (nunca delete) ---------- */
+    function blocoEdicaoPrd(f) {
+      return "<div class='eo'>" +
+        "<div class='eo-t'>Catálogo do produto (estoque continua somente leitura — ver mapa de dono)</div>" +
+        "<label>Descrição * <input type='text' id='epTitle' maxlength='255' value='" + esc(f.Title || "") + "' /></label>" +
+        "<label>Código interno * <input type='text' id='epCod' maxlength='255' value='" + esc(f.Codigo_Interno || "") + "' /></label>" +
+        "<label>Categoria <select id='epCat'>" + optsChoice((prdCampoChoices || {}).Categoria, f.Categoria, "(sem categoria)") + "</select></label>" +
+        "<label>Unidade <select id='epUni'>" + optsChoice((prdCampoChoices || {}).Unidade, f.Unidade, "(sem unidade)") + "</select></label>" +
+        "<label style='flex-direction:row;align-items:center;gap:8px'><input type='checkbox' id='epAtivo'" + (f.Ativo !== false ? " checked" : "") + " /> produto ativo (desmarcar = inativar; não existe exclusão)</label>" +
+        "<label>Observações <textarea id='epObs' maxlength='2000'>" + esc(f.Observacoes || "") + "</textarea></label>" +
+        "<div class='eo-btns'><button id='epSalvar'>Salvar catálogo</button></div>" +
+        "<div class='eo-msg' id='epMsg'></div></div>";
+    }
+
+    let gravandoPrd = false;
+    async function gravarPrd(p) {
+      if (gravandoPrd) return;
+      const f = p.fields || {}, msg = $("epMsg");
+      const titulo = $("epTitle").value.trim(), cod = $("epCod").value.trim();
+      const v = SUP.validarNovoProduto({ titulo, cod });
+      if (!v.ok) { msg.className = "eo-msg err"; msg.textContent = v.erros.join(" · "); return; }
+      // dirty tracking: PATCH leva SÓ o que mudou
+      const campos = {};
+      if (titulo !== (f.Title || "")) campos.Title = titulo;
+      if (cod !== (f.Codigo_Interno || "")) campos.Codigo_Interno = cod;
+      const cat = $("epCat").value; if (cat !== (f.Categoria || "")) campos.Categoria = cat === "" ? null : cat; // limpeza intencional = null
+      const uni = $("epUni").value; if (uni !== (f.Unidade || "")) campos.Unidade = uni === "" ? null : uni;
+      const atv = $("epAtivo").checked; if (atv !== (f.Ativo !== false)) campos.Ativo = atv;
+      const obs = $("epObs").value; if (obs !== (f.Observacoes || "")) campos.Observacoes = obs; // limpar de propósito grava vazio mesmo
+      if (!Object.keys(campos).length) { msg.className = "eo-msg"; msg.textContent = "Nada foi alterado."; return; }
+      try {
+        gravandoPrd = true; $("epSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Produtos", p.id, campos);
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + p.id + "?expand=fields");
+        const i = produtos.findIndex(x => String(x.id) === String(p.id));
+        if (i > -1) produtos[i] = novo;
+        prdMap[p.id] = novo; nomeProduto[p.id] = (novo.fields || {}).Title;
+        renderPrd(); drawerPrd(novo);
+        setStatus("Produto " + ((novo.fields || {}).Title || p.id) + " atualizado.");
+      } catch (e) {
+        msg.className = "eo-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+        $("epSalvar").disabled = false;
+      } finally { gravandoPrd = false; }
+    }
+
+    function blocoNovoPrd() {
+      return "<div class='eo'>" +
+        "<div class='eo-t'>Novo produto do catálogo</div>" +
+        "<label>Descrição * <input type='text' id='npTitle' maxlength='255' /></label>" +
+        "<label>Código interno * <input type='text' id='npCod' maxlength='255' /></label>" +
+        "<label>Categoria <select id='npCat'>" + optsChoice((prdCampoChoices || {}).Categoria, null, "(sem categoria)") + "</select></label>" +
+        "<label>Unidade <select id='npUni'>" + optsChoice((prdCampoChoices || {}).Unidade, null, "(sem unidade)") + "</select></label>" +
+        "<label>Observações <textarea id='npObs' maxlength='2000'></textarea></label>" +
+        "<div class='eo-btns'><button id='npSalvar'>Criar produto</button></div>" +
+        "<div class='eo-msg' id='npMsg'></div></div>";
+    }
+    $("btnNovoPrd").onclick = () => {
+      if (!prdCampoChoices) { setStatus("Carregue os dados antes de criar produto.", "err"); return; }
+      abreDrawer("Novo produto", blocoNovoPrd(), {});
+      $("npSalvar").onclick = salvarNovoPrd;
+    };
+
+    let salvandoPrd = false;
+    async function salvarNovoPrd() {
+      if (salvandoPrd) return;
+      const msg = $("npMsg");
+      const c = { titulo: $("npTitle").value.trim(), cod: $("npCod").value.trim() };
+      const v = SUP.validarNovoProduto(c);
+      if (!v.ok) { msg.className = "eo-msg err"; msg.textContent = v.erros.join(" · "); return; }
+      try {
+        salvandoPrd = true; $("npSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Gravando...";
+        const campos = { Title: c.titulo, Codigo_Interno: c.cod, Ativo: true };
+        const cat = $("npCat").value; if (cat) campos.Categoria = cat;   // nunca gravar ""
+        const uni = $("npUni").value; if (uni) campos.Unidade = uni;
+        const obs = $("npObs").value.trim(); if (obs) campos.Observacoes = obs;
+        const criado = await EG.createItem("Produtos", campos);
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + criado.id + "?expand=fields");
+        produtos.push(novo); prdMap[novo.id] = novo; nomeProduto[novo.id] = (novo.fields || {}).Title;
+        renderPrd(); drawerPrd(novo);
+        setStatus("Produto “" + ((novo.fields || {}).Title || criado.id) + "” criado.");
+      } catch (e) {
+        msg.className = "eo-msg err"; msg.textContent = "Falha ao criar: " + e.message;
+        $("npSalvar").disabled = false;
+      } finally { salvandoPrd = false; }
     }
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
