@@ -44,6 +44,8 @@
     .kcard .val { color: #3fb950; font-weight: 600; font-size: .84rem; margin-top: 4px; }
     .kcard .st { color: #f0883e; font-size: .74rem; margin-top: 4px; }
     .col-empty { color: #484f58; font-size: .78rem; text-align: center; padding: 14px 0; }
+    /* badge âmbar do "Aceito" legado (pode ter chegado pela web sem reserva de estoque) */
+    .b-semreserva { display: inline-block; border: 1px solid #d29922; color: #e3b341; background: #d2992218; border-radius: 999px; padding: 0 7px; font-size: .68rem; margin-top: 4px; white-space: nowrap; }
     .board-sep { margin: 6px 0 8px; color: #8b949e; font-size: .82rem; }
 
     /* --- Funil --- */
@@ -207,7 +209,25 @@
          · Única transição automática existente: canvas Scr_Vendas_DetalheOrcamento
            faz Status -> "Aceito - Aguardando Faturamento" e, JUNTO, soma
            Produtos.Estoque_Reservado dos itens. Esse efeito colateral NÃO foi
-           portado para cá — daí o aviso no drawer ao escolher esse status.
+           portado para cá.
+         · RESTRIÇÃO TEMPORÁRIA (2026-08-03): a transição de Status para
+           "Aceito - Aguardando Faturamento" está BLOQUEADA no drawer desta tela —
+           option disabled (NUNCA removida: bloqueio não é sumiço) + explicação
+           permanente junto ao select — porque a reserva de Estoque_Reservado do
+           aceite não foi portada para a web; aceitar por aqui comprometeria o
+           saldo disponível. Orçamento que JÁ está nesse status mantém a option
+           selecionada como valor atual (o dirty tracking não grava mudança
+           acidental), porém disabled para re-seleção a partir de outro status.
+           CONDIÇÃO DE REMOÇÃO: o bloqueio cai quando a reserva de
+           Estoque_Reservado existir na web — remover JUNTOS este bloqueio
+           (optsChoice/blocoEdicaoOrc/gravarOrc), os avisos (badge "aceito sem
+           reserva?" + boxes .eo-aviso) e este comentário.
+         · DOIS ESCRITORES (achado F0 §2): suprimentos.html e faturamento.html
+           editam os MESMOS 4 campos (Status_Orcamento, Prioridade,
+           Data_Proximo_Passo, Observacoes) em drawers que são cópia um do outro.
+           Concorrência mitigada pelo If-Match/ETag de EG.patchItemFields
+           (graph.js): gravação simultânea leva 412 e nada é sobrescrito.
+           Qualquer mudança de regra de edição PRECISA ir nos DOIS arquivos.
          · Nenhum flow e nenhum cenário Make escreve nesta lista.
          · SEM escritor: demais transições de Status_Orcamento, Prioridade,
            Data_Proximo_Passo, Observacoes -> editáveis aqui (drawer do card).
@@ -248,6 +268,8 @@
     };
     const COR_FORA = "#F0883E";
     const etapaCor = (s) => ETAPA_COR[s] || COR_FORA;
+    // Transição BLOQUEADA nesta tela (ver RESTRIÇÃO TEMPORÁRIA no mapa acima).
+    const STATUS_ACEITO = "Aceito - Aguardando Faturamento"; // = ETAPAS[4]
 
     const STATUS_NF = [
       "Importado - Processando",
@@ -485,6 +507,10 @@
         '<div class="cli">' + esc(cliNome(f)) + "</div>" +
         '<div class="val">' + esc(brl(f.Valor_Total_Orcamento)) + "</div>" +
         (mostraStatus ? '<div class="st">' + esc(f.Status_Orcamento || "(sem status)") + "</div>" : "") +
+        // badge âmbar persistente: "Aceito" pode ser legado da web (sem reserva de estoque)
+        (f.Status_Orcamento === STATUS_ACEITO
+          ? '<div><span class="b-semreserva" title="Se o aceite foi feito pela web antes do bloqueio, a reserva de estoque não aconteceu — confira Produtos.Estoque_Reservado no canvas (Scr_Vendas_DetalheOrcamento).">aceito sem reserva?</span></div>'
+          : "") +
         "</div>";
     }
 
@@ -685,13 +711,31 @@
 
     // options de um select de Choice: valores do servidor; o valor atual do item
     // entra mesmo se estiver fora da lista (nunca trocar de valor por acidente).
-    function optsChoice(choices, atual, rotuloVazio) {
+    // "bloqueada": option que fica DISABLED — nunca removida ("bloqueio não é
+    // sumiço") — com sufixo "— indisponível aqui". Se for o valor ATUAL do item,
+    // permanece selecionada (dirty tracking não grava mudança acidental), porém
+    // segue disabled para re-seleção a partir de outro status.
+    function optsChoice(choices, atual, rotuloVazio, bloqueada) {
       const lista = (choices || []).slice();
       let html = rotuloVazio != null ? "<option value=''" + ((atual == null || atual === "") ? " selected" : "") + ">" + esc(rotuloVazio) + "</option>" : "";
-      html += lista.map(c => "<option value='" + esc(c) + "'" + (c === atual ? " selected" : "") + ">" + esc(c) + "</option>").join("");
+      html += lista.map(c => {
+        const bloq = bloqueada != null && c === bloqueada;
+        return "<option value='" + esc(c) + "'" + (c === atual ? " selected" : "") + (bloq ? " disabled" : "") +
+          ">" + esc(c) + (bloq ? " — indisponível aqui" : "") + "</option>";
+      }).join("");
       if (atual != null && atual !== "" && lista.indexOf(atual) === -1)
         html += "<option value='" + esc(atual) + "' selected>" + esc(atual) + " (valor atual — fora da lista)</option>";
       return html;
+    }
+
+    // Aviso persistente do "Aceito" legado: o orçamento pode ter chegado a esse
+    // status PELA WEB antes do bloqueio do aceite — nesse caso a reserva de
+    // estoque nunca aconteceu. Box fixo no drawer (persistente, não toast).
+    function avisoAceitoLegado(f) {
+      if (!f || f.Status_Orcamento !== STATUS_ACEITO) return "";
+      return "<div class='eo-aviso'>⚠ Este orçamento está em “" + esc(STATUS_ACEITO) + "”. Se esse aceite foi feito " +
+        "pela web (antes do bloqueio), a reserva de estoque NÃO aconteceu. Antes de faturar, confira " +
+        "Produtos.Estoque_Reservado dos itens no canvas (Scr_Vendas_DetalheOrcamento).</div>";
     }
 
     function blocoEdicaoOrc(f) {
@@ -702,9 +746,12 @@
       }
       return "<div class='eo'>" +
         "<div class='eo-t'>Atualizar orçamento</div>" +
-        "<label>Status <select id='eoStatus'>" + optsChoice(stChoices, f.Status_Orcamento) + "</select></label>" +
-        "<div class='eo-aviso' id='eoAvisoAceito' hidden>Mudar para “Aceito - Aguardando Faturamento” por aqui NÃO reserva estoque dos itens — " +
-          "essa reserva é feita apenas pelo botão de aceite do canvas (Scr_Vendas_DetalheOrcamento).</div>" +
+        "<label>Status <select id='eoStatus'>" + optsChoice(stChoices, f.Status_Orcamento, null, STATUS_ACEITO) + "</select></label>" +
+        // explicação PERMANENTE do bloqueio: sempre visível, não depende da seleção
+        "<div class='eo-aviso'>“" + esc(STATUS_ACEITO) + "” está indisponível aqui: a reserva de estoque " +
+          "(Produtos.Estoque_Reservado) não foi portada para a web, e aceitar sem reservar comprometeria o saldo " +
+          "disponível. O caminho válido é o botão de aceite do canvas (Scr_Vendas_DetalheOrcamento), que executa o " +
+          "efeito completo (status + reserva).</div>" +
         "<label>Prioridade <select id='eoPrior'>" + optsChoice(orcCampoChoices.Prioridade, f.Prioridade, "(não definida)") + "</select></label>" +
         "<label>Data do próximo passo <input type='date' id='eoData' value='" + esc(isoParaInputDate(f.Data_Proximo_Passo)) + "' /></label>" +
         "<label>Observações <textarea id='eoObs' maxlength='2000'>" + esc(f.Observacoes || "") + "</textarea></label>" +
@@ -716,12 +763,7 @@
     function ligarEdicaoOrc(o) {
       const sv = $("eoSalvar");
       if (!sv) return; // bloco indisponível (choices não carregados)
-      const f = o.fields || {};
-      const st = $("eoStatus"), av = $("eoAvisoAceito");
-      if (st && av) {
-        const chk = () => { av.hidden = !(st.value === "Aceito - Aguardando Faturamento" && f.Status_Orcamento !== st.value); };
-        st.addEventListener("change", chk); chk();
-      }
+      // (o aviso do aceite é permanente no bloco — nada a ligar por seleção)
       sv.onclick = () => gravarOrc(o);
     }
 
@@ -733,6 +775,14 @@
       const campos = {};
       const st = $("eoStatus").value;
       if (st && st !== (f.Status_Orcamento || "")) campos.Status_Orcamento = st;
+      // cinto e suspensório do bloqueio do aceite: mesmo com DOM manipulado,
+      // a TRANSIÇÃO para esse status não sai desta tela (permanecer nele pode:
+      // o dirty tracking acima já descarta valor igual ao atual).
+      if (campos.Status_Orcamento === STATUS_ACEITO) {
+        msg.className = "eo-msg err";
+        msg.textContent = "Transição para “" + STATUS_ACEITO + "” bloqueada nesta tela — use o botão de aceite do canvas (Scr_Vendas_DetalheOrcamento), que também reserva o estoque.";
+        return;
+      }
       const pr = $("eoPrior").value;
       if (pr !== (f.Prioridade || "")) campos.Prioridade = pr === "" ? null : pr;
       const dt = $("eoData").value; // "AAAA-MM-DD" ou ""
@@ -789,7 +839,7 @@
         : "";
       abrir(f.Title || "(sem número)",
         '<span class="pill" style="background:' + etapaCor(s) + '">' + esc(s || "(sem status)") + "</span>",
-        "<dl>" + rows + "</dl>" + alerta + blocoEdicaoOrc(f), f);
+        "<dl>" + rows + "</dl>" + alerta + avisoAceitoLegado(f) + blocoEdicaoOrc(f), f);
       ligarEdicaoOrc(o);
     }
 
@@ -843,7 +893,9 @@
       injetar: (orc, nf, cli, forn) => aplicarDados(orc || [], nf || [], cli || [], forn || []),
       // edição do orçamento (testável sem login: injete colunas falsas e abra o drawer)
       aplicarColunasOrc: aplicarColunasOrc, blocoEdicaoOrc: blocoEdicaoOrc,
-      optsChoice: optsChoice, isoParaInputDate: isoParaInputDate
+      optsChoice: optsChoice, isoParaInputDate: isoParaInputDate,
+      // bloqueio do aceite (RESTRIÇÃO TEMPORÁRIA — ver mapa no topo)
+      STATUS_ACEITO: STATUS_ACEITO, avisoAceitoLegado: avisoAceitoLegado
     };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
