@@ -1,0 +1,628 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Relatório consolidado por OS</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    /* estilos locais desta tela (não mexem em app.css, que é compartilhado) */
+    [hidden] { display: none !important; }
+    .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+    .toolbar label { color: #8b949e; font-size: .82rem; }
+    .toolbar select { font-size: .86rem; padding: 6px 10px; border-radius: 6px; border: 1px solid #30363d; background: #161b22; color: #e6edf3; min-width: 280px; max-width: 60vw; }
+    .aviso-ro { margin: 0 0 14px; padding: 8px 12px; border: 1px solid #1f6feb55; background: #1f6feb14; border-radius: 8px; color: #58a6ff; font-size: .82rem; }
+    .sec { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+    .sec h2 { font-size: .95rem; margin: 0 0 4px; }
+    .sec h3 { font-size: .8rem; margin: 14px 0 4px; color: #8b949e; text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+    .sec .nota { color: #8b949e; font-size: .78rem; margin: 2px 0 8px; }
+    .sec dl { display: grid; grid-template-columns: 180px 1fr; gap: 5px 12px; margin: 10px 0 0; }
+    .sec dt { color: #8b949e; font-size: .82rem; }
+    .sec dd { margin: 0; font-size: .88rem; word-break: break-word; }
+    .sec table { margin-top: 8px; }
+    .sec th { position: static; background: transparent; }
+    .sec .modulo-off { color: #d29922; font-size: .85rem; padding: 6px 0; }
+    .sec .sem-itens { color: #8b949e; font-size: .85rem; padding: 6px 0; }
+    .sec .sec-erro { color: #f85149; font-size: .85rem; padding: 6px 0; }
+    .badge { margin-top: 0; }
+    .hash { font-family: Consolas, monospace; font-size: .8rem; }
+    .fase-barra { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: .85rem; }
+    .fase-barra .trilho { flex: 0 0 160px; height: 8px; border-radius: 4px; background: #21262d; overflow: hidden; }
+    .fase-barra .trilho > div { height: 100%; background: #22B573; }
+    pre.manifesto { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 300px; font-size: .78rem; }
+    .raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; display: inline-block; margin-top: 8px; }
+
+    /* ---- impressão: fundo claro, sem nav/botões/toolbar ---- */
+    @media print {
+      body { background: #fff; color: #111; }
+      header, #status, #choiceWarn, #estado, .toolbar, .aviso-ro, .raw-toggle, button { display: none !important; }
+      main { padding: 0; }
+      .print-cab { display: block !important; font-size: 1.05rem; font-weight: 600; margin-bottom: 10px; color: #111; }
+      .sec { background: #fff; border: 1px solid #bbb; border-radius: 0; break-inside: avoid; page-break-inside: avoid; margin-bottom: 10px; }
+      .sec h2, .sec dd, td { color: #111; }
+      .sec h3, .sec dt, .sec .nota, th, .sem-itens { color: #444; }
+      .sec .modulo-off { color: #7a5b00; }
+      .badge { border-color: #888 !important; color: #111 !important; }
+      td, th { border-bottom: 1px solid #ccc; }
+      .fase-barra .trilho { background: #ddd; border: 1px solid #bbb; }
+      pre.manifesto { background: #f6f6f6; color: #111; border-color: #bbb; max-height: none; }
+      a { color: #111; text-decoration: none; }
+    }
+    .print-cab { display: none; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Eletrium ERP</h1>
+    <nav>
+      <a href="index.html">Kanban</a>
+      <a href="propostas.html">Propostas</a>
+      <a href="nova-proposta.html">Nova</a>
+      <a href="clientes.html">Clientes</a>
+      <a href="os.html">OS</a>
+      <a href="suprimentos.html">Suprimentos</a>
+      <a href="dashboard.html">Dashboard</a>
+      <a href="habilitacoes.html">Habilitações</a>
+      <a href="reaquecimento.html">Reaquecimento</a>
+      <a href="faturamento.html">Faturamento</a>
+      <a href="fechamentos.html">Fechamentos</a>
+      <a href="medicao.html">Medição</a>
+      <a href="ferramental.html">Ferramental</a>
+      <a href="portal-alocacao.html">Alocação</a>
+      <a href="checklist.html">Checklist</a>
+      <a href="projetos-v2.html">Projetos</a>
+      <a href="documentos-os.html">Documentos</a>
+    </nav>
+    <span class="user" id="user"></span>
+    <button id="btnLogin">Entrar</button>
+    <button id="btnLoad" class="sec" disabled>Carregar</button>
+    <button id="btnLogout" class="sec" disabled>Sair</button>
+  </header>
+  <div id="status">Não autenticado.</div>
+  <div id="choiceWarn" class="choice-warn" hidden></div>
+  <main>
+    <div class="aviso-ro">Relatório consolidado por OS — tela 100% SOMENTE LEITURA: nenhuma gravação no SharePoint parte daqui.</div>
+    <div id="estado"></div>
+    <div class="toolbar" id="toolbar" hidden>
+      <label for="selOS">OS</label>
+      <select id="selOS"></select>
+      <button id="btnPrint" class="sec">🖨️ Imprimir</button>
+    </div>
+    <div class="print-cab" id="printCab"></div>
+    <div id="dossie"></div>
+  </main>
+
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id);
+    const setStatus = (m, cls) => { $("status").textContent = m; $("status").className = cls || ""; };
+
+    /* ---------- helpers puros (compartilham o padrão das outras telas) ---------- */
+    const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const num = (v) => (typeof v === "number" ? v : (v == null || v === "" ? 0 : Number(v) || 0));
+    const ehNum = (v) => v != null && v !== "" && isFinite(Number(v));
+    const temTexto = (v) => v != null && String(v).trim() !== "";
+    // preenchido de verdade vira número formatado; ausente vira "—", nunca 0 mentiroso
+    const celNum = (v, casas) => ehNum(v)
+      ? Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: casas == null ? 2 : casas })
+      : "—";
+    const celBRL = (v) => ehNum(v) ? EG.BRL(Number(v)) : "—";
+    const celTx = (v) => temTexto(v) ? String(v) : "—";
+    const fmtD = (s) => EG.fmtDate(s) ?? "—";                     // date-only seguro (EG.ehDataPura por dentro)
+    const fmtDT = (s) => { if (!s) return "—"; const d = new Date(s); return isNaN(d) ? String(s) : d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" }); };
+    const parseD = (s) => { if (!s) return null; const d = new Date(s); return isNaN(d) ? null : d; };
+    const shaCurto = (h) => temTexto(h) ? String(h).slice(0, 12) + "…" : null;
+    const urlOk = (v) => { if (!v) return null; const s = String(v).trim(); return /^https?:\/\//i.test(s) ? s : null; };
+    const linkSeguro = (v, rotulo) => { const u = urlOk(v); return u ? `<a href="${esc(u)}" target="_blank" rel="noopener" style="color:#58a6ff">${esc(rotulo)} ↗</a>` : ""; };
+    const normalizar = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+    const badge = (txt, cor) => `<span class="badge" style="border-color:${cor};color:${cor}">${esc(txt)}</span>`;
+
+    /* ---------- resolução de módulo ausente (tolerância POR SEÇÃO) ----------
+       Cada lista é carregada como "módulo": { ok:true, itens } ou
+       { ok:false, erro }. Lista inexistente no site (Graph 404) ou falha de
+       rede NÃO derruba o dossiê — a seção correspondente mostra
+       "módulo não disponível" e o resto renderiza normalmente. */
+    function resolverSecao(mod) {
+      if (!mod || mod.ok !== true) return { estado: "indisponivel", motivo: (mod && mod.erro) || "lista não disponível" };
+      return { estado: "ok", itens: mod.itens || [] };
+    }
+    const htmlModuloOff = (nomeLista, motivo) =>
+      `<div class="modulo-off">⚠️ Módulo não disponível — a lista <code>${esc(nomeLista)}</code> não pôde ser lida${temTexto(motivo) ? " (" + esc(motivo) + ")" : ""}. As demais seções não são afetadas.</div>`;
+    const htmlSemItens = (msg) => `<div class="sem-itens">${esc(msg)}</div>`;
+
+    // filtro client-side padrão do repo: lookup <Campo>LookupId comparado como string
+    const porOS = (itens, campoLookup, osId) =>
+      (itens || []).filter(r => String(((r.fields || {})[campoLookup]) ?? "") === String(osId));
+
+    /* ---------- checklist: fase, resposta vigente, progresso, NCs ----------
+       Mesmas regras de checklist.html: fase tolerante a acento/caixa com
+       default "Execução"; resposta vigente por Pergunta_ID = maior Timestamp
+       (empate: maior id); NC = vigente com Gerou_NC === true. */
+    const FASES = ["Pré-Execução", "Execução", "Pós-Execução"];
+    function faseDe(f) {
+      const v = f && f.Fase_Execucao;
+      if (FASES.includes(v)) return v;
+      const n = normalizar(v);
+      if (n.startsWith("pre")) return FASES[0];
+      if (n.startsWith("pos")) return FASES[2];
+      return "Execução";
+    }
+    function vigentesPorPergunta(respostas, osId) {
+      const m = {};
+      (respostas || []).filter(r => String((r.fields || {}).OSLookupId ?? "") === String(osId)).forEach(r => {
+        const pid = String((r.fields || {}).Pergunta_ID ?? "");
+        if (!pid) return;
+        const atual = m[pid];
+        if (!atual) { m[pid] = r; return; }
+        const ta = parseD((atual.fields || {}).Timestamp), tb = parseD((r.fields || {}).Timestamp);
+        const va = ta ? ta.getTime() : 0, vb = tb ? tb.getTime() : 0;
+        if (vb > va || (vb === va && num(r.id) > num(atual.id))) m[pid] = r;
+      });
+      return m;
+    }
+    function progressoChecklist(perguntas, respostas, osId) {
+      const ativas = (perguntas || []).filter(p => (p.fields || {}).Ativo === true);
+      const vigentes = vigentesPorPergunta(respostas, osId);
+      const fases = FASES.map(nome => ({ nome, total: 0, respondidas: 0 }));
+      ativas.forEach(p => {
+        const fase = fases[FASES.indexOf(faseDe(p.fields || {}))];
+        fase.total++;
+        if (vigentes[String(p.id)]) fase.respondidas++;
+      });
+      const ncs = Object.keys(vigentes)
+        .filter(pid => ((vigentes[pid].fields || {}).Gerou_NC) === true)
+        .map(pid => {
+          const rf = vigentes[pid].fields || {};
+          const p = ativas.find(x => String(x.id) === pid) || (perguntas || []).find(x => String(x.id) === pid);
+          const pf = (p && p.fields) || {};
+          return {
+            pergunta: temTexto(pf.Texto_Pergunta) ? pf.Texto_Pergunta : (pf.Title || ("pergunta #" + pid)),
+            fase: faseDe(pf), resposta: rf.Resposta_Dada, valorMedido: rf.Valor_Medido,
+            alertaParametro: rf.Alerta_Parametro === true, quando: rf.Timestamp, tecnico: rf.Tecnico
+          };
+        });
+      return { fases, ncs, totalAtivas: ativas.length, respondidas: Object.keys(vigentes).length };
+    }
+
+    /* ---------- documentos: versão atual + contagem (regras de documentos-os.html) ---------- */
+    function versoesPorDocumento(versoes) {
+      const m = {};
+      (versoes || []).forEach(v => {
+        const did = String((v.fields || {}).DocumentoLookupId ?? "");
+        if (!did) return;
+        (m[did] = m[did] || []).push(v);
+      });
+      Object.keys(m).forEach(k => m[k].sort((a, b) => num((b.fields || {}).Numero_Versao) - num((a.fields || {}).Numero_Versao)));
+      return m;
+    }
+    function resumoDocumento(doc, versMap) {
+      const f = doc.fields || {};
+      const vers = versMap[String(doc.id)] || [];
+      const maxHist = vers.length ? num((vers[0].fields || {}).Numero_Versao) : null;
+      const atual = vers.find(v => ehNum((v.fields || {}).Numero_Versao) && ehNum(f.Versao_Atual) &&
+        num((v.fields || {}).Numero_Versao) === num(f.Versao_Atual)) || null;
+      return {
+        titulo: temTexto(f.Titulo) ? f.Titulo : (f.Title || ("doc #" + doc.id)),
+        tipo: f.Tipo_Documento, estado: f.Estado_Documento,
+        vAtual: ehNum(f.Versao_Atual) ? num(f.Versao_Atual) : null,
+        nVersoes: vers.length, maxHist,
+        divergente: maxHist != null && ehNum(f.Versao_Atual) && num(f.Versao_Atual) !== maxHist,
+        hashAtual: atual ? (atual.fields || {}).Hash_SHA256 : null,   // InternalName real: Hash_SHA256
+        criadaEm: atual ? (atual.fields || {}).Criada_Em : null,
+        arquivoUrl: atual ? (atual.fields || {}).Arquivo_URL : null
+      };
+    }
+
+    /* ---------- diárias: Diaria_Tecnico NÃO tem lookup de OS ----------
+       O único vínculo é o campo texto OS_Lista (as OS do dia). O match é
+       TEXTUAL e exato por token (separadores , ; e quebra de linha) contra o
+       Title da OS — aproximação declarada na própria seção. */
+    function diariasDaOS(diarias, osTitle) {
+      if (!temTexto(osTitle)) return [];
+      const alvo = normalizar(osTitle);
+      return (diarias || []).filter(d => String(((d.fields || {}).OS_Lista) ?? "")
+        .split(/[\n,;]+/).map(s => normalizar(s)).includes(alvo));
+    }
+
+    // descoberta do parâmetro de garantia: procura coluna com "garant" no nome
+    // interno ou de exibição — se não houver, a seção DIZ que não há parâmetro
+    function campoGarantia(cols) {
+      return (cols || []).find(c => /garant/i.test(String(c.name || "")) || /garant/i.test(String(c.displayName || ""))) || null;
+    }
+
+    /* ============================== estado ============================== */
+    const LISTAS = {
+      os: "OrdensDeServico", clientes: "Clientes", tecnicos: "TecnicosMEI", locais: "Clientes_Locais",
+      equipe: "OS_Equipe", aloc: "OS_Alocacoes_Parceiros",
+      respostas: "OS_Respostas", perguntas: "Perguntas_Checklist", nc: "Nao_Conformidades",
+      medItens: "OS_Medicoes_Itens", medLotes: "OS_Medicoes_Lotes",
+      docs: "OS_Documentos", docVers: "OS_Documentos_Versoes",
+      diarias: "Diaria_Tecnico"
+    };
+    let mods = {};            // chave de LISTAS -> { ok, itens } | { ok, erro }
+    let colsOS = [];          // colunas de OrdensDeServico (garantia + conferência de estados)
+    let mapOS = {}, nomeCliente = {}, nomeTecnico = {}, mapLocal = {};
+    let carregado = false;
+
+    // captura POR MÓDULO: falha vira { ok:false, erro } — nunca derruba o resto
+    const modulo = (p) => p.then(itens => ({ ok: true, itens: itens || [] }))
+                           .catch(e => ({ ok: false, erro: e && e.message || String(e) }));
+
+    /* ============================ autenticação ============================ */
+    async function boot() { if (await EG.init()) await onIn(); }
+    async function onIn() {
+      setStatus("Autenticado como " + EG.getAccount().username);
+      $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
+      try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+    }
+    $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
+    $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
+    $("btnPrint").onclick = () => window.print();
+
+    $("btnLoad").onclick = carregar;
+    async function carregar() {
+      try {
+        EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando dossiê da OS…" });
+        setStatus("Carregando listas do relatório…");
+        const chaves = Object.keys(LISTAS);
+        const res = await Promise.all(chaves.map(k => modulo(EG.listItems(LISTAS[k]))));
+        mods = {}; chaves.forEach((k, i) => { mods[k] = res[i]; });
+        colsOS = await EG.listColumns("OrdensDeServico").catch(e => { console.warn("Falha ao ler colunas de OrdensDeServico:", e.message); return []; });
+
+        // OrdensDeServico é a espinha do relatório: sem ela não há dossiê
+        if (!mods.os.ok) {
+          EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar OrdensDeServico: " + mods.os.erro, onRetry: carregar });
+          setStatus("Falha: " + mods.os.erro, "err");
+          return;
+        }
+        mapOS = {}; (mods.os.itens || []).forEach(o => { mapOS[String(o.id)] = o; });
+        nomeCliente = {}; ((mods.clientes.ok && mods.clientes.itens) || []).forEach(c => nomeCliente[c.id] = (c.fields || {}).Title);
+        nomeTecnico = {}; ((mods.tecnicos.ok && mods.tecnicos.itens) || []).forEach(t => nomeTecnico[t.id] = (t.fields || {}).Title);
+        mapLocal = {}; ((mods.locais.ok && mods.locais.itens) || []).forEach(l => mapLocal[String(l.id)] = l);
+        carregado = true;
+
+        montarSeletor();
+        EG.renderEstado($("estado"), "ok");
+        $("toolbar").hidden = false;
+        const falhas = chaves.filter(k => !mods[k].ok).map(k => LISTAS[k]);
+        setStatus("OK — " + mods.os.itens.length + " OS carregada(s)." +
+          (falhas.length ? " Módulos indisponíveis: " + falhas.join(", ") + " (seções correspondentes avisam)." : ""));
+
+        // ?os=<id> na URL seleciona direto; senão fica no "(selecione a OS)"
+        const osUrl = new URLSearchParams(location.search).get("os");
+        if (osUrl && mapOS[String(osUrl)]) { $("selOS").value = String(osUrl); renderDossie(String(osUrl)); }
+        else if (osUrl) setStatus("OS #" + osUrl + " (da URL) não encontrada — escolha no seletor.", "err");
+      } catch (e) {
+        EG.renderEstado($("estado"), "erro", { mensagem: "Falha ao carregar: " + e.message, onRetry: carregar });
+        setStatus("Falha: " + e.message, "err");
+      }
+    }
+
+    function montarSeletor() {
+      const ordenadas = (mods.os.itens || []).slice()
+        .sort((a, b) => new Date((b.fields || {}).DataAbertura || 0) - new Date((a.fields || {}).DataAbertura || 0));
+      $("selOS").innerHTML = '<option value="">(selecione a OS)</option>' + ordenadas.map(o => {
+        const f = o.fields || {};
+        const cli = f.ClienteLookupId != null ? (nomeCliente[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : null;
+        const rot = [f.Title || ("OS #" + o.id), cli, f.Status].filter(Boolean).join(" — ");
+        return '<option value="' + esc(o.id) + '">' + esc(rot) + "</option>";
+      }).join("");
+      $("selOS").onchange = () => {
+        const id = $("selOS").value;
+        const url = new URL(location.href);
+        if (id) url.searchParams.set("os", id); else url.searchParams.delete("os");
+        history.replaceState(null, "", url);   // navegação local — nada vai à rede
+        renderDossie(id);
+      };
+    }
+
+    /* ============================== dossiê ============================== */
+    const STATUS_COR = { "Aberta": "#58A6FF", "Atribuída": "#A371F7", "Em Andamento": "#F0883E", "Aguardando aprovação": "#D29922", "Concluída": "#22B573", "Cancelada": "#F85149" };
+    const ESTADOS_OS = [   // nomes reais conferidos em OrdensDeServico (os.html + listColumns)
+      { campo: "Estado_Operacional", rotulo: "Operacional", cores: { "Pendente": "#8b949e", "Em Andamento": "#F0883E", "Concluído": "#22B573" } },
+      { campo: "Estado_Seguranca", rotulo: "Segurança", cores: { "Pendente": "#8b949e", "Liberado": "#22B573", "Bloqueado": "#F85149" } },
+      { campo: "Estado_Cliente_Qualidade", rotulo: "Cliente/Qualidade", cores: { "Pendente": "#8b949e", "Aprovado": "#22B573", "Contestado": "#F85149" } },
+      { campo: "Estado_Financeiro_Prestador", rotulo: "Financeiro (prestador)", cores: { "Pendente": "#8b949e", "Em análise": "#D29922", "Liberado": "#22B573", "Pago": "#58A6FF" } }
+    ];
+    const cliNome = (f) => f.ClienteLookupId != null ? (nomeCliente[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : "—";
+    const tecNome = (id) => id != null ? (nomeTecnico[id] || ("técnico #" + id)) : "—";
+    const rowD = (l, v) => (v == null || v === "" || v === "—") ? "" : `<dt>${esc(l)}</dt><dd>${esc(v)}</dd>`;
+    const rowH = (l, html) => !html ? "" : `<dt>${esc(l)}</dt><dd>${html}</dd>`;
+
+    function localResumo(f) {
+      if (f.Local_AtendimentoLookupId == null) return null;
+      const l = mapLocal[String(f.Local_AtendimentoLookupId)];
+      if (!l) return "local #" + f.Local_AtendimentoLookupId;
+      const lf = l.fields || {};
+      const nome = lf.Title || ("local #" + l.id);
+      const cidade = [lf.Cidade, lf.Estado_UF].filter(temTexto).join("/");
+      const partes = [lf.Endereco, cidade].filter(temTexto);
+      return nome + (partes.length ? " — " + partes.join(" · ") : "");
+    }
+
+    // cada seção renderiza dentro do próprio try/catch: erro de UMA seção
+    // vira aviso nela mesma e NÃO derruba o dossiê (tolerância por seção)
+    function secao(titulo, fn) {
+      let corpo;
+      try { corpo = fn(); }
+      catch (e) {
+        console.warn("Seção '" + titulo + "' falhou:", e);
+        corpo = `<div class="sec-erro">Não foi possível montar esta seção: ${esc(e && e.message || e)}. As demais seções não são afetadas.</div>`;
+      }
+      return `<section class="sec"><h2>${esc(titulo)}</h2>${corpo}</section>`;
+    }
+
+    function renderDossie(osId) {
+      const cont = $("dossie");
+      if (!osId || !mapOS[String(osId)]) { cont.innerHTML = ""; $("printCab").textContent = ""; return; }
+      const o = mapOS[String(osId)];
+      const f = o.fields || {};
+      $("printCab").textContent = "Eletrium ERP — Relatório consolidado da OS " + (f.Title || ("#" + o.id)) +
+        " — emitido em " + new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+
+      cont.innerHTML =
+        secao("1. Dados da OS", () => secDados(o, f)) +
+        secao("2. Equipe e alocações de parceiros", () => secEquipe(o)) +
+        secao("3. Checklist", () => secChecklist(o)) +
+        secao("4. Não conformidades", () => secNC(o)) +
+        secao("5. Medição", () => secMedicao(o)) +
+        secao("6. Documentos", () => secDocumentos(o)) +
+        secao("7. KM / Diárias", () => secDiarias(o, f)) +
+        secao("8. Snapshot de conclusão", () => secSnapshot(f)) +
+        secao("9. Garantia / histórico", () => secGarantia(f));
+
+      const tg = $("snapToggle");
+      if (tg) tg.onclick = () => { const p = $("snapManifesto"); p.hidden = !p.hidden; };
+    }
+
+    /* --- 1. dados da OS --- */
+    function secDados(o, f) {
+      const cor = STATUS_COR[f.Status] || "#8b949e";
+      const estados = ESTADOS_OS.map(e => {
+        const v = f[e.campo];
+        const vazio = !temTexto(v);
+        const c = vazio ? "#8b949e" : (e.cores[v] || "#8b949e");
+        return badge(e.rotulo + ": " + (vazio ? "—" : v), c);
+      }).join(" ");
+      return `
+        <dl>
+          ${rowD("Número", f.Title || ("OS #" + o.id))}
+          ${rowD("Cliente", cliNome(f))}
+          ${rowD("Técnico", tecNome(f.TecnicoLookupId))}
+          ${rowD("Líder eletricista", f.Lider_EletricistaLookupId != null ? tecNome(f.Lider_EletricistaLookupId) : null)}
+          ${rowD("Tipo", f.Tipo_OS)} ${rowD("Tipo (completo)", f.Tipo_OS_Completo)}
+          ${rowD("Categoria", f.Categoria)} ${rowD("Prioridade", f.Prioridade)}
+          ${rowH("Status", badge(temTexto(f.Status) ? f.Status : "—", cor))}
+          ${rowD("Local de atendimento", localResumo(f))}
+          ${rowD("Abertura", temTexto(f.DataAbertura) ? fmtD(f.DataAbertura) : null)}
+          ${rowD("Prevista", temTexto(f.DataPrevista) ? fmtD(f.DataPrevista) : null)}
+          ${rowD("Início", temTexto(f.Hora_Inicio) ? fmtDT(f.Hora_Inicio) : null)}
+          ${rowD("Conclusão", temTexto(f.DataConclusao) ? fmtD(f.DataConclusao) : null)}
+          ${rowD("Valor da OS", ehNum(f.ValorOS) ? EG.BRL(Number(f.ValorOS)) : null)}
+          ${rowD("KM inicial", ehNum(f.KM_Inicial) ? celNum(f.KM_Inicial, 1) : null)}
+          ${rowD("KM final", ehNum(f.KM_Final) ? celNum(f.KM_Final, 1) : null)}
+          ${rowD("Descrição", f.Descricao)}
+          ${rowD("Observações (gestão)", f.Observacoes)}
+        </dl>
+        <h3>Estados da OS</h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">${estados}</div>`;
+    }
+
+    /* --- 2. equipe + alocações --- */
+    function secEquipe(o) {
+      let html = "<h3>Equipe (OS_Equipe)</h3>";
+      const rEq = resolverSecao(mods.equipe);
+      if (rEq.estado === "indisponivel") html += htmlModuloOff(LISTAS.equipe, rEq.motivo);
+      else {
+        const linhas = porOS(rEq.itens, "OSLookupId", o.id);
+        if (!linhas.length) html += htmlSemItens("Nenhum membro de equipe registrado nesta OS.");
+        else html += `<table><thead><tr><th>Técnico</th><th>Função</th><th>Horas</th><th>Check-in</th><th>Check-out</th><th>Situação</th></tr></thead><tbody>` +
+          linhas.map(r => {
+            const rf = r.fields || {};
+            const marcas = [
+              rf.Elegivel_Financeiro === true ? badge("elegível financeiro", "#22B573") : badge("não elegível", "#8b949e"),
+              rf.De_Acordo_Lider === true ? badge("de acordo do líder", "#22B573") : ""
+            ].filter(Boolean).join(" ");
+            return `<tr><td>${esc(tecNome(rf.TecnicoLookupId))}</td><td>${esc(celTx(rf.Funcao))}</td>
+              <td>${esc(celNum(rf.Horas_Trabalhadas))}</td><td>${esc(fmtDT(rf.Checkin_Hora))}</td>
+              <td>${esc(fmtDT(rf.Checkout_Hora))}</td><td>${marcas}</td></tr>`;
+          }).join("") + "</tbody></table>";
+      }
+      html += "<h3>Alocações de parceiros (OS_Alocacoes_Parceiros)</h3>";
+      const rAl = resolverSecao(mods.aloc);
+      if (rAl.estado === "indisponivel") html += htmlModuloOff(LISTAS.aloc, rAl.motivo);
+      else {
+        const linhas = porOS(rAl.itens, "OSLookupId", o.id);
+        if (!linhas.length) html += htmlSemItens("Nenhuma alocação de parceiro nesta OS.");
+        else html += `<table><thead><tr><th>Técnico</th><th>Status</th><th>Enviada</th><th>Expira</th><th>Valor proposto</th><th>Aceita em</th></tr></thead><tbody>` +
+          linhas.map(r => {
+            const rf = r.fields || {};
+            const cores = { "Proposta Enviada": "#D29922", "Aceita": "#22B573", "Recusada": "#F85149", "Expirada": "#8b949e", "Cancelada": "#8b949e" };
+            return `<tr><td>${esc(tecNome(rf.TecnicoLookupId))}</td>
+              <td>${badge(celTx(rf.Status_Alocacao), cores[rf.Status_Alocacao] || "#8b949e")}</td>
+              <td>${esc(fmtDT(rf.Enviada_Em))}</td><td>${esc(fmtDT(rf.Expira_Em))}</td>
+              <td>${esc(celBRL(rf.Valor_Proposto))}</td><td>${esc(fmtDT(rf.Aceita_Em))}</td></tr>`;
+          }).join("") + "</tbody></table>";
+      }
+      return html;
+    }
+
+    /* --- 3. checklist --- */
+    function secChecklist(o) {
+      const rResp = resolverSecao(mods.respostas), rPerg = resolverSecao(mods.perguntas);
+      if (rResp.estado === "indisponivel") return htmlModuloOff(LISTAS.respostas, rResp.motivo);
+      if (rPerg.estado === "indisponivel") return htmlModuloOff(LISTAS.perguntas, rPerg.motivo);
+      const prog = progressoChecklist(rPerg.itens, rResp.itens, o.id);
+      if (!prog.totalAtivas && !prog.respondidas) return htmlSemItens("Nenhuma pergunta ativa de checklist e nenhuma resposta para esta OS.");
+      let html = prog.fases.map(fs => {
+        const pct = fs.total ? Math.round(fs.respondidas / fs.total * 100) : 0;
+        return `<div class="fase-barra"><span style="flex:0 0 120px">${esc(fs.nome)}</span>
+          <div class="trilho"><div style="width:${pct}%"></div></div>
+          <span>${fs.respondidas}/${fs.total} (${pct}%)</span></div>`;
+      }).join("");
+      html += "<h3>Respostas que geraram NC</h3>";
+      if (!prog.ncs.length) html += htmlSemItens("Nenhuma resposta vigente gerou não conformidade.");
+      else html += `<table><thead><tr><th>Fase</th><th>Pergunta</th><th>Resposta</th><th>Quando</th><th>Técnico</th></tr></thead><tbody>` +
+        prog.ncs.map(n => `<tr><td>${esc(n.fase)}</td><td>${esc(n.pergunta)}</td>
+          <td>${esc(celTx(n.resposta))}${ehNum(n.valorMedido) ? " (medido: " + esc(celNum(n.valorMedido)) + ")" : ""}${n.alertaParametro ? " " + badge("alerta de parâmetro", "#F0883E") : ""}</td>
+          <td>${esc(fmtDT(n.quando))}</td><td>${esc(celTx(n.tecnico))}</td></tr>`).join("") + "</tbody></table>";
+      return html;
+    }
+
+    /* --- 4. não conformidades --- */
+    function secNC(o) {
+      const rNC = resolverSecao(mods.nc);
+      if (rNC.estado === "indisponivel") {
+        // hoje NENHUMA tela consome uma lista Nao_Conformidades — a NC vive como
+        // boolean Gerou_NC em OS_Respostas (seção 3). Se a lista passar a existir
+        // no site, esta seção a lê automaticamente.
+        return htmlModuloOff(LISTAS.nc, rNC.motivo) +
+          `<div class="nota">As não conformidades do checklist (respostas com Gerou_NC) estão na seção 3.</div>`;
+      }
+      const linhas = porOS(rNC.itens, "OSLookupId", o.id);
+      if (!linhas.length) return htmlSemItens("Nenhuma não conformidade registrada para esta OS.");
+      return `<table><thead><tr><th>Título</th><th>Campos (Graph)</th></tr></thead><tbody>` +
+        linhas.map(r => `<tr><td>${esc((r.fields || {}).Title ?? ("item #" + r.id))}</td>
+          <td><pre class="manifesto" style="max-height:120px">${esc(JSON.stringify(r.fields || {}, null, 2))}</pre></td></tr>`).join("") + "</tbody></table>";
+    }
+
+    /* --- 5. medição --- */
+    function secMedicao(o) {
+      const rIt = resolverSecao(mods.medItens);
+      if (rIt.estado === "indisponivel") return htmlModuloOff(LISTAS.medItens, rIt.motivo);
+      const itens = porOS(rIt.itens, "OSLookupId", o.id);
+      if (!itens.length) return htmlSemItens("Nenhum item de medição para esta OS.");
+      const lotes = (mods.medLotes.ok && mods.medLotes.itens) || [];
+      const loteDe = (id) => lotes.find(l => String(l.id) === String(id)) || null;
+      const coresLote = { "Fechado": "#D29922", "Em análise": "#F0883E", "Pago": "#22B573" };
+      let html = `<table><thead><tr><th>Competência</th><th>Prestador</th><th>Horas</th><th>Valor/h</th><th>Valor</th><th>Status do item</th><th>Lote</th><th>Status do lote</th></tr></thead><tbody>` +
+        itens.map(r => {
+          const rf = r.fields || {};
+          const lote = rf.LoteLookupId != null ? loteDe(rf.LoteLookupId) : null;
+          const lf = (lote && lote.fields) || {};
+          const stLote = lote ? celTx(lf.Status_Lote) : (rf.LoteLookupId != null ? "lote #" + rf.LoteLookupId + " (não carregado)" : "—");
+          return `<tr><td>${esc(celTx(rf.Competencia))}</td><td>${esc(tecNome(rf.PrestadorLookupId))}</td>
+            <td>${esc(celNum(rf.Horas))}</td><td>${esc(celBRL(rf.Valor_Hora))}</td><td>${esc(celBRL(rf.Valor))}</td>
+            <td>${badge(celTx(rf.Status_Item), rf.Status_Item === "Aprovado" ? "#22B573" : "#F0883E")}</td>
+            <td>${esc(lote ? (lf.Title || ("lote #" + lote.id)) : (rf.LoteLookupId != null ? "#" + rf.LoteLookupId : "—"))}</td>
+            <td>${stLote === "—" ? "—" : badge(stLote, coresLote[lf.Status_Lote] || "#8b949e")}</td></tr>`;
+        }).join("") + "</tbody></table>";
+      const totH = itens.reduce((s, r) => s + num((r.fields || {}).Horas), 0);
+      const comValor = itens.filter(r => ehNum((r.fields || {}).Valor));
+      html += `<div class="nota">Total: ${esc(celNum(totH))} h` +
+        (comValor.length ? " · " + esc(EG.BRL(comValor.reduce((s, r) => s + num((r.fields || {}).Valor), 0))) +
+          (comValor.length < itens.length ? " (itens sem valor calculável ficam fora da soma)" : "") : "") + "</div>";
+      if (!mods.medLotes.ok) html += htmlModuloOff(LISTAS.medLotes, mods.medLotes.erro);
+      return html;
+    }
+
+    /* --- 6. documentos --- */
+    function secDocumentos(o) {
+      const rDoc = resolverSecao(mods.docs);
+      if (rDoc.estado === "indisponivel") return htmlModuloOff(LISTAS.docs, rDoc.motivo);
+      const docs = porOS(rDoc.itens, "OSLookupId", o.id);
+      if (!docs.length) return htmlSemItens("Nenhum documento registrado para esta OS.");
+      const versMap = versoesPorDocumento((mods.docVers.ok && mods.docVers.itens) || []);
+      const coresEstado = { "Rascunho": "#8b949e", "Em Revisão": "#D29922", "Aprovado": "#22B573", "Publicado": "#58A6FF", "Obsoleto": "#F85149" };
+      let html = `<table><thead><tr><th>Documento</th><th>Tipo</th><th>Estado</th><th>Versão atual</th><th>Nº de versões</th><th>SHA-256 (atual)</th><th>Arquivo</th></tr></thead><tbody>` +
+        docs.map(d => {
+          const r = resumoDocumento(d, versMap);
+          return `<tr><td>${esc(r.titulo)}</td><td>${esc(celTx(r.tipo))}</td>
+            <td>${badge(celTx(r.estado), coresEstado[r.estado] || "#8b949e")}</td>
+            <td>${esc(r.vAtual != null ? "v" + r.vAtual : "—")}${r.divergente ? " " + badge("≠ histórico (máx v" + r.maxHist + ")", "#F85149") : ""}</td>
+            <td>${esc(String(r.nVersoes))}</td>
+            <td class="hash">${esc(shaCurto(r.hashAtual) ?? "—")}</td>
+            <td>${linkSeguro(r.arquivoUrl, "abrir") || "—"}</td></tr>`;
+        }).join("") + "</tbody></table>";
+      if (!mods.docVers.ok) html += htmlModuloOff(LISTAS.docVers, mods.docVers.erro) +
+        `<div class="nota">Sem o histórico, contagem de versões e hash ficam indisponíveis (a coluna mostra 0/—).</div>`;
+      return html;
+    }
+
+    /* --- 7. KM / diárias --- */
+    function secDiarias(o, f) {
+      const rDi = resolverSecao(mods.diarias);
+      if (rDi.estado === "indisponivel") return htmlModuloOff(LISTAS.diarias, rDi.motivo);
+      const nota = `<div class="nota">A lista Diaria_Tecnico não tem lookup para a OS — o vínculo é o campo texto OS_Lista
+        (match exato pelo número da OS, separadores vírgula/;/linha). Diárias que citem a OS de outra forma não aparecem aqui.</div>`;
+      if (!temTexto(f.Title)) return nota + htmlSemItens("OS sem número (Title) — não há como casar com OS_Lista.");
+      const linhas = diariasDaOS(rDi.itens, f.Title)
+        .slice().sort((a, b) => new Date((b.fields || {}).Data_Dia || 0) - new Date((a.fields || {}).Data_Dia || 0));
+      if (!linhas.length) return nota + htmlSemItens("Nenhuma diária cita a OS " + f.Title + " em OS_Lista.");
+      let html = nota + `<table><thead><tr><th>Data</th><th>Técnico</th><th>Status do dia</th><th>Jornada</th><th>Horas produtivas</th><th>Total h.</th><th>KM rodado</th><th>Valor do dia</th></tr></thead><tbody>` +
+        linhas.map(r => {
+          const rf = r.fields || {};
+          return `<tr><td>${esc(fmtD(rf.Data_Dia))}</td><td>${esc(tecNome(rf.TecnicoLookupId))}</td>
+            <td>${esc(celTx(rf.Status_Dia))}</td><td>${esc(celTx(rf.Classificacao_Jornada))}</td>
+            <td>${esc(celNum(rf.Horas_Produtivas))}</td><td>${esc(celNum(rf.Total_Horas_Dia))}</td>
+            <td>${esc(celNum(rf.KM_Rodado, 1))}</td><td>${esc(celBRL(rf.Valor_Total_Dia))}</td></tr>`;
+        }).join("") + "</tbody></table>";
+      html += `<div class="nota">Atenção: dias com várias OS têm horas/KM/valor do DIA inteiro — os números acima não são rateados por OS, por isso não há soma no rodapé.</div>`;
+      return html;
+    }
+
+    /* --- 8. snapshot de conclusão --- */
+    function secSnapshot(f) {
+      const tem = temTexto(f.Snapshot_SHA256) || temTexto(f.Snapshot_Manifesto) || temTexto(f.Snapshot_Confirmado_Em);
+      if (!tem) return htmlSemItens("Sem snapshot de conclusão gravado (a OS ainda não foi concluída pelo fluxo com snapshot, ou foi concluída antes do recurso existir).");
+      let html = `<dl>
+        ${rowH("SHA-256", temTexto(f.Snapshot_SHA256) ? `<span class="hash" title="${esc(f.Snapshot_SHA256)}">${esc(shaCurto(f.Snapshot_SHA256))}</span>` : null)}
+        ${rowD("Confirmado em", temTexto(f.Snapshot_Confirmado_Em) ? fmtDT(f.Snapshot_Confirmado_Em) : null)}
+      </dl>`;
+      if (temTexto(f.Snapshot_Manifesto)) {
+        let bonito = String(f.Snapshot_Manifesto);
+        try { bonito = JSON.stringify(JSON.parse(bonito), null, 2); } catch { /* não é JSON — mostra cru */ }
+        html += `<span class="raw-toggle" id="snapToggle">ver manifesto do snapshot</span>
+          <pre class="manifesto" id="snapManifesto" hidden>${esc(bonito)}</pre>`;
+      }
+      return html;
+    }
+
+    /* --- 9. garantia / histórico --- */
+    function secGarantia(f) {
+      const concluida = temTexto(f.DataConclusao);
+      const col = campoGarantia(colsOS);
+      let html = `<dl>${rowD("Concluída em", concluida ? fmtD(f.DataConclusao) : null)}</dl>`;
+      if (!concluida) html += htmlSemItens("OS ainda sem data de conclusão — histórico de garantia começa na conclusão.");
+      if (col) {
+        const v = f[col.name];
+        html += `<dl>${rowD("Garantia (" + (col.displayName || col.name) + ")", temTexto(v) ? String(v) : "campo existe no schema, mas está vazio nesta OS")}</dl>`;
+      } else {
+        html += `<div class="nota">Sem parâmetro de garantia no sistema: nenhuma coluna de garantia existe no schema de OrdensDeServico
+          (conferido via colunas reais da lista). Nenhum prazo convencional é presumido por este relatório.</div>`;
+      }
+      if (temTexto(f.Motivo_Retorno) || f.Origem_OSLookupId != null) {
+        const orig = f.Origem_OSLookupId != null ? (mapOS[String(f.Origem_OSLookupId)] || null) : null;
+        html += `<h3>Retificação</h3><dl>
+          ${rowD("OS de origem", f.Origem_OSLookupId != null ? (((orig || {}).fields || {}).Title || ("OS #" + f.Origem_OSLookupId)) : null)}
+          ${rowD("Motivo da correção", f.Motivo_Retorno)}
+        </dl>`;
+      }
+      return html;
+    }
+
+    /* ---------- hooks de teste (funções puras — sem rede, sem DOM) ---------- */
+    window.RELOS = {
+      resolverSecao, porOS, faseDe, vigentesPorPergunta, progressoChecklist,
+      versoesPorDocumento, resumoDocumento, diariasDaOS, campoGarantia,
+      shaCurto, celNum, celBRL, celTx, temTexto, ehNum, normalizar,
+      // injeção de dados falsos p/ exercitar o render sem login
+      setDadosTeste(fakeMods, fakeCols) {
+        mods = fakeMods || {};
+        colsOS = fakeCols || [];
+        mapOS = {}; (((mods.os || {}).itens) || []).forEach(o => { mapOS[String(o.id)] = o; });
+        nomeCliente = {}; (((mods.clientes || {}).itens) || []).forEach(c => nomeCliente[c.id] = (c.fields || {}).Title);
+        nomeTecnico = {}; (((mods.tecnicos || {}).itens) || []).forEach(t => nomeTecnico[t.id] = (t.fields || {}).Title);
+        mapLocal = {}; (((mods.locais || {}).itens) || []).forEach(l => mapLocal[String(l.id)] = l);
+        carregado = true;
+        montarSeletor(); $("toolbar").hidden = false;
+      },
+      renderDossie
+    };
+
+    boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
+  </script>
+</body>
+</html>

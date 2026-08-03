@@ -400,6 +400,7 @@
           ${blocoFechamento(f)}
           ${blocoRetificacao(f)}
           ${blocoEquipe()}
+          <div><a href="relatorio-os.html?os=${esc(o.id)}" target="_blank" rel="noopener" style="color:#58a6ff;font-size:.8rem;display:inline-block;margin-top:10px">📄 Relatório consolidado ↗</a></div>
           <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
           <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
