@@ -50,11 +50,77 @@
       - Execução: só CREATE em OS_Respostas (append). NUNCA edita resposta:
         "Corrigir" cria uma NOVA linha — a trilha é preservada e a leitura
         considera a mais recente por Pergunta_ID.
-      - Editor: CREATE/PATCH em Perguntas_Checklist. Desativar = Ativo:false;
+      - Editor: CREATE em Perguntas_Checklist + CREATE em
+        Procedimentos_Versoes. O PATCH em Perguntas_Checklist ficou restrito
+        aos campos de LINHAGEM (Versao_Fim, Substituida_Por, Ativo) — ver a
+        seção PROCEDIMENTO VERSIONADO abaixo. Desativar = Ativo:false;
         NUNCA deletar — respostas antigas referenciam a pergunta por
         Pergunta_ID e apagar quebraria o histórico.
+      - OrdensDeServico.Procedimento_Versao_ID +
+        .Procedimento_Versao_Congelada_Em: escritos AQUI e só aqui, uma
+        única vez por OS (na primeira resposta). Nunca reescritos: uma OS
+        não troca de versão de procedimento no meio da execução.
       - PATCH mínimo (só campos alterados vs snapshot) + releitura do
         servidor após gravar (padrão clientes.html).
+
+    ==========================================================================
+    PROCEDIMENTO VERSIONADO (item 4 — 04/08/2026)
+
+      O PROBLEMA QUE ISTO RESOLVE: até aqui, editar uma pergunta fazia PATCH
+      na própria linha. Isso REESCREVIA O PASSADO: a régua de parâmetro
+      (Valor_Nominal/Tolerancia_Pct) que gerou uma NC mudava debaixo da OS
+      já respondida, e mexer em Obrigatoria/Fase_Execucao/Ativo alterava
+      retroativamente quais fases estavam "completas" — o que decide o
+      Estado_Seguranca (B4). Ou seja: uma edição de cadastro conseguia
+      re-liberar, a posteriori, uma OS que havia sido bloqueada.
+
+      MODELO — versionamento por INTERVALO (append-only):
+        Procedimentos_Versoes  = o changelog do procedimento. 1 linha por
+          alteração: Numero_Versao (inteiro monotônico), Chave_Versao
+          ("PROC|v<n>", ÚNICA server-side), Vigencia_Inicio/Fim, Ativa,
+          Motivo, Autor, Qtd_Perguntas.
+        Perguntas_Checklist.Versao_Criacao / .Versao_Fim = o INTERVALO de
+          versões em que aquela linha de pergunta vale. A pergunta pertence
+          à versão v  <=>  Versao_Criacao <= v  E  (Versao_Fim vazio OU
+          v < Versao_Fim). Assim o conjunto de QUALQUER versão passada é
+          reconstruível sem clonar as 22 perguntas a cada edição.
+        .Substituida_Por / .Pergunta_Raiz = linhagem (qual linha substituiu
+          esta; qual foi a pergunta original da cadeia).
+        OrdensDeServico.Procedimento_Versao_ID (Number) = a versão
+          CONGELADA quando a OS deu a PRIMEIRA resposta do checklist, com
+          Procedimento_Versao_Congelada_Em registrando o instante.
+
+      POR QUE Number e não Text/Lookup: o teste de pertencimento ao
+      intervalo é ARITMÉTICO (Versao_Criacao <= v < Versao_Fim) e a tela
+      precisa dizer "esta OS está N versões atrás". Text obrigaria a
+      converter a cada comparação; Lookup acoplaria a OS ao id de linha do
+      SharePoint (que não é o número da versão) e quebraria se a lista
+      fosse recriada. O número da versão é um contador de domínio, estável
+      por si — mesmo espírito do Numero_Versao de OS_Documentos_Versoes.
+
+      EDIÇÃO DE PERGUNTA = NOVA VERSÃO, NUNCA PATCH SEMÂNTICO. O editor não
+      altera mais o texto/régua/flags de uma linha existente: corta a versão
+      v+1, cria uma linha NOVA com o conteúdo editado (Versao_Criacao=v+1) e
+      FECHA a antiga (Versao_Fim=v+1, Substituida_Por, Ativo:false). O único
+      PATCH que sobrou em Perguntas_Checklist é o de LINHAGEM (Versao_Fim /
+      Substituida_Por / Ativo) — campos que não conseguem reescrever o que
+      já foi respondido. Foi escolhido criar versão em vez de só PROIBIR a
+      edição porque proibir deixa o gestor sem saída (não conserta nem um
+      typo enquanto houver OS aberta) e porque a proibição dependeria
+      inteiramente da guarda client-side — justamente o que a limitação
+      abaixo declara não ser confiável. Dado imutável não precisa de guarda.
+
+      ⚠️ LIMITAÇÃO DECLARADA — A IMPOSIÇÃO É CLIENT-SIDE. Não existe o
+      gateway B1 (camada server-side de escrita). Quem chamar o Microsoft
+      Graph direto — Postman, Apps Script, um cenário do Make, a UI do
+      próprio SharePoint — CONTORNA tudo isto: consegue dar PATCH no texto
+      de uma pergunta e reescrever o passado exatamente como antes. O que
+      esta tela garante é (a) que o CAMINHO DA TELA não reescreve mais, e
+      (b) que a reescrita feita por fora fica VISÍVEL (divergenciasVersao()
+      denuncia em amarelo: pergunta retirada fora de banda, linhagem
+      quebrada, Qtd_Perguntas divergente). Detectar não é impedir — e isto
+      está dito aqui de propósito, não é omissão. A única unicidade
+      realmente imposta pelo servidor é Chave_Versao.
 
     LIMITES CONHECIDOS:
       - Foto: aqui cola-se a URL da foto (validada http/https). Captura pela
@@ -130,6 +196,18 @@
     .concluido { border: 1px solid #22b57355; background: #22b57318; border-radius: 8px;
                  padding: 12px 16px; margin: 0 0 14px; font-size: .9rem; line-height: 1.5; color: #7ee2a8; }
     .concluido strong { color: #e6edf3; }
+
+    /* ===== versão do procedimento — MESMA convenção de documentos-os.html:
+       AZUL informa (estado normal que o usuário precisa saber), AMARELO
+       denuncia (algo está errado e alguém precisa agir). Nunca usar o
+       visual de erro para dizer que a OS está numa versão antiga: isso é o
+       comportamento CORRETO do congelamento, não um defeito. ===== */
+    .publinfo { color: #79c0ff; font-size: .8rem; border: 1px solid #388bfd44; background: #388bfd12;
+                border-radius: 6px; padding: 7px 10px; margin-bottom: 12px; line-height: 1.45; }
+    .publinfo b { color: #a5d6ff; font-weight: 600; }
+    .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218;
+               border-radius: 6px; padding: 7px 10px; margin-bottom: 12px; line-height: 1.45; }
+    .diverge ul { margin: 4px 0 0; padding-left: 18px; }
 
     /* ===== aba Editor ===== */
     td.dim { color: #8b949e; }
@@ -218,10 +296,11 @@
         <button class="sec" id="efLimpar">Limpar</button>
         <span class="hint right" id="editContador"></span>
       </div>
+      <div id="editAviso"></div>
       <table id="eTbl" hidden>
         <thead><tr>
           <th>Ordem</th><th>Fase</th><th>Disciplina</th><th>Texto</th><th>Tipo</th>
-          <th>Obrigatória</th><th>Parâm. técnico</th><th>Ativo</th>
+          <th>Obrigatória</th><th>Parâm. técnico</th><th>Ativo</th><th>Versão</th>
         </tr></thead>
         <tbody id="eTbody"></tbody>
       </table>
@@ -299,7 +378,7 @@
     }
 
     /* ============================== estado ============================== */
-    let perguntas = [], respostas = [], disciplinas = [], oss = [], clientes = [];
+    let perguntas = [], respostas = [], disciplinas = [], oss = [], clientes = [], versoes = [];
     let mapPerg = {}, discNome = {}, cliNome = {}, mapOS = {};
     let carregado = false;
     let usuarioNome = "", usuarioEmail = "";
@@ -356,28 +435,32 @@
       try {
         setStatus("Carregando checklist...");
         carregarChoices(); // em paralelo — editor usa fallback até chegar
-        const [pe, re, di, os, cl] = await Promise.all([
+        const [pe, re, di, os, cl, ve] = await Promise.all([
           soft(EG.listItems("Perguntas_Checklist"), "Perguntas_Checklist"),
           soft(EG.listItems("OS_Respostas"), "OS_Respostas"),
           soft(EG.listItems("Disciplinas_Checklist"), "Disciplinas_Checklist"),
           soft(EG.listItems("OrdensDeServico"), "OrdensDeServico"),
-          soft(EG.listItems("Clientes"), "Clientes")
+          soft(EG.listItems("Clientes"), "Clientes"),
+          soft(EG.listItems("Procedimentos_Versoes"), "Procedimentos_Versoes")
         ]);
-        setDados(pe, re, di, os, cl);
+        setDados(pe, re, di, os, cl, ve);
         carregado = true;
         $("tabs").hidden = false;
         montarFiltros();
         renderExec();
         renderEdit();
         mostrarSec(secAtual);
+        const vc = versaoCorrente();
         setStatus("OK — " + perguntas.length + " pergunta(s), " + respostas.length + " resposta(s), " +
-                  disciplinas.length + " disciplina(s), " + oss.length + " OS.");
+                  disciplinas.length + " disciplina(s), " + oss.length + " OS · procedimento " +
+                  (vc == null ? "SEM versão cadastrada" : "na v" + vc) + ".");
       } catch (e) { setStatus("Falha: " + e.message, "err"); }
     };
 
     // separado da carga para poder ser exercitado com dados falsos (window.CHK.setDados)
-    function setDados(pe, re, di, os, cl) {
+    function setDados(pe, re, di, os, cl, ve) {
       perguntas = pe || []; respostas = re || []; disciplinas = di || []; oss = os || []; clientes = cl || [];
+      versoes = ve || [];
       mapPerg = {}; perguntas.forEach(p => { mapPerg[p.id] = p; });
       discNome = {}; disciplinas.forEach(d => { discNome[d.id] = (d.fields || {}).Title; });
       cliNome = {}; clientes.forEach(c => { cliNome[c.id] = (c.fields || {}).Title; });
@@ -412,9 +495,161 @@
     const ordFase = (f) => { const i = FASES.indexOf(faseDe(f)); return i < 0 ? 99 : i; };
     const ordExib = (f) => ehNum(f.Ord_Exib) ? num(f.Ord_Exib) : 9999;
 
-    function perguntasAtivas() {
-      return perguntas
-        .filter(p => (p.fields || {}).Ativo === true)
+    /* ==================================================================
+       VERSÃO DO PROCEDIMENTO — funções PURAS (testáveis sem rede via
+       window.CHK). O desenho completo está no cabeçalho do arquivo.
+       ================================================================== */
+
+    // "PROC|v<n>" — mesmo formato de Chave_Versao do OS_Documentos_Versoes
+    // ("<docId>|v<n>"). Única server-side: dois gestores cortando a MESMA
+    // versão ao mesmo tempo colidem no servidor, não no cliente.
+    const montarChaveVersao = (n) => "PROC|v" + String(n);
+
+    // versão CORRENTE = maior Numero_Versao entre as Ativa=true.
+    // Deliberadamente NÃO usa Vigencia_Fim para decidir: se o PATCH que
+    // fecha a vigência da anterior falhar (é best-effort), o max continua
+    // certo. A vigência é para LER o changelog, não para mandar.
+    function versaoCorrente() {
+      let max = null;
+      (versoes || []).forEach(x => {
+        const f = x.fields || {};
+        if (f.Ativa !== true || !ehNum(f.Numero_Versao)) return;
+        const n = num(f.Numero_Versao);
+        if (max == null || n > max) max = n;
+      });
+      return max;
+    }
+    const versaoPorNumero = (n) => (versoes || []).find(x => ehNum((x.fields || {}).Numero_Versao) &&
+                                                            num((x.fields || {}).Numero_Versao) === num(n)) || null;
+
+    // versão congelada na OS (null = checklist ainda não iniciado)
+    function versaoDaOS(osId) {
+      const os = mapOS[osId];
+      if (!os) return null;
+      const v = (os.fields || {}).Procedimento_Versao_ID;
+      return ehNum(v) ? num(v) : null;
+    }
+
+    /* versão EFETIVA de uma OS:
+         congelada=true  -> a OS já iniciou o checklist; usa a versão gravada
+                            AINDA QUE a corrente tenha avançado (é o ponto
+                            deste item: a régua não muda no meio do jogo).
+         congelada=false -> checklist não iniciado; usa a corrente, que será
+                            congelada na primeira resposta. */
+    function versaoEfetivaDaOS(osId) {
+      const corrente = versaoCorrente();
+      const congelada = versaoDaOS(osId);
+      return {
+        v: congelada != null ? congelada : corrente,
+        congelada: congelada != null,
+        corrente: corrente,
+        congeladaEm: congelada != null ? ((mapOS[osId] || {}).fields || {}).Procedimento_Versao_Congelada_Em : null
+      };
+    }
+
+    /* conjunto de perguntas de UMA versão — teste de INTERVALO.
+       Pertence à versão v  <=>  Versao_Criacao <= v < Versao_Fim.
+       - Versao_Criacao ausente = linha legada, tratada como v1 (é o que a
+         migração gravou; o fallback existe para linha criada por fora).
+       - PAPEL DO `Ativo` (sutil, e a primeira versão disto estava ERRADA):
+         quando a linha JÁ TEM Versao_Fim, quem manda é só o intervalo, e o
+         `Ativo:false` dela é ignorado aqui. Motivo: o próprio fluxo de
+         revisão grava Ativo:false na linha antiga para que os leitores que
+         não conhecem versão (o PWA, os cenários Make) parem de mostrá-la —
+         é um marcador de compatibilidade, não um fato sobre o passado. Se
+         ele excluísse a linha, revisar UMA pergunta apagaria essa pergunta
+         de todas as OS congeladas em versão anterior — exatamente o dano
+         que este item existe para impedir.
+         Quando a linha NÃO tem Versao_Fim (ainda aberta), `Ativo!==true`
+         exclui normalmente: aí é retirada feita FORA do editor, que precisa
+         ser respeitada (senão a pergunta reaparece em campo) e é denunciada
+         em amarelo por divergenciasVersao().
+       - v == null (procedimento sem versão nenhuma) = comportamento legado:
+         todas as ativas, sem congelamento. */
+    function perguntasDaVersao(v) {
+      return (perguntas || []).filter(p => {
+        const f = p.fields || {};
+        const fechada = ehNum(f.Versao_Fim);
+        if (!fechada && f.Ativo !== true) return false;
+        if (v == null) return f.Ativo === true;
+        const ini = ehNum(f.Versao_Criacao) ? num(f.Versao_Criacao) : 1;
+        if (ini > num(v)) return false;
+        if (fechada && num(f.Versao_Fim) <= num(v)) return false;
+        return true;
+      });
+    }
+
+    const MOTIVO_SEM_VERSAO = "Nenhuma versão em Procedimentos_Versoes — não é possível versionar a alteração. " +
+                              "Rode a migração do schema e recarregue.";
+    const plural = (n, sing, plur) => (num(n) === 1 ? sing : plur);
+
+    /* OS com checklist EM ANDAMENTO = já congelou uma versão e ainda não
+       terminou. São exatamente as OS que o gestor precisa saber que NÃO vão
+       receber a mudança que ele está prestes a salvar. Classificação de
+       status tolerante (mesma régua de montarFiltros). */
+    function osComVersaoCongelada() {
+      return (oss || []).filter(o => {
+        const f = o.fields || {};
+        if (!ehNum(f.Procedimento_Versao_ID)) return false;
+        const s = normalizar(f.Status);
+        return !s.includes("cancel") && !s.includes("conclu");
+      }).map(o => {
+        const f = o.fields || {};
+        return { id: o.id, titulo: f.Title || ("OS #" + o.id), v: num(f.Procedimento_Versao_ID) };
+      });
+    }
+
+    const raizDe = (item) => {
+      const f = (item && item.fields) || {};
+      const r = f.Pergunta_Raiz;
+      return (r == null || r === "") ? String(item.id) : String(r);
+    };
+
+    /* AMARELO DENUNCIA — as três formas de a versão estar mentindo. Todas
+       são sintoma de escrita FORA desta tela (o Graph direto contorna a
+       guarda — ver limitação declarada no cabeçalho) ou de gravação parcial
+       (a linhagem é 3 escritas; se a 3ª falhar, sobra rastro). Detectar não
+       é impedir, mas nada disto acontece em silêncio. */
+    function divergenciasVersao(v) {
+      const d = [];
+      if (v == null) return d;
+      const conj = perguntasDaVersao(v);
+      const idsConj = {}; conj.forEach(p => { idsConj[String(p.id)] = true; });
+
+      // 1. retirada fora de banda: pertence ao intervalo, mas alguém pôs
+      //    Ativo=false sem fechar Versao_Fim — o conjunto encolheu por fora.
+      (perguntas || []).forEach(p => {
+        const f = p.fields || {};
+        if (f.Ativo === true) return;
+        if (ehNum(f.Versao_Fim)) return;                                  // fechada corretamente
+        const ini = ehNum(f.Versao_Criacao) ? num(f.Versao_Criacao) : 1;
+        if (ini > num(v)) return;
+        d.push("pergunta #" + p.id + " foi desativada FORA do editor (Ativo=false sem Versao_Fim) — " +
+               "ela sumiu da v" + v + " sem virar versão nova");
+      });
+
+      // 2. linhagem quebrada: a substituta e a substituída estão as DUAS no
+      //    conjunto — o PATCH que fecha a antiga não chegou a gravar.
+      (perguntas || []).forEach(p => {
+        const f = p.fields || {};
+        if (!ehNum(f.Substituida_Por)) return;
+        const subId = String(num(f.Substituida_Por));
+        if (idsConj[String(p.id)] && idsConj[subId])
+          d.push("pergunta #" + p.id + " e sua substituta #" + subId + " estão AMBAS na v" + v +
+                 " — o fechamento da linhagem falhou; a pergunta aparece duplicada");
+      });
+
+      // 3. contagem divergente do que a versão registrou quando foi cortada
+      const vr = versaoPorNumero(v);
+      const qtd = vr ? (vr.fields || {}).Qtd_Perguntas : null;
+      if (ehNum(qtd) && num(qtd) !== conj.length)
+        d.push("a v" + v + " foi cortada com " + num(qtd) + " pergunta(s), mas o conjunto reconstruído tem " +
+               conj.length + " — a árvore foi alterada por fora desta tela");
+      return d;
+    }
+
+    function perguntasAtivas(v) {
+      return perguntasDaVersao(v === undefined ? versaoEfetivaDaOS(osSelId).v : v)
         .slice()
         .sort((a, b) => {
           const fa = a.fields || {}, fb = b.fields || {};
@@ -519,6 +754,39 @@
       return aviso + ctl + foto + "<div class='perg-msg' id='q_msg_" + pid + "'></div>";
     }
 
+    /* UI HONESTA sobre a versão (convenção de documentos-os.html):
+       AZUL = informação. "Esta OS está numa versão antiga" é o
+       comportamento CORRETO do congelamento — dizer isso em vermelho/
+       amarelo treinaria o técnico a ignorar alerta de verdade.
+       AMARELO = denúncia, só para divergenciasVersao(). */
+    function htmlBannerVersao(ve) {
+      let h = "";
+      if (ve.v == null) {
+        h += "<div class='publinfo'>ℹ️ O procedimento ainda <b>não está versionado</b> " +
+             "(nenhuma linha em Procedimentos_Versoes). O checklist roda com todas as perguntas ativas e " +
+             "<b>nada será congelado</b> nesta OS. Corte a primeira versão pelo Editor (gestor).</div>";
+      } else if (!ve.congelada) {
+        h += "<div class='publinfo'>ℹ️ Checklist <b>ainda não iniciado</b>. Esta OS será congelada na " +
+             "<b>v" + esc(ve.v) + "</b> (versão corrente) na <b>primeira resposta</b> — e a partir daí " +
+             "continua nela mesmo que o procedimento mude.</div>";
+      } else if (ve.corrente != null && ve.v !== ve.corrente) {
+        const atraso = ve.corrente - ve.v;
+        h += "<div class='publinfo'>ℹ️ Esta OS executa a <b>v" + esc(ve.v) + "</b> do procedimento, congelada em <b>" +
+             esc(fmtDT(ve.congeladaEm) || "data não registrada") + "</b>. A versão corrente é a <b>v" + esc(ve.corrente) +
+             "</b> (" + atraso + " versão(ões) à frente). A OS <b>continua na v" + esc(ve.v) + " de propósito</b>: " +
+             "trocar a régua no meio da execução reescreveria o que já foi respondido. " +
+             "Isto é informação, não defeito.</div>";
+      } else {
+        h += "<div class='publinfo'>ℹ️ Checklist congelado na <b>v" + esc(ve.v) + "</b>, que é também a versão corrente.</div>";
+      }
+      const d = divergenciasVersao(ve.v);
+      if (d.length)
+        h += "<div class='diverge'>⚠️ A v" + esc(ve.v) + " do procedimento <b>não confere</b> com o que está gravado — " +
+             "sinal de escrita fora desta tela (o Graph direto contorna a guarda) ou de gravação parcial. " +
+             "Nada é corrigido em silêncio:<ul>" + d.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul></div>";
+      return h;
+    }
+
     function renderExec() {
       const area = $("execArea");
       if (!osSelId || !mapOS[osSelId]) {
@@ -526,9 +794,13 @@
         $("execContador").textContent = "";
         return;
       }
-      const pergs = perguntasAtivas();
+      const ve = versaoEfetivaDaOS(osSelId);
+      const bannerV = htmlBannerVersao(ve);
+      const pergs = perguntasAtivas(ve.v);
       if (!pergs.length) {
-        area.innerHTML = "<div class='empty'>Nenhuma pergunta ativa em Perguntas_Checklist. Cadastre na aba Editor (gestor).</div>";
+        area.innerHTML = bannerV + "<div class='empty'>Nenhuma pergunta ativa" +
+          (ve.v == null ? " em Perguntas_Checklist" : " na v" + ve.v + " do procedimento") +
+          ". Cadastre na aba Editor (gestor).</div>";
         $("execContador").textContent = "";
         return;
       }
@@ -596,8 +868,9 @@
         "</div>";
       });
 
-      area.innerHTML = paineis.join("");
-      $("execContador").textContent = totalResp + " de " + pergs.length + " pergunta(s) respondida(s)";
+      area.innerHTML = bannerV + paineis.join("");
+      $("execContador").textContent = totalResp + " de " + pergs.length + " pergunta(s) respondida(s)" +
+        (ve.v == null ? "" : " · v" + ve.v + (ve.congelada ? " (congelada)" : " (a congelar)"));
     }
 
     // re-render preservando o que estava digitado nas perguntas ainda não gravadas
@@ -704,6 +977,13 @@
       const falha = (m) => { if (msg) { msg.className = "perg-msg err"; msg.textContent = m; } };
       if (!os) { falha("Selecione uma OS antes de responder."); return; }
 
+      // versão do procedimento que está sendo EXECUTADA neste exato momento.
+      // Capturada ANTES de gravar e usada depois para congelar: se o gestor
+      // cortar uma versão nova em outra aba entre a renderização e o clique,
+      // a OS congela a versão que a tela realmente mostrou ao técnico — não
+      // a que passou a ser corrente no meio do caminho.
+      const veUsada = versaoEfetivaDaOS(osSelId);
+
       const ehParam = f.Parametro_Tecnico === true;
       const ehNumero = ehParam || classificarTipo(f.Tipo_Resposta) === "numero";
 
@@ -765,6 +1045,11 @@
         corrigindo[pid] = false;
         renderExecKeep();
         setStatus("Resposta gravada — P" + pid + (alerta ? " (com ALERTA de parâmetro)" : "") + ".");
+        // CONGELAMENTO — esta pode ser a PRIMEIRA resposta da OS, e "primeira
+        // resposta" é a definição de "checklist iniciado". Depois da resposta
+        // existir (igual ao ponteiro de documentos-os.html: cria a linha, só
+        // então move o ponteiro) — falhar aqui não desfaz a resposta.
+        await congelarVersaoProcedimento(veUsada.v);
         // B4 — a segurança nasce do checklist: se esta resposta fechou a fase
         // Pré-Execução, sincroniza Estado_Seguranca na OS (PATCH mínimo).
         await sincronizarEstadoSeguranca();
@@ -781,6 +1066,7 @@
             corrigindo[pid] = false;
             renderExecKeep();
             setStatus("Resposta P" + pid + " já estava registrada (evento idêntico) — nada foi duplicado.");
+            await congelarVersaoProcedimento(veUsada.v);
             await sincronizarEstadoSeguranca();
           } catch (e2) {
             falha("Resposta já registrada, mas a releitura falhou: " + e2.message);
@@ -790,6 +1076,54 @@
         }
       } finally {
         gravandoResp = false;
+      }
+    }
+
+    /* ==================================================================
+       CONGELAMENTO DA VERSÃO DO PROCEDIMENTO NA OS
+
+       A OS grava Procedimento_Versao_ID UMA ÚNICA VEZ, na primeira
+       resposta do checklist. Nunca reescreve: se o campo já tem valor, a
+       gravação é recusada aqui — inclusive quando o valor gravado é
+       DIFERENTE do que esta sessão usou. Esse caso não é conflito a
+       resolver, é a resposta certa: quem chegou primeiro definiu a versão
+       da OS, e a divergência vira notícia na tela (banner azul/amarelo),
+       não uma sobrescrita silenciosa.
+
+       Decisão separada da rede de propósito (deveCongelar/camposCongelamento
+       são puras e testáveis sem login — ver window.CHK.assertVersionamento).
+       ================================================================== */
+    function deveCongelar(osFields, v) {
+      if (v == null) return false;                       // procedimento sem versão: nada a congelar
+      const f = osFields || {};
+      return !ehNum(f.Procedimento_Versao_ID);           // só quando ainda não há carimbo
+    }
+    const camposCongelamento = (v, agoraISO) => ({
+      Procedimento_Versao_ID: num(v),
+      Procedimento_Versao_Congelada_Em: agoraISO || new Date().toISOString()
+    });
+
+    async function congelarVersaoProcedimento(v) {
+      const os = mapOS[osSelId];
+      if (!os) return;
+      if (!deveCongelar(os.fields || {}, v)) return;     // já congelada (ou sem versão): no-op
+      try {
+        await EG.patchItemFields("OrdensDeServico", osSelId, camposCongelamento(v));
+        // releitura do servidor (padrão do repo): se outra sessão congelou
+        // primeiro, o ETag de patchItemFields já teria barrado — e mesmo
+        // assim é o valor REAL do servidor que passa a valer na tela.
+        const sid = await EG.resolveSite();
+        const relido = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("OrdensDeServico") + "/items/" + osSelId + "?expand=fields");
+        mapOS[osSelId] = relido;
+        const i = oss.findIndex(x => String(x.id) === String(osSelId));
+        if (i > -1) oss[i] = relido;
+        setStatus("Checklist iniciado — OS congelada na v" + v + " do procedimento.");
+        renderExec();
+      } catch (e) {
+        // Não desfaz a resposta: ela é o fato, o carimbo é o registro.
+        console.warn("congelamento: falha ao gravar Procedimento_Versao_ID:", e.message);
+        setStatus("Resposta gravada, mas a versão do procedimento (v" + v + ") NÃO foi congelada na OS: " +
+                  e.message + " — recarregue; enquanto não congelar, a OS segue a versão corrente.", "err");
       }
     }
 
@@ -811,7 +1145,12 @@
     async function sincronizarEstadoSeguranca() {
       const os = mapOS[osSelId];
       if (!os) return;
-      const pergsPre = perguntasAtivas().filter(p => faseDe(p.fields || {}) === FASES[0]);
+      // LOAD-BEARING: a completude da fase é julgada contra o conjunto da
+      // versão CONGELADA na OS, não contra o corrente. Sem isso, cortar uma
+      // versão nova com uma pergunta obrigatória a mais "des-completaria" a
+      // Pré-Execução de OS antigas — e uma pergunta a menos poderia LIBERAR
+      // retroativamente uma OS bloqueada. Era exatamente o buraco do item 4.
+      const pergsPre = perguntasAtivas(versaoEfetivaDaOS(osSelId).v).filter(p => faseDe(p.fields || {}) === FASES[0]);
       if (!pergsPre.length) return;                              // fase sem perguntas: nada a decidir
       const ult = ultimaPorPergunta();
       if (!pergsPre.every(p => ult[String(p.id)])) return;       // Pré-Execução ainda incompleta
@@ -853,6 +1192,7 @@
       });
     }
     function renderEdit() {
+      renderAvisoEdit();
       const lista = filtrarEdit().slice().sort((a, b) => {
         const fa = a.fields || {}, fb = b.fields || {};
         const d = ordFase(fa) - ordFase(fb);
@@ -887,8 +1227,48 @@
               ? " <span class='chip par'>" + esc(fmtN(f.Valor_Nominal) + (f.Unidade_Medida ? " " + f.Unidade_Medida : "") +
                 (ehNum(f.Tolerancia_Pct) ? " ±" + fmtN(f.Tolerancia_Pct) + "%" : "")) + "</span>" : "") + "</td>" +
           "<td>" + (inativa ? "<span class='badge badge-inativa'>inativa</span>" : esc(simNao(f.Ativo))) + "</td>" +
+          "<td class='dim'>" + esc(rotuloIntervalo(f)) + "</td>" +
           "</tr>";
       }).join("");
+    }
+
+    /* intervalo de vigência da LINHA: "v1→" (aberta) ou "v1–v3" (fechada na
+       v3, isto é, pertenceu às versões 1 e 2). Linha legada sem carimbo
+       aparece como "v1→ (legado)" — o mesmo fallback de perguntasDaVersao. */
+    function rotuloIntervalo(f) {
+      const ff = f || {};
+      const ini = ehNum(ff.Versao_Criacao) ? num(ff.Versao_Criacao) : null;
+      const fim = ehNum(ff.Versao_Fim) ? num(ff.Versao_Fim) : null;
+      const base = "v" + (ini == null ? 1 : ini);
+      return (fim == null ? base + "→" : base + "–v" + fim) + (ini == null ? " (legado)" : "");
+    }
+
+    /* aviso da aba Editor: azul informa o contrato (editar = versão nova, OS
+       em andamento não recebem); amarelo denuncia divergência na corrente. */
+    function renderAvisoEdit() {
+      const el = $("editAviso");
+      if (!el) return;
+      const v = versaoCorrente();
+      if (v == null) { el.innerHTML = "<div class='diverge'>⚠️ " + esc(MOTIVO_SEM_VERSAO) + "</div>"; return; }
+      const emAnd = osComVersaoCongelada();
+      const atrasadas = emAnd.filter(o => o.v !== v);
+      let h = "<div class='publinfo'>ℹ️ Procedimento na <b>v" + esc(v) + "</b> · " +
+        esc(perguntasDaVersao(v).length) + " pergunta(s) nesta versão. " +
+        "Editar uma pergunta <b>não altera a linha existente</b>: corta a v" + esc(v + 1) + " e grava a mudança nela, " +
+        "preservando intacto o que as OS já respondidas viram. " +
+        (atrasadas.length
+          ? "<b>" + atrasadas.length + " OS em andamento</b> " + plural(atrasadas.length, "está", "estão") +
+            " em versão anterior e " + plural(atrasadas.length, "continuará", "continuarão") + " nela: " +
+            esc(atrasadas.slice(0, 5).map(o => o.titulo + " (v" + o.v + ")").join(", ")) +
+            (atrasadas.length > 5 ? " e mais " + (atrasadas.length - 5) : "") + "."
+          : "Nenhuma OS em andamento está atrás da versão corrente.") +
+        " Isto é informação, não defeito.</div>";
+      const d = divergenciasVersao(v);
+      if (d.length)
+        h += "<div class='diverge'>⚠️ A v" + esc(v) + " <b>não confere</b> com o que está gravado " +
+             "(escrita fora desta tela ou gravação parcial):<ul>" +
+             d.map(x => "<li>" + esc(x) + "</li>").join("") + "</ul></div>";
+      el.innerHTML = h;
     }
     ["efFase", "efDisc"].forEach(id => $(id).addEventListener("change", renderEdit));
     $("efLimpar").onclick = () => { $("efFase").value = ""; $("efDisc").value = ""; renderEdit(); };
@@ -948,6 +1328,30 @@
       const semTipos = !CHOICES.Tipo_Resposta.length;
       const parAberto = snapshot.Parametro_Tecnico === "true";
 
+      /* Versão: o gestor precisa saber, ANTES de salvar, que salvar corta
+         uma versão nova e que as OS em andamento NÃO vão receber a mudança.
+         Azul informa. E quando não dá para versionar, o botão é DESABILITADO
+         COM MOTIVO — a opção continua visível, nunca some. */
+      const vAtual = versaoCorrente();
+      const semVersao = vAtual == null;
+      const emAndamento = osComVersaoCongelada();
+      const infoVersao = semVersao
+        ? "<div class='diverge'>⚠️ Não há nenhuma versão em <b>Procedimentos_Versoes</b>. " +
+          "Sem versão corrente não é possível versionar a alteração, e gravar por cima " +
+          "reescreveria o passado das OS já respondidas — que é exatamente o que este " +
+          "editor deixou de fazer. Rode a migração do schema (que corta a v1) e recarregue. " +
+          "O botão Salvar continua visível, desabilitado, com este motivo.</div>"
+        : "<div class='publinfo'>ℹ️ Salvar <b>não altera a linha existente</b>: corta a <b>v" + esc(vAtual + 1) +
+          "</b> do procedimento e grava a mudança nela. " +
+          (item ? "A linha atual é <b>fechada</b> (Versao_Fim=v" + esc(vAtual + 1) + ") e preservada intacta para quem já respondeu. " : "") +
+          (emAndamento.length
+            ? "<b>" + emAndamento.length + " OS em andamento</b> " + plural(emAndamento.length, "segue congelada", "seguem congeladas") +
+              " em versão anterior e <b>não</b> " + plural(emAndamento.length, "receberá", "receberão") + " esta mudança: " +
+              esc(emAndamento.slice(0, 5).map(o => (o.titulo + " (v" + o.v + ")")).join(", ")) +
+              (emAndamento.length > 5 ? " e mais " + (emAndamento.length - 5) : "") + ". "
+            : "Nenhuma OS está com checklist iniciado agora. ") +
+          "Isto é informação, não defeito.</div>";
+
       $("drawer").innerHTML =
         "<div class='drawer-head'><div class='t'>" +
           (item ? "Editar — " + esc(f.Texto_Pergunta || f.Title || ("pergunta #" + item.id)) : "Nova pergunta") +
@@ -989,8 +1393,16 @@
             "<div class='f'><label for='p_Tolerancia_Pct'>Tolerância (%)</label>" +
               "<input type='number' step='any' id='p_Tolerancia_Pct' value='" + esc(snapshot.Tolerancia_Pct) + "' /></div>" +
           "</div>" +
+          "<div class='f-grupo'>Versão do procedimento</div>" +
+          infoVersao +
+          "<div class='f'><label for='p_Motivo'>Motivo da alteração" + (item ? " <span class='req'>*</span>" : "") + "</label>" +
+            "<textarea id='p_Motivo' placeholder='por que o procedimento está mudando (fica no changelog da versão)'></textarea>" +
+            "<span class='hint'>vai para Procedimentos_Versoes.Motivo — é a trilha append-only de por que a árvore mudou</span>" +
+            "<span class='err' id='e_Motivo'></span></div>" +
           "<div class='form-acoes'>" +
-            "<button type='button' id='btnSalvarP'>" + (item ? "Salvar alterações" : "Criar pergunta") + "</button>" +
+            "<button type='button' id='btnSalvarP'" + (semVersao ? " disabled" : "") +
+              " title='" + esc(semVersao ? MOTIVO_SEM_VERSAO : (item ? "Corta a v" + (vAtual + 1) + " e cria a linha nova" : "Corta a v" + (vAtual + 1) + " com a pergunta nova")) + "'>" +
+              (item ? "Salvar como nova versão" : "Criar pergunta") + "</button>" +
             "<button type='button' class='sec' id='btnCancelarP'>Cancelar</button>" +
           "</div>" +
           "<div class='form-msg' id='formMsgP'></div>" +
@@ -1045,67 +1457,189 @@
     }
     const nomeGraph = (n) => n === "Disciplina" ? "DisciplinaLookupId" : n;
 
+    /* ==================================================================
+       PLANEJADOR DA REVISÃO — função PURA (sem rede), o miolo testável.
+
+       Dado o snapshot, o form e a versão corrente, devolve o PLANO de
+       escritas. Três formas:
+         "criacao"  — pergunta nova: corta versão + 1 linha nova.
+         "retirada" — só desmarcou "Ativa" e nada mais: corta versão e
+                      FECHA a linha (Versao_Fim). Não cria linha nova, que
+                      seria uma duplicata inativa sem sentido.
+         "revisao"  — qualquer mudança semântica: corta versão, cria linha
+                      NOVA com o conteúdo editado e FECHA a antiga.
+       Em nenhuma delas há PATCH de campo semântico numa linha existente —
+       é isso que impede reescrever o passado das OS já respondidas.
+       ================================================================== */
+    function planejarRevisao(snap, vals, item, vAtual) {
+      if (vAtual == null) return { erro: MOTIVO_SEM_VERSAO };
+      const n = num(vAtual) + 1;
+      const SEMANTICOS = ["Texto_Pergunta", "Disciplina", "Fase_Execucao", "Tipo_Resposta", "Nivel",
+                          "Ord_Exib", "Obrigatoria", "Foto_Obrigatoria", "Parametro_Tecnico",
+                          "Unidade_Medida", "Valor_Nominal", "Tolerancia_Pct"];
+
+      // payload da LINHA de pergunta (só chaves com valor; booleans sempre —
+      // são escolha explícita do gestor no checkbox, não "branco")
+      const linha = (extra) => {
+        const payload = { Title: tituloDe(vals.Texto_Pergunta) };
+        Object.keys(vals).forEach(nm => {
+          const g = paraGraph(nm, vals[nm]);
+          if (g === null) return;
+          payload[nomeGraph(nm)] = g;
+        });
+        return Object.assign(payload, { Versao_Criacao: n }, extra || {});
+      };
+
+      if (!item) return { forma: "criacao", novaVersao: n, criar: linha({}), fechar: null };
+
+      const mudouSemantico = SEMANTICOS.some(nm => vals[nm] !== snap[nm]);
+      const retirando = snap.Ativo === "true" && vals.Ativo === "false";
+      // linha já fechada antes (reativação de pergunta retirada): não
+      // reescreve Versao_Fim, que marca quando ela saiu de circulação
+      const jaFechada = ehNum((item.fields || {}).Versao_Fim);
+
+      if (retirando && !mudouSemantico)
+        return { forma: "retirada", novaVersao: n, criar: null,
+                 fechar: { id: item.id, campos: { Versao_Fim: n, Ativo: false } } };
+
+      if (!mudouSemantico && vals.Ativo === snap.Ativo) return { forma: "nada", novaVersao: null };
+
+      const fechar = { id: item.id, campos: { Ativo: false } };
+      if (!jaFechada) fechar.campos.Versao_Fim = n;
+      return {
+        forma: "revisao", novaVersao: n,
+        criar: linha({ Pergunta_Raiz: raizDe(item) }),
+        fechar: fechar,
+        // Substituida_Por só é conhecido depois de criar a linha nova
+        marcarSubstituicao: true
+      };
+    }
+
+    /* corta uma versão nova. Chave_Versao é ÚNICA no servidor: dois gestores
+       cortando a v(n) ao mesmo tempo colidem lá, não aqui — o segundo recebe
+       a colisão e recarrega. Mesmo tratamento de documentos-os.html. */
+    const ehColisaoVersao = (e) =>
+      e && (e.status === 400 || e.status === 409) &&
+      /duplicate|duplicad|unique/i.test(String((e && e.message) || "") + String((e && e.corpo) || ""));
+
+    async function cortarVersao(n, motivo, qtdPrevista) {
+      const campos = {
+        Title: "v" + n,
+        Numero_Versao: n,
+        Chave_Versao: montarChaveVersao(n),
+        Vigencia_Inicio: new Date().toISOString(),
+        Ativa: true,
+        Motivo: motivo,
+        Autor: (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : ""),
+        Qtd_Perguntas: qtdPrevista
+      };
+      const novo = await EG.createItem("Procedimentos_Versoes", campos);
+      const id = novo && novo.id;
+      if (!id) throw new Error("o Graph não devolveu o id da versão criada");
+      const sid = await EG.resolveSite();
+      const relido = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Procedimentos_Versoes") + "/items/" + id + "?expand=fields");
+      versoes.push(relido);
+      // fecha a vigência da anterior — BEST EFFORT: versaoCorrente() decide
+      // pelo maior Numero_Versao, então falhar aqui não corrompe nada, só
+      // deixa o changelog menos legível.
+      const ant = versaoPorNumero(n - 1);
+      if (ant) {
+        try { await EG.patchItemFields("Procedimentos_Versoes", ant.id, { Vigencia_Fim: new Date().toISOString() }); }
+        catch (e) { console.warn("versão: falha ao fechar a vigência da v" + (n - 1) + ":", e.message); }
+      }
+      return relido;
+    }
+
     async function salvarPergunta(item) {
       if (gravandoForm) return;
       const msg = $("formMsgP");
       const vals = lerForm();
+      const motivo = (($("p_Motivo") || {}).value || "").trim();
       $("e_Texto_Pergunta").textContent = "";
-      if (!vals.Texto_Pergunta) {
-        $("e_Texto_Pergunta").textContent = "obrigatório";
-        $("p_Texto_Pergunta").focus();
+      $("e_Motivo").textContent = "";
+      let invalido = false;
+      if (!vals.Texto_Pergunta) { $("e_Texto_Pergunta").textContent = "obrigatório"; invalido = true; }
+      // motivo obrigatório na EDIÇÃO: a versão nova entra no changelog e um
+      // changelog sem porquê não serve para auditar nada (mesma régua do
+      // Motivo_Revisao de documentos-os.html)
+      if (item && !motivo) { $("e_Motivo").textContent = "obrigatório — a versão nova vai para o changelog"; invalido = true; }
+      if (invalido) {
+        (vals.Texto_Pergunta ? $("p_Motivo") : $("p_Texto_Pergunta")).focus();
         msg.className = "form-msg err"; msg.textContent = "Corrija os campos destacados.";
         return;
       }
+
+      const vAtual = versaoCorrente();
+      const plano = planejarRevisao(snapshot || {}, vals, item, vAtual);
+      if (plano.erro) { msg.className = "form-msg err"; msg.textContent = plano.erro; return; }
+      if (plano.forma === "nada") { msg.className = "form-msg"; msg.textContent = "Nada foi alterado."; return; }
+
       try {
         gravandoForm = true; $("btnSalvarP").disabled = true;
-        msg.className = "form-msg"; msg.textContent = "Gravando...";
+        msg.className = "form-msg"; msg.textContent = "Cortando a v" + plano.novaVersao + " e gravando...";
 
-        let id;
-        if (!item) {
-          // CRIAÇÃO — só chaves COM valor (padrão nova-proposta); booleans vão
-          // sempre: são escolha explícita do gestor via checkbox, não "branco".
-          const payload = { Title: tituloDe(vals.Texto_Pergunta) };
-          Object.keys(vals).forEach(n => {
-            const g = paraGraph(n, vals[n]);
-            if (g === null) return;
-            payload[nomeGraph(n)] = g;
-          });
-          const novo = await EG.createItem("Perguntas_Checklist", payload);
-          id = novo && novo.id;
-          if (!id) throw new Error("o Graph não devolveu o id da pergunta criada");
-        } else {
-          // EDIÇÃO — dirty tracking: PATCH apenas do que mudou vs snapshot;
-          // campo esvaziado de propósito vai como null (limpa no SharePoint).
-          const mudados = {};
-          Object.keys(vals).forEach(n => {
-            if (vals[n] === (snapshot ? snapshot[n] : "")) return;
-            mudados[nomeGraph(n)] = paraGraph(n, vals[n]);
-          });
-          if (vals.Texto_Pergunta !== snapshot.Texto_Pergunta) mudados.Title = tituloDe(vals.Texto_Pergunta);
-          if (!Object.keys(mudados).length) { msg.textContent = "Nada foi alterado."; return; }
-          await EG.patchItemFields("Perguntas_Checklist", item.id, mudados);
-          id = item.id;
+        // quantidade PREVISTA do conjunto da versão nova, calculada local:
+        // conjunto atual +1 se cria linha, −1 se fecha linha. É o número que
+        // divergenciasVersao() vai conferir depois contra a realidade.
+        const qtd = perguntasDaVersao(vAtual).length + (plano.criar ? 1 : 0) - (plano.fechar ? 1 : 0);
+
+        // 1) a VERSÃO primeiro: é o registro de que a árvore mudou. Se as
+        //    escritas seguintes falharem, sobra uma versão vazia (inócua,
+        //    e visível no changelog) em vez de mudança sem versão.
+        await cortarVersao(plano.novaVersao, motivo || "(criação de pergunta sem motivo informado)", qtd);
+
+        // 2) a LINHA NOVA (o conteúdo editado nasce numa linha própria)
+        let idNovo = null;
+        if (plano.criar) {
+          const novo = await EG.createItem("Perguntas_Checklist", plano.criar);
+          idNovo = novo && novo.id;
+          if (!idNovo) throw new Error("o Graph não devolveu o id da pergunta criada");
         }
 
-        // relê do servidor em vez de confiar no eco local: se algum campo for
-        // recusado (Choice inválido, por ex.), a tela mostra o estado REAL.
-        const sid = await EG.resolveSite();
-        const atual = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Perguntas_Checklist") + "/items/" + id + "?expand=fields");
-        const idx = perguntas.findIndex(p => p.id === atual.id);
-        if (idx > -1) perguntas[idx] = atual; else perguntas.unshift(atual);
-        mapPerg[atual.id] = atual;
-        renderEdit();
-        renderExec();   // a árvore mudou — a execução reflete na hora
+        // 3) o FECHAMENTO da antiga — PATCH SÓ DE LINHAGEM (Versao_Fim /
+        //    Substituida_Por / Ativo). Nenhum campo semântico é tocado: a
+        //    linha antiga continua contando exatamente o que a OS que a
+        //    respondeu viu. Falhar aqui NÃO desfaz o resto — vira denúncia
+        //    amarela em divergenciasVersao() ("ambas na mesma versão").
+        if (plano.fechar) {
+          const campos = Object.assign({}, plano.fechar.campos);
+          if (plano.marcarSubstituicao && idNovo != null) campos.Substituida_Por = Number(idNovo);
+          try {
+            await EG.patchItemFields("Perguntas_Checklist", plano.fechar.id, campos);
+          } catch (e) {
+            msg.className = "form-msg err";
+            msg.textContent = "A v" + plano.novaVersao + " foi criada" + (idNovo ? " e a pergunta nova gravada" : "") +
+              ", mas a pergunta antiga #" + plano.fechar.id + " NÃO foi fechada: " + e.message +
+              " — recarregue; a divergência fica sinalizada em amarelo na aba Execução até ser resolvida.";
+            await recarregarPerguntas();
+            return;
+          }
+        }
+
+        await recarregarPerguntas();
         closeDrawer();
-        setStatus((item ? "Pergunta atualizada" : "Pergunta criada") + " — " +
-                  (((atual.fields || {}).Texto_Pergunta) || ("#" + id)) + ".");
+        const rot = { criacao: "Pergunta criada", retirada: "Pergunta retirada", revisao: "Pergunta revisada" }[plano.forma];
+        setStatus(rot + " na v" + plano.novaVersao + " — " + (vals.Texto_Pergunta || "") +
+                  ". OS em andamento continuam nas versões que congelaram.");
       } catch (e) {
         msg.className = "form-msg err";
-        msg.textContent = "Falha ao gravar: " + e.message;
+        msg.textContent = ehColisaoVersao(e)
+          ? "Alguém cortou a v" + plano.novaVersao + " ao mesmo tempo (Chave_Versao é única) — recarregue os dados e refaça a alteração."
+          : "Falha ao gravar: " + e.message;
       } finally {
         gravandoForm = false;
         const b = $("btnSalvarP"); if (b) b.disabled = false;
       }
+    }
+
+    /* relê Perguntas_Checklist inteira do servidor em vez de remendar o
+       cache: a revisão mexe em DUAS linhas (nova + antiga) e o eco local não
+       é confiável — se algum campo for recusado, a tela mostra o REAL. */
+    async function recarregarPerguntas() {
+      perguntas = await soft(EG.listItems("Perguntas_Checklist"), "Perguntas_Checklist");
+      mapPerg = {}; perguntas.forEach(p => { mapPerg[p.id] = p; });
+      renderEdit();
+      renderExec();   // a árvore mudou — a execução reflete na hora
     }
 
     /* Exposto para exercitar a lógica sem login (dados falsos):
@@ -1114,6 +1648,10 @@
       setDados, montarFiltros, renderExec, renderEdit, mostrarSec,
       faseDe, classificarTipo, checarParametro, ultimaPorPergunta, perguntasAtivas,
       tituloDe, paraGraph, urlSeguro, sincronizarEstadoSeguranca,
+      // versionamento do procedimento (item 4) — funções puras
+      versaoCorrente, versaoDaOS, versaoEfetivaDaOS, perguntasDaVersao, divergenciasVersao,
+      planejarRevisao, deveCongelar, camposCongelamento, montarChaveVersao, ehColisaoVersao,
+      raizDe, rotuloIntervalo, osComVersaoCongelada,
       setOS: (id) => { osSelId = String(id); },
       forcarCarregado: (v) => { carregado = v !== false; },
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; },
@@ -1141,6 +1679,156 @@
           "colisão: detector deveria reconhecer duplicidade e ignorar erro comum");
         const r = { ok: falhas.length === 0, total: 6, falhas };
         console.log("CHK.assertDedupe:", JSON.stringify(r));
+        return r;
+      },
+
+      /* ================================================================
+         ASSERÇÕES DO VERSIONAMENTO (item 4) — exercitam a lógica com dados
+         FALSOS, sem login e sem rede. Cobrem os 4 cenários exigidos:
+           A. congelamento na PRIMEIRA resposta (e idempotência do carimbo)
+           B. OS antiga continua na versão antiga quando a corrente muda
+           C. edição de pergunta VERSIONADA com OS em andamento (e o que o
+              PATCH tem direito de tocar)
+           D. OS nova pega a versão corrente
+         + reconstrução por intervalo, fallback de linha legada e as três
+           denúncias amarelas de divergenciasVersao().
+         O que NÃO dá para cobrir aqui: as chamadas de rede (PATCH da OS,
+         CREATE da versão) e a unicidade de Chave_Versao, que é imposta pelo
+         servidor. Isso exige login real — está declarado no relatório.
+         ================================================================ */
+      assertVersionamento() {
+        const casos = [];
+        const ok = (nome, cond, detalhe) => casos.push({ nome, ok: !!cond, detalhe: detalhe || "" });
+        const ids = (arr) => arr.map(x => Number(x.id)).sort((a, b) => a - b).join(",");
+        const q = (id, campos) => ({ id: String(id), fields: Object.assign({ Ativo: true, Tipo_Resposta: "Sim/Não" }, campos) });
+        const vv = (id, n, extra) => ({ id: String(id), fields: Object.assign({ Numero_Versao: n, Ativa: true, Chave_Versao: "PROC|v" + n }, extra) });
+
+        // cenário base: P2 (régua 10 A) foi revisada na v2 e virou P3 (16 A)
+        const cenario = () => ({
+          perguntas: [
+            q(1, { Texto_Pergunta: "Aterramento OK?", Versao_Criacao: 1, Obrigatoria: true, Fase_Execucao: "Pré-Execução" }),
+            q(2, { Texto_Pergunta: "Corrente medida", Versao_Criacao: 1, Versao_Fim: 2, Ativo: false, Substituida_Por: 3,
+                   Parametro_Tecnico: true, Valor_Nominal: 10, Fase_Execucao: "Pré-Execução" }),
+            q(3, { Texto_Pergunta: "Corrente medida", Versao_Criacao: 2, Pergunta_Raiz: "2",
+                   Parametro_Tecnico: true, Valor_Nominal: 16, Fase_Execucao: "Pré-Execução" }),
+            q(4, { Texto_Pergunta: "Foto do quadro", Versao_Criacao: 3, Fase_Execucao: "Pós-Execução" })
+          ],
+          versoes: [vv(101, 1, { Qtd_Perguntas: 2 }), vv(102, 2, { Qtd_Perguntas: 2 }), vv(103, 3, { Qtd_Perguntas: 3 })],
+          oss: [
+            { id: "10", fields: { Title: "OS-100", Status: "Em Andamento", Procedimento_Versao_ID: 1,
+                                  Procedimento_Versao_Congelada_Em: "2026-08-01T10:00:00.000Z" } },
+            { id: "11", fields: { Title: "OS-200", Status: "Aberta" } }
+          ]
+        });
+        const carregar = (c) => setDados(c.perguntas, [], [], c.oss, [], c.versoes);
+
+        let c = cenario(); carregar(c);
+
+        // ---- reconstrução por INTERVALO ----
+        ok("v1 reconstrói o conjunto ANTIGO (P1 + P2 régua 10 A)", ids(perguntasDaVersao(1)) === "1,2", ids(perguntasDaVersao(1)));
+        ok("v2 troca P2 por P3 (régua 16 A), sem clonar a árvore", ids(perguntasDaVersao(2)) === "1,3", ids(perguntasDaVersao(2)));
+        ok("v3 acrescenta P4 e mantém P3", ids(perguntasDaVersao(3)) === "1,3,4", ids(perguntasDaVersao(3)));
+        ok("versaoCorrente() = maior Numero_Versao ativa", versaoCorrente() === 3, String(versaoCorrente()));
+
+        // ---- B. OS ANTIGA CONTINUA NA VERSÃO ANTIGA ----
+        const veA = versaoEfetivaDaOS("10");
+        ok("B: OS congelada na v1 continua na v1 mesmo com a corrente em v3",
+           veA.v === 1 && veA.congelada === true && veA.corrente === 3, JSON.stringify(veA));
+        ok("B: a OS antiga enxerga a pergunta com a régua ORIGINAL de 10 A (não a de 16 A)",
+           ids(perguntasAtivas(veA.v)) === "1,2" &&
+           num((mapPerg["2"].fields || {}).Valor_Nominal) === 10, ids(perguntasAtivas(veA.v)));
+        ok("B: a OS antiga NÃO recebe a pergunta criada na v3",
+           perguntasDaVersao(veA.v).every(p => String(p.id) !== "4"));
+
+        // ---- D. OS NOVA PEGA A CORRENTE ----
+        const veD = versaoEfetivaDaOS("11");
+        ok("D: OS sem carimbo usa a versão corrente (v3) e ainda não está congelada",
+           veD.v === 3 && veD.congelada === false, JSON.stringify(veD));
+        ok("D: a OS nova enxerga a régua ATUAL de 16 A", ids(perguntasAtivas(veD.v)) === "1,3,4");
+
+        // ---- A. CONGELAMENTO NA PRIMEIRA RESPOSTA ----
+        ok("A: OS sem carimbo DEVE congelar", deveCongelar(mapOS["11"].fields, 3) === true);
+        ok("A: OS já carimbada NÃO recongela (idempotente — a versão da OS nunca muda)",
+           deveCongelar(mapOS["10"].fields, 3) === false);
+        ok("A: sem versão cadastrada não há o que congelar", deveCongelar(mapOS["11"].fields, null) === false);
+        const cc = camposCongelamento(3, "2026-08-04T12:00:00.000Z");
+        ok("A: o carimbo é Number + instante ISO",
+           cc.Procedimento_Versao_ID === 3 && typeof cc.Procedimento_Versao_ID === "number" &&
+           cc.Procedimento_Versao_Congelada_Em === "2026-08-04T12:00:00.000Z", JSON.stringify(cc));
+        ok("A: só a OS 10 conta como 'em andamento com versão congelada'",
+           ids(osComVersaoCongelada()) === "10", JSON.stringify(osComVersaoCongelada()));
+
+        // ---- C. EDIÇÃO DE PERGUNTA = VERSÃO NOVA (com OS em andamento) ----
+        const snapP1 = { Texto_Pergunta: "Aterramento OK?", Disciplina: "", Fase_Execucao: "Pré-Execução",
+                         Tipo_Resposta: "Sim/Não", Nivel: "", Ord_Exib: "", Obrigatoria: "true",
+                         Foto_Obrigatoria: "false", Ativo: "true", Parametro_Tecnico: "false",
+                         Unidade_Medida: "", Valor_Nominal: "", Tolerancia_Pct: "" };
+        const editado = Object.assign({}, snapP1, { Texto_Pergunta: "Aterramento e equipotencialização OK?" });
+        const plano = planejarRevisao(snapP1, editado, mapPerg["1"], 3);
+        ok("C: editar o texto vira REVISÃO (linha nova), não PATCH da linha existente",
+           plano.forma === "revisao" && plano.novaVersao === 4, JSON.stringify(plano.forma));
+        ok("C: a linha nova nasce na v4 e aponta a raiz da cadeia",
+           plano.criar && plano.criar.Versao_Criacao === 4 && plano.criar.Pergunta_Raiz === "1" &&
+           plano.criar.Texto_Pergunta === "Aterramento e equipotencialização OK?", JSON.stringify(plano.criar));
+        ok("C: a linha ANTIGA é fechada na v4, preservada para quem já respondeu",
+           plano.fechar && plano.fechar.id === "1" && plano.fechar.campos.Versao_Fim === 4 &&
+           plano.fechar.campos.Ativo === false, JSON.stringify(plano.fechar));
+        // a asserção central do item: o PATCH não pode tocar em nada semântico
+        const SEM = ["Texto_Pergunta", "Valor_Nominal", "Tolerancia_Pct", "Obrigatoria", "Fase_Execucao",
+                     "Tipo_Resposta", "Parametro_Tecnico", "Unidade_Medida", "Ord_Exib", "Nivel", "Title"];
+        ok("C: o PATCH da linha antiga só toca LINHAGEM — nenhum campo semântico (é isto que impede reescrever o passado)",
+           SEM.every(k => !(k in plano.fechar.campos)), JSON.stringify(Object.keys(plano.fechar.campos)));
+        ok("C: a régua de 10 A que gerou a NC da OS antiga permanece intacta na linha 2",
+           num((mapPerg["2"].fields || {}).Valor_Nominal) === 10);
+
+        const planoRet = planejarRevisao(snapP1, Object.assign({}, snapP1, { Ativo: "false" }), mapPerg["1"], 3);
+        ok("C: retirar a pergunta (só desmarcar Ativa) fecha a linha SEM criar duplicata inativa",
+           planoRet.forma === "retirada" && planoRet.criar === null &&
+           planoRet.fechar.campos.Versao_Fim === 4, JSON.stringify(planoRet.forma));
+        ok("C: salvar sem mudar nada não corta versão",
+           planejarRevisao(snapP1, Object.assign({}, snapP1), mapPerg["1"], 3).forma === "nada");
+        ok("C: sem versão corrente o plano é RECUSADO com motivo (botão fica desabilitado com esse texto)",
+           !!planejarRevisao(snapP1, editado, mapPerg["1"], null).erro);
+        const planoNovo = planejarRevisao({}, editado, null, 3);
+        ok("C: pergunta nova nasce na v4 sem raiz (ela é a raiz)",
+           planoNovo.forma === "criacao" && planoNovo.criar.Versao_Criacao === 4 &&
+           !planoNovo.criar.Pergunta_Raiz && planoNovo.fechar === null);
+        ok("C: Chave_Versao segue o formato do repo (\"PROC|v<n>\")", montarChaveVersao(4) === "PROC|v4");
+        ok("C: colisão de Chave_Versao é reconhecida (corte concorrente)",
+           ehColisaoVersao({ status: 400, message: "Duplicate values" }) === true &&
+           ehColisaoVersao({ status: 500, message: "timeout" }) === false);
+
+        // ---- linha legada sem carimbo ----
+        carregar({ perguntas: [q(9, { Texto_Pergunta: "legada" })], versoes: [vv(101, 1, {})], oss: [] });
+        ok("legado: pergunta sem Versao_Criacao é tratada como v1 (não some da tela)",
+           ids(perguntasDaVersao(1)) === "9" && rotuloIntervalo({}) === "v1→ (legado)");
+
+        // ---- AMARELO DENUNCIA: as três divergências ----
+        c = cenario(); carregar(c);
+        ok("amarelo: cenário íntegro não gera denúncia", divergenciasVersao(3).length === 0, JSON.stringify(divergenciasVersao(3)));
+
+        c = cenario();
+        c.perguntas.push(q(5, { Texto_Pergunta: "retirada por fora", Versao_Criacao: 1, Ativo: false }));
+        c.versoes[2].fields.Qtd_Perguntas = 3; carregar(c);
+        ok("amarelo: retirada FORA do editor (Ativo=false sem Versao_Fim) é denunciada",
+           divergenciasVersao(3).some(x => x.indexOf("FORA do editor") > -1), JSON.stringify(divergenciasVersao(3)));
+
+        c = cenario();
+        delete c.perguntas[1].fields.Versao_Fim; c.perguntas[1].fields.Ativo = true; carregar(c);
+        ok("amarelo: linhagem quebrada (substituída e substituta na MESMA versão) é denunciada",
+           divergenciasVersao(3).some(x => x.indexOf("substituta") > -1), JSON.stringify(divergenciasVersao(3)));
+
+        c = cenario(); c.versoes[2].fields.Qtd_Perguntas = 99; carregar(c);
+        ok("amarelo: Qtd_Perguntas divergente do conjunto reconstruído é denunciada",
+           divergenciasVersao(3).some(x => x.indexOf("cortada com 99") > -1), JSON.stringify(divergenciasVersao(3)));
+
+        const falhas = casos.filter(x => !x.ok);
+        const r = {
+          suite: "CHK.assertVersionamento (item 4 — checklist versionado)",
+          quando: new Date().toISOString(),
+          ok: falhas.length === 0, total: casos.length, falharam: falhas.length, casos
+        };
+        console.log("CHK.assertVersionamento:", JSON.stringify(r));
         return r;
       }
     };
