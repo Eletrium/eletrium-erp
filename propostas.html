@@ -7,7 +7,57 @@
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
   <script src="graph.js"></script>
   <script src="pipeline.js"></script>
+  <script src="oferta-hash.js"></script>
   <link rel="stylesheet" href="app.css" />
+  <!--
+    ==========================================================================
+    OFERTA VERSIONADA COM HASH (item 5) — nesta tela.
+
+    A REGRA, literal: o aceite vale para UM hash específico. Um aceite é
+    VÁLIDO se, e somente se, Hash_Aceito === Oferta_Hash_Vigente. Mudou
+    escopo ou tarifa, muda o hash da nova versão congelada, e o aceite
+    anterior deixa de casar -> INVALIDADO. O aceite anterior NUNCA é
+    apagado: vira histórico. "Alguém aceitou a versão X em tal data" é
+    fato que aconteceu.
+
+    A INVALIDAÇÃO É DERIVADA, NÃO GRAVADA. Não existe campo
+    "aceite_invalidado" — a validade é recalculada comparando hashes a cada
+    carga. Um flag gravado mentiria justamente quando mais importa: se
+    alguém alterar o escopo direto no Graph, o flag continuaria "válido";
+    a comparação derivada não, porque ela relê e recomputa.
+
+    A lógica pura (manifesto canônico, SHA-256, resolvedor de tarifa B5 e a
+    avaliação de validade) mora em oferta-hash.js, fora do DOM, para poder
+    ser testada sem navegador. Esta tela só chama e desenha.
+
+    DONO DE CAMPO (quem escreve o quê):
+      Propostas.Oferta_Versao_Vigente / Oferta_Hash_Vigente /
+      Oferta_Congelada_Em ....... SÓ congelarOferta() desta tela (ponteiro
+        de vigência; mesmo papel de Versao_Publicada em documentos-os.html).
+      Propostas_Ofertas_Versoes . SÓ congelarOferta(). Append-only: uma
+        linha por versão congelada, nunca editada, nunca apagada.
+      Propostas_Aceites ......... SÓ registrarAceite(). Append-only e
+        IMUTÁVEL: nenhuma escrita jamais altera uma linha existente.
+      Os demais campos de Propostas seguem com os donos de antes (bloco
+      "EDIÇÃO DE OPERAÇÃO" mais abaixo) — nada disso entra no hash.
+
+    DOIS VISUAIS, DE PROPÓSITO (padrão de documentos-os.html):
+      AMARELO (.diverge) = DENUNCIA: aceite invalidado, ponteiro quebrado,
+        fechamento legado sem hash. Alguém precisa agir.
+      AZUL (.publinfo) = INFORMA: "há alteração ainda não congelada" é
+        estado normal de negociação, não defeito.
+      VERDE (.okinfo) = CONFIRMA: aceite casa com a oferta vigente.
+    A opção nunca some: quando não dá para registrar aceite, o botão fica
+    DESABILITADO com o motivo escrito ao lado — nunca escondido.
+
+    LIMITAÇÃO DECLARADA (sem o gateway B1): a invalidação é CLIENT-SIDE.
+    Quem escrever direto no Microsoft Graph muda escopo ou tarifa sem passar
+    por esta regra — nenhuma versão nova é congelada e nenhum aviso sai no
+    momento da escrita. O que existe é DETECÇÃO POSTERIOR: na próxima
+    abertura, o hash é recomputado sobre o conteúdo relido e a divergência
+    aparece na tela. Prevenir de verdade exige o B1.
+    ==========================================================================
+  -->
   <style>
     /* estilos locais desta tela (não mexem em app.css, que é compartilhado) */
     /* display:grid/flex sobrescreve a regra [hidden] do navegador — reforçamos aqui */
@@ -35,6 +85,24 @@
     .ed-btns { display: flex; gap: 8px; }
     .ed-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .ed-msg.err { color: #F85149; }
+
+    /* ---- oferta versionada (item 5) --------------------------------------
+       AMARELO denuncia, AZUL informa, VERDE confirma. Mesmos tokens visuais
+       de documentos-os.html — não inventar paleta nova. */
+    .diverge  { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    .publinfo { color: #79c0ff; font-size: .8rem; border: 1px solid #388bfd44; background: #388bfd12; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    .okinfo   { color: #7ee2a8; font-size: .8rem; border: 1px solid #22B57344; background: #22B57312; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    .diverge b, .publinfo b, .okinfo b { font-weight: 600; }
+    .sha { font-family: ui-monospace, Consolas, monospace; font-size: .74rem; color: #8b949e; }
+    /* histórico append-only: versões congeladas e aceites */
+    .hist { margin-top: 10px; border-top: 1px solid #21262d; }
+    .hist .l { padding: 7px 0; border-bottom: 1px solid #161b22; font-size: .8rem; color: #8b949e; line-height: 1.5; }
+    .hist .l b { color: #e6edf3; font-weight: 600; }
+    /* aceite que não vale mais: continua VISÍVEL e legível, só marcado */
+    .hist .l.morto b { color: #8b949e; }
+    .hist .l .tag-inval { color: #e3b341; font-size: .74rem; }
+    .hist .l .tag-vale { color: #7ee2a8; font-size: .74rem; }
+    .motivo-off { color: #8b949e; font-size: .78rem; margin-top: 6px; }
   </style>
 </head>
 <body>
@@ -71,7 +139,7 @@
     <div id="estado" hidden></div>
     <table id="tbl" hidden>
       <thead><tr>
-        <th>Número</th><th>Cliente</th><th>Etapa</th><th>Valor</th><th>Status</th><th>Validade</th>
+        <th>Número</th><th>Cliente</th><th>Etapa</th><th>Valor</th><th>Status</th><th>Oferta</th><th>Validade</th>
         <th>Responsável</th><th>Próxima ação</th><th>Data</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
@@ -88,6 +156,17 @@
 
     let itemMap = {}, nomeCliente = {}, todas = [];
     let choiceProp = {}; // { nomeInterno: [choices...] } lido de EG.listColumns("Propostas") — selects dinâmicos
+
+    // ---- oferta versionada (item 5) ----
+    let versoesOferta = [];      // ledger append-only Propostas_Ofertas_Versoes
+    let aceitesOferta = [];      // ledger append-only e imutável Propostas_Aceites
+    let itensPorProposta = {};   // { propostaId: [linhas de ItensPropostas] }
+    let tarifas = [];            // Tarifas_Versoes (B5) — resolvemos a vigente por competência
+    let hashAtual = {};          // { propostaId: hash RECOMPUTADO agora sobre o conteúdo relido }
+    let choiceAceite = {};       // choices reais de Propostas_Aceites (Meio_Registro)
+    // Ledger ilegível NÃO pode virar acusação: sem histórico não se afirma que
+    // um aceite é inválido — afirma-se que a situação é DESCONHECIDA.
+    let ledgerOk = false;
 
     async function boot() { if (await EG.init()) await onIn(); }
     async function onIn() {
@@ -109,20 +188,48 @@
         // client-side qualquer gravação de Etapa_Pipeline com rótulo inexistente.
         // Mesmas chaves que o Kanban (index.html) valida via validateEtapasConfig.
         // Falha da trava não derruba a tela (vira null e o aviso só não aparece).
-        const [vEtapa, props, cli, cols] = await Promise.all([
+        // marcador de falha: distingue "carregou e está vazio" de "não carregou".
+        const FALHOU = Symbol("falhou");
+        const soft = (pr, oque) => pr.catch(e => { console.warn("Falha ao ler " + oque + ":", e.message); return FALHOU; });
+
+        const [vEtapa, props, cli, cols, vers, aces, itens, tars, colsAce] = await Promise.all([
           EG.travarChoices("Propostas", "Etapa_Pipeline", Object.keys(window.ETAPA_CONFIG || {})).catch(() => null),
           EG.listItems("Propostas"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
           // colunas populam os selects de Choice DINAMICAMENTE (Motivo_Perda —
           // nada de rótulo hardcodado). Falha não derruba a tela: só desabilita o select.
-          EG.listColumns("Propostas").catch(e => { console.warn("Falha ao ler colunas de Propostas:", e.message); return []; })
+          EG.listColumns("Propostas").catch(e => { console.warn("Falha ao ler colunas de Propostas:", e.message); return []; }),
+          // ---- oferta versionada: os dois ledgers + o que entra no hash ----
+          soft(EG.listItems(OFERTA.LISTA_VERSOES), OFERTA.LISTA_VERSOES),
+          soft(EG.listItems(OFERTA.LISTA_ACEITES), OFERTA.LISTA_ACEITES),
+          soft(EG.listItems("ItensPropostas"), "ItensPropostas"),
+          soft(EG.listItems("Tarifas_Versoes"), "Tarifas_Versoes"),
+          EG.listColumns(OFERTA.LISTA_ACEITES).catch(() => [])
         ]);
         EG.renderAvisoChoices($("choiceWarn"), vEtapa, "Etapa do Pipeline");
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
         choiceProp = {};
         (cols || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceProp[c.name] = c.choice.choices; });
+        choiceAceite = {};
+        (colsAce || []).forEach(c => { if (c.choice && Array.isArray(c.choice.choices)) choiceAceite[c.name] = c.choice.choices; });
         itemMap = {}; props.forEach(p => itemMap[p.id] = p);
         todas = props;
+
+        // Os DOIS ledgers e os itens do escopo precisam estar legíveis para
+        // afirmar qualquer coisa sobre validade. Tarifas_Versoes vazia é
+        // estado NORMAL hoje (0 versões) — vazio ≠ falha, por isso o Symbol.
+        ledgerOk = (vers !== FALHOU) && (aces !== FALHOU) && (itens !== FALHOU) && (tars !== FALHOU);
+        versoesOferta = vers === FALHOU ? [] : vers;
+        aceitesOferta = aces === FALHOU ? [] : aces;
+        tarifas = tars === FALHOU ? [] : tars;
+        itensPorProposta = {};
+        (itens === FALHOU ? [] : itens).forEach(it => {
+          const pid = (it.fields || {}).PropostaLookupId;
+          if (pid == null) return;
+          (itensPorProposta[pid] = itensPorProposta[pid] || []).push(it);
+        });
+        await recomputarHashes(props);
+
         render(todas);
         // vazio REAL (carregou e não há itens) ≠ "ainda carregando" ≠ erro
         if (!todas.length) EG.renderEstado($("estado"), "vazio", { mensagem: "Nenhuma proposta." });
@@ -137,6 +244,82 @@
     $("btnLoad").onclick = carregar;
 
     const cliNome = (f) => f.ClienteLookupId != null ? (nomeCliente[f.ClienteLookupId] || ("cliente #" + f.ClienteLookupId)) : "—";
+
+    /* ======================================================================
+       OFERTA VERSIONADA COM HASH — leitura, avaliação e as duas escritas.
+       A lógica pura está em oferta-hash.js; aqui só entra rede e DOM.
+       ====================================================================== */
+
+    // Recomputa o hash de CADA proposta sobre o conteúdo relido do servidor.
+    // É este recálculo que detecta escrita feita por fora da tela (ver a
+    // limitação declarada no cabeçalho): o hash não é lido de lugar nenhum,
+    // é derivado do conteúdo atual toda vez.
+    async function recomputarHashes(props) {
+      hashAtual = {};
+      for (const p of (props || [])) {
+        try {
+          const r = await OFERTA.hashOferta({
+            propostaId: p.id,
+            fields: p.fields || {},
+            itens: itensPorProposta[p.id] || [],
+            tarifas: tarifas
+          });
+          hashAtual[p.id] = r.hash;
+        } catch (e) {
+          // WebCrypto exige contexto seguro (https/localhost). Sem hash não se
+          // afirma nada: fica indefinido e a tela diz "situação desconhecida".
+          console.warn("Falha ao calcular o hash da proposta " + p.id + ":", e.message);
+        }
+      }
+    }
+
+    const shaCurto = (h) => h ? String(h).slice(0, 12) + "…" : "";
+
+    // Avaliação da proposta. Sem ledger legível ou sem hash calculado, a
+    // resposta é DESCONHECIDA — nunca "válido" e nunca "inválido".
+    function avaliar(p) {
+      if (!ledgerOk || !hashAtual[p.id]) {
+        return {
+          situacao: "DESCONHECIDA", cor: "amarelo",
+          titulo: "Situação da oferta desconhecida",
+          detalhe: !ledgerOk
+            ? "Não foi possível ler o histórico de versões/aceites da oferta. Sem esse histórico nada é afirmado sobre validade — recarregue os dados."
+            : "Não foi possível calcular o hash do conteúdo (o cálculo exige https ou localhost). Sem hash não há como conferir o aceite.",
+          versoes: [], aceites: [], ultimoAceite: null,
+          aceiteValido: false, aceiteInvalidado: false, mudouDesdeCongelamento: false,
+          podeCongelar: false, podeAceitar: false,
+          motivoNaoAceitar: "Histórico ou hash indisponível — a situação da oferta não pôde ser apurada.",
+          motivoNaoCongelar: "Histórico ou hash indisponível — congelar agora gravaria uma versão sem base confiável.",
+          hashAtual: hashAtual[p.id] || null, hashVigente: null, hashAceito: null,
+          versaoVigente: null, proximaVersao: null, legado: false, ponteiroForaDoLedger: false
+        };
+      }
+      return OFERTA.avaliarOferta({
+        propostaId: p.id,
+        fields: p.fields || {},
+        hashAtual: hashAtual[p.id],
+        versoes: versoesOferta,
+        aceites: aceitesOferta
+      });
+    }
+
+    // Selo da tabela. Cores idênticas às faixas do drawer.
+    function badgeOferta(av) {
+      const cores = { verde: ["#22B573", "#7ee2a8"], azul: ["#388bfd66", "#79c0ff"], amarelo: ["#D29922", "#e3b341"] };
+      const rotulos = {
+        ACEITE_VALIDO: "aceite válido",
+        ACEITE_VALIDO_COM_RASCUNHO: "aceite válido · alteração não congelada",
+        ACEITE_INVALIDADO: "aceite invalidado",
+        CONGELADA_SEM_ACEITE: "congelada · sem aceite",
+        CONGELADA_DESATUALIZADA: "alteração não congelada",
+        SEM_OFERTA: "sem oferta congelada",
+        LEGADO_SEM_HASH: "fechada sem hash",
+        PONTEIRO_QUEBRADO: "ponteiro quebrado",
+        DESCONHECIDA: "situação desconhecida"
+      };
+      const c = cores[av.cor] || cores.azul;
+      return `<span class="badge" style="border-color:${c[0]};color:${c[1]}" title="${esc(av.titulo)}">${esc(rotulos[av.situacao] || av.situacao)}</span>`;
+    }
 
     // ---- datas da coluna "Próxima ação" -------------------------------------
     // Data_Proxima_Acao é Date only (volta "AAAA-MM-DDT00:00:00Z"): comparar via
@@ -184,6 +367,7 @@
           <td><span class="badge" style="border-color:${cor};color:${cor}">${esc(f.Etapa_Pipeline ?? "—")}</span></td>
           <td class="num">${EG.BRL(f.ValorTotal)}</td>
           <td>${esc(f.Status ?? "—")}</td>
+          <td>${badgeOferta(avaliar(p))}</td>
           <td>${esc(EG.fmtDate(f.DataValidade) ?? "—")}</td>
           <td>${esc(f.Responsavel_Principal ?? "—")}</td>
           <td>${esc(f.Proxima_Acao ?? "—")}</td>
@@ -216,18 +400,314 @@
       $("drawer").innerHTML = `
         <div class="drawer-head"><div class="t">${esc(f.Title ?? "(sem número)")}</div><button class="x" id="dc">Fechar ✕</button></div>
         <div class="drawer-body"><dl>${rows}</dl>
+          ${blocoOferta(p)}
           ${blocoEdicao(f)}
           <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
           <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
       $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      ligarOferta(p);
       ligarEdicao(p);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 
     /* ==================================================================
-       EDIÇÃO DE OPERAÇÃO — única escrita desta tela.
+       BLOCO DA OFERTA no drawer: faixa de situação, histórico append-only
+       e as duas ações. Nada aqui esconde opção: o que não pode ser feito
+       aparece DESABILITADO com o motivo escrito.
+       ================================================================== */
+    const CLASSE_FAIXA = { verde: "okinfo", azul: "publinfo", amarelo: "diverge" };
+    const ICONE_FAIXA = { verde: "✅", azul: "ℹ️", amarelo: "⚠️" };
+
+    function linhasHistorico(av) {
+      let h = "";
+      if (av.versoes && av.versoes.length) {
+        h += `<div class="grupo" style="margin-top:14px">Versões congeladas (append-only)</div><div class="hist">`;
+        h += av.versoes.map(v => {
+          const vf = v.fields || {};
+          const vigente = av.hashVigente && OFERTA.txt(vf.Hash_SHA256) === av.hashVigente;
+          return `<div class="l"><b>v${esc(vf.Numero_Versao)}</b>${vigente ? ` <span class="tag-vale">vigente</span>` : ""}
+            — ${esc(EG.fmtDate(vf.Congelada_Em) ?? "—")} por ${esc(vf.Congelada_Por ?? "—")}
+            ${vf.Valor_Total_Congelado != null ? " — " + EG.BRL(vf.Valor_Total_Congelado) : ""}
+            ${vf.Tarifa_Versao_Ref ? "<br>tarifa: " + esc(vf.Tarifa_Versao_Ref) : ""}
+            ${vf.Motivo_Congelamento ? "<br>motivo: " + esc(vf.Motivo_Congelamento) : ""}
+            <br><span class="sha" title="${esc(vf.Hash_SHA256 ?? "")}">sha256: ${esc(shaCurto(vf.Hash_SHA256))}</span></div>`;
+        }).join("");
+        h += `</div>`;
+      }
+      if (av.aceites && av.aceites.length) {
+        h += `<div class="grupo" style="margin-top:14px">Registros de aceite (append-only — nada é apagado)</div><div class="hist">`;
+        h += av.aceites.map(a => {
+          const af = a.fields || {};
+          // um aceite que não casa com o hash vigente continua VISÍVEL e
+          // legível: ele aconteceu. Só recebe a marca de que não vale mais.
+          const vale = av.hashVigente && OFERTA.txt(af.Hash_Aceito) === av.hashVigente;
+          return `<div class="l${vale ? "" : " morto"}"><b>v${esc(af.Versao_Aceita ?? "?")}</b>
+            ${vale ? `<span class="tag-vale">vale para a oferta vigente</span>` : `<span class="tag-inval">não vale mais — a oferta mudou depois deste aceite</span>`}
+            <br>${esc(EG.fmtDate(af.Aceito_Em) ?? "—")} — ${esc(af.Aceito_Por ?? "—")}${af.Meio_Registro ? " (" + esc(af.Meio_Registro) + ")" : ""}
+            ${af.Observacoes ? "<br>" + esc(af.Observacoes) : ""}
+            <br><span class="sha" title="${esc(af.Hash_Aceito ?? "")}">sha256 aceito: ${esc(shaCurto(af.Hash_Aceito))}</span></div>`;
+        }).join("");
+        h += `</div>`;
+      }
+      return h;
+    }
+
+    function blocoOferta(p) {
+      const av = avaliar(p);
+      const cls = CLASSE_FAIXA[av.cor] || "publinfo";
+      const ico = ICONE_FAIXA[av.cor] || "ℹ️";
+
+      const faixa = `<div class="${cls}">${ico} <b>${esc(av.titulo)}</b><br>${esc(av.detalhe)}</div>`;
+
+      const hashes = `<div class="l" style="border:0;padding-top:8px">
+        <span class="sha">conteúdo agora: ${esc(shaCurto(av.hashAtual) || "—")}</span>
+        ${av.hashVigente ? `<br><span class="sha">oferta vigente (v${esc(av.versaoVigente ?? "?")}): ${esc(shaCurto(av.hashVigente))}</span>` : ""}
+        ${av.hashAceito ? `<br><span class="sha">último aceite: ${esc(shaCurto(av.hashAceito))}</span>` : ""}
+      </div>`;
+
+      const opcoesMeio = (choiceAceite.Meio_Registro || [])
+        .map(o => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+
+      // Botões nunca somem: desabilitam com o motivo ao lado.
+      const acoes = `
+        <div class="ed-btns" style="margin-top:12px">
+          <button id="ofCongelar" class="sec"${av.podeCongelar ? "" : " disabled"}>
+            ${av.proximaVersao ? "Congelar oferta como v" + esc(av.proximaVersao) : "Congelar oferta"}</button>
+          <button id="ofAceite" class="sec"${av.podeAceitar ? "" : " disabled"}>Registrar aceite</button>
+        </div>
+        ${!av.podeCongelar && av.motivoNaoCongelar ? `<div class="motivo-off">Congelar indisponível: ${esc(av.motivoNaoCongelar)}</div>` : ""}
+        ${!av.podeAceitar && av.motivoNaoAceitar ? `<div class="motivo-off">Registrar aceite indisponível: ${esc(av.motivoNaoAceitar)}</div>` : ""}
+
+        <div id="ofFormCongelar" class="ed" hidden>
+          <label>Motivo do congelamento <textarea id="ofMotivo" placeholder="ex.: proposta revisada após visita técnica"></textarea></label>
+          <div class="ed-btns"><button id="ofCongelarOk">Congelar</button><button id="ofCongelarCancel" class="sec">Cancelar</button></div>
+        </div>
+
+        <div id="ofFormAceite" class="ed" hidden>
+          <label>Quem aceitou <input type="text" id="ofQuem" maxlength="255" placeholder="nome ou e-mail de quem aceitou" /></label>
+          <label>Meio do registro <select id="ofMeio">${opcoesMeio ? `<option value=""></option>` + opcoesMeio : ""}</select></label>
+          <label>Data do aceite <input type="date" id="ofQuando" /></label>
+          <label>Observações <textarea id="ofObs" placeholder="ex.: aceite por e-mail de 04/08, mensagem arquivada"></textarea></label>
+          <div class="ed-btns"><button id="ofAceiteOk">Registrar aceite</button><button id="ofAceiteCancel" class="sec">Cancelar</button></div>
+        </div>
+        <div id="ofMsg" class="ed-msg"></div>`;
+
+      return `<div class="grupo">Oferta versionada</div>${faixa}${hashes}${acoes}${linhasHistorico(av)}`;
+    }
+
+    function ligarOferta(p) {
+      const bC = $("ofCongelar"), bA = $("ofAceite");
+      if (!bC || !bA) return;
+      const fC = $("ofFormCongelar"), fA = $("ofFormAceite");
+      bC.onclick = () => { fC.hidden = false; fA.hidden = true; };
+      bA.onclick = () => { fA.hidden = false; fC.hidden = true; };
+      $("ofCongelarCancel").onclick = () => { fC.hidden = true; };
+      $("ofAceiteCancel").onclick = () => { fA.hidden = true; };
+      // default do campo de data: hoje (o aceite normalmente é registrado no dia)
+      const d = new Date(), pad = (n) => String(n).padStart(2, "0");
+      $("ofQuando").value = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+      if (choiceAceite.Meio_Registro == null) {
+        $("ofMeio").disabled = true;
+        $("ofMeio").title = "choices de Meio_Registro não carregados — recarregue a página";
+      }
+      $("ofCongelarOk").onclick = () => congelarOferta(p);
+      $("ofAceiteOk").onclick = () => registrarAceite(p);
+    }
+
+    const quemSou = () => {
+      try { return (EG.getAccount() || {}).username || "(desconhecido)"; }
+      catch { return "(desconhecido)"; }
+    };
+
+    // relê UMA proposta do servidor — nunca confiar no eco local
+    async function relerProposta(id) {
+      const sid = await EG.resolveSite();
+      return await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Propostas") + "/items/" + id + "?expand=fields");
+    }
+
+    /* ---- ESCRITA 1: congelar a versão vigente da oferta ------------------
+       Ordem deliberada (mesma de documentos-os.html): a linha do ledger
+       nasce PRIMEIRO; só depois de ela existir o ponteiro em Propostas é
+       movido por PATCH mínimo. Se o ponteiro falhar, a versão congelada
+       continua lá e a tela denuncia — o inverso perderia a prova. */
+    let gravandoOferta = false;
+    async function congelarOferta(p) {
+      if (gravandoOferta) return;
+      const msg = $("ofMsg");
+      try {
+        gravandoOferta = true;
+        $("ofCongelarOk").disabled = true;
+        msg.className = "ed-msg"; msg.textContent = "Relendo o conteúdo do servidor...";
+
+        // congela o que está GRAVADO, não o que está na tela
+        const fresco = await relerProposta(p.id);
+        const itensFrescos = await EG.listItems("ItensPropostas",
+          "expand=fields&$top=500&$filter=fields/PropostaLookupId eq " + Number(p.id)).catch(async () => {
+            // $filter em lookup exige cabeçalho especial em alguns tenants;
+            // se falhar, relê tudo e filtra localmente (base é pequena).
+            const todosItens = await EG.listItems("ItensPropostas");
+            return todosItens.filter(it => String((it.fields || {}).PropostaLookupId) === String(p.id));
+          });
+        const tarifasFrescas = await EG.listItems("Tarifas_Versoes").catch(() => tarifas);
+
+        const r = await OFERTA.hashOferta({
+          propostaId: p.id, fields: fresco.fields || {}, itens: itensFrescos, tarifas: tarifasFrescas
+        });
+
+        const n = OFERTA.proximaVersao(versoesOferta, p.id);
+        const chave = OFERTA.chaveVersao(p.id, n);
+        const ff = fresco.fields || {};
+        const campos = {
+          Title: chave,
+          PropostaLookupId: Number(p.id),
+          Numero_Versao: n,
+          Chave_Versao: chave,
+          Hash_SHA256: r.hash,
+          Manifesto_Canonico: r.manifesto,
+          Congelada_Em: new Date().toISOString(),
+          Congelada_Por: quemSou(),
+          Tarifa_Versao_Ref: r.tarifaRef,
+          Estado_Na_Epoca: ff.Etapa_Pipeline || ff.Status || "(sem estado)"
+        };
+        if (ff.ValorTotal != null) campos.Valor_Total_Congelado = Number(ff.ValorTotal);
+        const motivo = ($("ofMotivo").value || "").trim();
+        if (motivo) campos.Motivo_Congelamento = motivo;   // nunca gravar ""
+
+        msg.textContent = "Congelando v" + n + "...";
+        let versao;
+        try {
+          versao = await EG.createItem(OFERTA.LISTA_VERSOES, campos);
+        } catch (e) {
+          if (OFERTA.ehColisaoChave(e)) {
+            msg.className = "ed-msg err";
+            msg.textContent = "Congelamento concorrente: a v" + n + " já foi criada por outra pessoa/processo — recarregue os dados e tente de novo.";
+            $("ofCongelarOk").disabled = false;
+            return;
+          }
+          throw e;
+        }
+
+        // só agora o ponteiro de vigência
+        await EG.patchItemFields("Propostas", p.id, {
+          Oferta_Versao_Vigente: n,
+          Oferta_Hash_Vigente: r.hash,
+          Oferta_Congelada_Em: campos.Congelada_Em
+        });
+
+        // Verificação por releitura (B7): recomputa o SHA-256 sobre o
+        // manifesto RELIDO e compara com o hash relido. Divergência NÃO
+        // desfaz o congelamento — pede conferência humana.
+        let confere = false;
+        try {
+          const sid = await EG.resolveSite();
+          const relida = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent(OFERTA.LISTA_VERSOES) +
+            "/items/" + versao.id + "?expand=fields");
+          const rf = (relida || {}).fields || {};
+          confere = !!rf.Manifesto_Canonico && !!rf.Hash_SHA256 &&
+            (await OFERTA.sha256Hex(String(rf.Manifesto_Canonico))) === String(rf.Hash_SHA256);
+        } catch (eV) { console.warn("Falha ao reler/verificar a versão congelada:", eV.message); }
+
+        await carregar();
+        const atual = itemMap[p.id];
+        if (atual) openDrawer(atual);
+        if (confere) {
+          setStatus("Oferta congelada como v" + n + " — CONGELAMENTO_CONFIRMADO (sha256 " + r.hash.slice(0, 8) + ").");
+        } else {
+          setStatus("Oferta congelada como v" + n + ", MAS o manifesto relido NÃO confere com o SHA-256 gravado — " +
+                    "confira Manifesto_Canonico/Hash_SHA256 na versão (o congelamento NÃO foi desfeito).", "err");
+        }
+      } catch (e) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Falha ao congelar: " + e.message;
+        if ($("ofCongelarOk")) $("ofCongelarOk").disabled = false;
+      } finally { gravandoOferta = false; }
+    }
+
+    /* ---- ESCRITA 2: registrar o aceite ----------------------------------
+       Grava contra o hash VIGENTE, relido do servidor no instante do
+       registro — não contra o que a tela tinha em memória. Se alguém
+       congelou outra versão nesse meio-tempo, o aceite é abortado em vez
+       de ser registrado contra um hash que já não vale. */
+    async function registrarAceite(p) {
+      if (gravandoOferta) return;
+      const msg = $("ofMsg");
+      const quem = ($("ofQuem").value || "").trim();
+      if (!quem) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Informe quem aceitou — um aceite sem autor não registra nada.";
+        return;
+      }
+      try {
+        gravandoOferta = true;
+        $("ofAceiteOk").disabled = true;
+        msg.className = "ed-msg"; msg.textContent = "Conferindo a oferta vigente no servidor...";
+
+        const fresco = await relerProposta(p.id);
+        const ff = fresco.fields || {};
+        const hashVigente = OFERTA.txt(ff.Oferta_Hash_Vigente);
+        if (!hashVigente) {
+          msg.className = "ed-msg err";
+          msg.textContent = "Não há versão congelada da oferta no servidor — congele uma versão antes de registrar o aceite.";
+          $("ofAceiteOk").disabled = false;
+          return;
+        }
+        const esperado = (avaliar(p) || {}).hashVigente;
+        if (esperado && esperado !== hashVigente) {
+          msg.className = "ed-msg err";
+          msg.textContent = "A oferta vigente mudou enquanto esta tela estava aberta — recarregue os dados e confira a versão antes de registrar o aceite.";
+          $("ofAceiteOk").disabled = false;
+          return;
+        }
+
+        const quandoV = ($("ofQuando").value || "").trim();
+        const campos = {
+          Title: OFERTA.chaveAceite(p.id, hashVigente).slice(0, 255),
+          PropostaLookupId: Number(p.id),
+          Chave_Aceite: OFERTA.chaveAceite(p.id, hashVigente),
+          Hash_Aceito: hashVigente,
+          Aceito_Em: quandoV ? (quandoV + "T12:00:00Z") : new Date().toISOString(),
+          Aceito_Por: quem
+        };
+        if (ff.Oferta_Versao_Vigente != null) campos.Versao_Aceita = Number(ff.Oferta_Versao_Vigente);
+        const meio = ($("ofMeio").value || "").trim();
+        if (meio) campos.Meio_Registro = meio;             // nunca gravar ""
+        const obs = ($("ofObs").value || "").trim();
+        if (obs) campos.Observacoes = obs;
+
+        msg.textContent = "Registrando aceite...";
+        try {
+          await EG.createItem(OFERTA.LISTA_ACEITES, campos);
+        } catch (e) {
+          if (OFERTA.ehColisaoChave(e)) {
+            // idempotência: aceite deste MESMO conteúdo já registrado.
+            msg.className = "ed-msg";
+            msg.textContent = "Este aceite já estava registrado para esta versão da oferta (nada foi duplicado).";
+            await carregar();
+            const at = itemMap[p.id]; if (at) openDrawer(at);
+            return;
+          }
+          throw e;
+        }
+
+        await carregar();
+        const atual = itemMap[p.id];
+        if (atual) openDrawer(atual);
+        setStatus("Aceite registrado para a v" + (ff.Oferta_Versao_Vigente ?? "?") +
+                  " (sha256 " + hashVigente.slice(0, 8) + ") — vale só para esta versão da oferta.");
+      } catch (e) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Falha ao registrar o aceite: " + e.message;
+        if ($("ofAceiteOk")) $("ofAceiteOk").disabled = false;
+      } finally { gravandoOferta = false; }
+    }
+
+    /* ==================================================================
+       EDIÇÃO DE OPERAÇÃO — uma das TRÊS escritas desta tela (as outras
+       duas são congelarOferta e registrarAceite, acima). Nenhum dos campos
+       editáveis aqui entra no hash da oferta: trocar responsável ou
+       próxima ação NÃO invalida aceite nenhum, e isso é intencional.
        Mesmo padrão de os.html (blocoEdicao/ligarEdicao/salvarOS):
          - PATCH via EG.patchItemFields, SÓ com os campos alterados (dirty tracking);
          - releitura do servidor após gravar (nunca confiar no eco local);

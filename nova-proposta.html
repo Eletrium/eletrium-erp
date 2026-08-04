@@ -27,6 +27,14 @@
     OBRIGATÓRIOS (verificados via Get-PnPField em 29/07/2026):
       Propostas .......... Title, Cliente
       Orcamentos_Venda ... Title, Cliente, Origem_Demanda, Status_Orcamento
+
+    OFERTA VERSIONADA (item 5): esta tela NÃO congela oferta e NÃO grava
+      hash. Uma proposta nasce sem versão congelada de propósito — escopo e
+      tarifa ainda vão mudar várias vezes durante a elaboração, e congelar
+      cada rascunho encheria o ledger de versões que nunca foram ofertadas
+      a ninguém. Congelar é ato deliberado, feito em propostas.html quando
+      a oferta está pronta para ir ao cliente. Os campos Oferta_* têm dono
+      único: congelarOferta() em propostas.html.
     ==========================================================================
   -->
   <style>
@@ -397,7 +405,13 @@
         const id = novo && novo.id;
         $("okBox").innerHTML = "✅ Criado em <strong>" + esc(lista) + "</strong> — ID <strong>" + esc(id) + "</strong>, "
           + "canal <strong>" + esc(c.canal) + "</strong>" + (c.manual ? " (manual)" : " (derivado)") + ". "
-          + (tipo === "proposta" ? '<a href="propostas.html">ver em Propostas</a>' : '<a href="suprimentos.html">ver em Suprimentos</a>');
+          + (tipo === "proposta" ? '<a href="propostas.html">ver em Propostas</a>' : '<a href="suprimentos.html">ver em Suprimentos</a>')
+          // dito na hora: nasce sem oferta congelada, e por isso não há o que o cliente aceite ainda.
+          + (tipo === "proposta"
+              ? '<br><span style="color:#79c0ff;font-size:.84rem">A oferta ainda NÃO está congelada: '
+                + 'escopo e tarifa podem mudar livremente e não há versão para o cliente aceitar. '
+                + 'Congele a oferta em Propostas quando ela estiver pronta para ir ao cliente.</span>'
+              : "");
         $("okBox").hidden = false;
         setStatus("OK — item " + id + " criado.");
         ["titulo", "descricao", "vServico", "vMateriais", "vMat", "vSrv", "obs"].forEach(k => { if ($(k)) $(k).value = ""; });
