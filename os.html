@@ -176,6 +176,8 @@
     let equipeCarregada = false; // distingue "lista vazia" de "falha ao carregar OS_Equipe"
     let locaisCli = [], mapLocal = {};   // itens crus de Clientes_Locais (Parte 2 — locais de atendimento)
     let locaisCarregados = false;        // distingue "sem locais" de "falha ao carregar Clientes_Locais"
+    let exigencias = [];                 // itens crus de Servico_Ferramenta_Obrigatoria — MATRIZ DE EXIGÊNCIAS (6 eixos), SÓ LEITURA nesta tela
+    let exigenciasCarregadas = false;     // distingue "serviço sem exigência cadastrada" de "falha ao carregar a matriz" (o 2º trava o de acordo)
     let mapLoteMed = {};                 // OS_Medicoes_Lotes por id — SÓ LEITURA (resolve o Title do lote no motivo do botão Reabrir OS)
     let itensMedPorOS = {};              // OS_Medicoes_Itens (fields) por OSLookupId — FONTE CANÔNICA de "em lote" na decisão de reabertura
     let itensMedCarregados = false;      // distingue "sem itens" de "falha ao carregar OS_Medicoes_Itens" (falha ⇒ reabertura fail-closed)
@@ -351,7 +353,7 @@
         // As colunas entram na mesma leva para popular os selects de Choice DINAMICAMENTE
         // (Prioridade/Tipo_OS/Categoria — nada de rótulo hardcodado; Categoria é novo e mudaria por baixo).
         // Falha na leitura de colunas não derruba a tela: só desabilita os selects de Choice.
-        const [os, cli, tec, cols, eq, colsEq, loc, lts, its] = await Promise.all([
+        const [os, cli, tec, cols, eq, colsEq, loc, lts, its, exg] = await Promise.all([
           EG.listItems("OrdensDeServico"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
           // Valor_Hora_Contratado entra no $select: é a fonte do Valor_Hora_Snapshot
@@ -372,7 +374,12 @@
           // na decisão de reabertura (existência de item da OS). Falha não
           // derruba a tela, mas a reabertura fica BLOQUEADA fail-closed
           // (itensMedCarregados=false) — nunca liberar sem conseguir checar.
-          EG.listItems("OS_Medicoes_Itens").catch(e => { console.warn("Falha ao carregar OS_Medicoes_Itens:", e.message); return null; })
+          EG.listItems("OS_Medicoes_Itens").catch(e => { console.warn("Falha ao carregar OS_Medicoes_Itens:", e.message); return null; }),
+          // MATRIZ DE EXIGÊNCIAS (soft, SÓ LEITURA): o que o serviço da OS exige
+          // em cada eixo. Falha não derruba a tela, mas o "De acordo do líder"
+          // fica BLOQUEADO fail-closed (exigenciasCarregadas=false) — nunca
+          // atestar a equipe sem conseguir checar o que o serviço exige.
+          EG.listItems("Servico_Ferramenta_Obrigatoria").catch(e => { console.warn("Falha ao carregar Servico_Ferramenta_Obrigatoria:", e.message); return null; })
         ]);
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
         nomeTecnico = {}; tec.forEach(t => nomeTecnico[t.id] = t.fields && t.fields.Title);
@@ -395,6 +402,8 @@
           const k = String(fi.OSLookupId);
           (itensMedPorOS[k] = itensMedPorOS[k] || []).push(fi);
         });
+        exigenciasCarregadas = exg != null;
+        exigencias = exg || [];
         itemMap = {}; os.forEach(o => itemMap[o.id] = o);
         todas = os.slice().sort((a, b) => new Date(b.fields && b.fields.DataAbertura || 0) - new Date(a.fields && a.fields.DataAbertura || 0));
         indicadores(todas);
@@ -508,6 +517,7 @@
           ${blocoKM(f)}
           ${blocoFechamento(f)}
           ${blocoRetificacao(f, o.id)}
+          ${blocoExigencias()}
           ${blocoEquipe()}
           <div><a href="relatorio-os.html?os=${esc(o.id)}" target="_blank" rel="noopener" style="color:#58a6ff;font-size:.8rem;display:inline-block;margin-top:10px">📄 Relatório consolidado ↗</a></div>
         </div>`;
@@ -1710,6 +1720,9 @@
       // teste de aceite, ligado à mão em homologação e ausente em produção.
       payloadSnapshotFase1, payloadConclusaoFase2, conferirSnapshot,
       executarConclusaoDuasFases, manifestoCanonico, sha256Hex, hashVerificacao,
+      // MATRIZ DE EXIGÊNCIAS (6 eixos) — funções puras, sem rede nem DOM
+      exigenciasDoServico, avaliarFuncao, avaliarEvidencia, listarNaoAvaliaveis,
+      eixosDesconhecidos, faltasFuncao, funcoesDaEquipe, renderExigencias,
       // ASSÍNCRONA desde o B7 (o núcleo das duas fases é awaitado aqui dentro):
       // no console use `await OSR.assert()`. O console.log final continua saindo
       // sozinho e o objeto devolvido tem a MESMA forma de antes {ok,total,falhas}.
@@ -1839,7 +1852,82 @@
         // 25 — manifesto canônico é determinístico (a ordem das chaves não muda o hash)
         ok(manifestoCanonico({ b: 2, a: 1 }) === manifestoCanonico({ a: 1, b: 2 }),
           "manifesto: ordem de chaves diferente deveria produzir o MESMO texto canônico");
-        const r = { ok: falhas.length === 0, total: 25, falhas };
+        /* ---------- MATRIZ DE EXIGÊNCIAS (6 eixos) — casos 26..42 ---------- */
+        const TIPO = "Manutenção preventiva";
+        const MATRIZ = [
+          { fields: { Tipo_OS_Completo_Valor: TIPO, Eixo: "Função", Alvo_Codigo: "Eletricista", Exigencia: "Obrigatória", Quantidade_Minima: 2 } },
+          { fields: { Tipo_OS_Completo_Valor: TIPO, Eixo: "Função", Alvo_Codigo: "Ajudante", Exigencia: "Recomendada" } },
+          { fields: { Tipo_OS_Completo_Valor: TIPO, Eixo: "EPI", Alvo_Codigo: "EPI-CAP", Alvo_Rotulo: "Capacete", Exigencia: "Obrigatória" } },
+          { fields: { Tipo_OS_Completo_Valor: TIPO, Eixo: "Evidência", Alvo_Codigo: "Fotos_Evidencia", Exigencia: "Obrigatória", Quantidade_Minima: 2 } },
+          { fields: { Tipo_OS_Completo_Valor: TIPO, Alvo_Codigo: "FER-001", Exigencia: "Obrigatória" } },            // sem Eixo = default do servidor
+          { fields: { Tipo_OS_Completo_Valor: TIPO, Eixo: "Material", Alvo_Codigo: "PRD-9", Exigencia: "Recomendada", Ativo: false } }, // desativada
+          { fields: { Tipo_OS_Completo_Valor: "Manutenção corretiva", Eixo: "Função", Alvo_Codigo: "Eletricista", Exigencia: "Obrigatória" } } // outro serviço
+        ];
+        // 26 — filtra pelo serviço-âncora e não vaza exigência de outro tipo
+        const exs = exigenciasDoServico(MATRIZ, TIPO);
+        ok(exs.length === 5 && exs.every(e => e.Tipo_OS_Completo_Valor === TIPO),
+          "matriz: deveria trazer só as 5 linhas ATIVAS do serviço pedido");
+        // 27 — Ativo=false é excluída
+        ok(!exs.some(e => e.Alvo_Codigo === "PRD-9"), "matriz: linha com Ativo=false não deveria entrar");
+        // 28 — linha legada SEM o campo Ativo continua contando (não some do nada)
+        ok(exs.some(e => e.Alvo_Codigo === "FER-001"), "matriz: linha sem o campo Ativo deveria contar");
+        // 29 — OS sem tipo não inventa exigência
+        ok(exigenciasDoServico(MATRIZ, "").length === 0 && exigenciasDoServico(MATRIZ, null).length === 0,
+          "matriz: serviço vazio/nulo deveria devolver lista vazia");
+        // 30 — aceita item cru (sem .fields), como vem de teste/console
+        ok(exigenciasDoServico([{ Tipo_OS_Completo_Valor: TIPO, Eixo: "EPI", Alvo_Codigo: "X" }], TIPO).length === 1,
+          "matriz: deveria aceitar item já achatado, sem .fields");
+        // 31 — eixo Função: 1 eletricista para um mínimo de 2 NÃO atende
+        const av1 = avaliarFuncao(exs, ["Eletricista"]);
+        const el1 = av1.find(a => a.alvo === "Eletricista");
+        ok(el1 && el1.tem === 1 && el1.min === 2 && el1.atendida === false,
+          "função: 1 de 2 eletricistas deveria ficar NÃO atendida");
+        // 32 — atinge o mínimo e passa
+        const el2 = avaliarFuncao(exs, ["Eletricista", "Eletricista"]).find(a => a.alvo === "Eletricista");
+        ok(el2 && el2.tem === 2 && el2.atendida === true, "função: 2 de 2 deveria atender");
+        // 33 — sem Quantidade_Minima o mínimo é 1
+        const aj = avaliarFuncao(exs, ["Ajudante"]).find(a => a.alvo === "Ajudante");
+        ok(aj && aj.min === 1 && aj.atendida === true, "função: sem Quantidade_Minima o mínimo deveria ser 1");
+        // 34 — só OBRIGATÓRIA em falta bloqueia
+        ok(faltasFuncao(avaliarFuncao(exs, ["Eletricista", "Eletricista"])).length === 0,
+          "faltas: recomendada ausente NÃO deveria bloquear");
+        // 35 — obrigatória em falta bloqueia e diz quanto falta
+        const fl = faltasFuncao(avaliarFuncao(exs, []));
+        ok(fl.length === 1 && fl[0].indexOf("Eletricista") > -1 && fl[0].indexOf("0 de 2") > -1,
+          "faltas: obrigatória em falta deveria bloquear citando 0 de 2");
+        // 36 — evidência avaliável: 1 foto para um mínimo de 2 não atende
+        const ev1 = avaliarEvidencia(exs, { Fotos_Evidencia: "https://a/1.jpg" })[0];
+        ok(ev1 && ev1.avaliavel === true && ev1.tem === 1 && ev1.atendida === false,
+          "evidência: 1 foto de 2 mínimas deveria ficar não atendida");
+        // 37 — evidência atendida com as 2 fotos
+        const ev2 = avaliarEvidencia(exs, { Fotos_Evidencia: "https://a/1.jpg\nhttps://a/2.jpg" })[0];
+        ok(ev2 && ev2.tem === 2 && ev2.atendida === true, "evidência: 2 fotos deveriam atender");
+        // 38 — alvo de evidência que esta tela não lê é NÃO AVALIÁVEL (nunca "atendido")
+        const evX = avaliarEvidencia([{ Eixo: "Evidência", Alvo_Codigo: "Campo_Inexistente", Exigencia: "Obrigatória" }], {})[0];
+        ok(evX && evX.avaliavel === false && evX.atendida === false,
+          "evidência: alvo desconhecido deveria ser não avaliável e NUNCA atendido");
+        // 39 — EPI/Ferramenta/Material entram como não avaliáveis, e Eixo em
+        //      branco é tratado como Ferramenta (o default que o servidor grava)
+        const na = listarNaoAvaliaveis(exs);
+        ok(na.length === 2 && na.every(a => a.avaliavel === false) &&
+           na.some(a => a.eixo === "EPI") && na.some(a => a.eixo === "Ferramenta" && a.alvo === "FER-001"),
+          "não avaliáveis: EPI + linha sem Eixo (default Ferramenta) deveriam aparecer sem veredito");
+        // 40 — buraco do Choice (servidor grava valor fora da lista): vira aviso
+        ok(eixosDesconhecidos([{ Eixo: "EixoInexistente" }, { Eixo: "EPI" }]).join() === "EixoInexistente",
+          "choice: eixo fora da lista deveria ser denunciado, não ignorado");
+        // 41 — sem lixo, nenhum aviso
+        ok(eixosDesconhecidos(exs).length === 0, "choice: matriz válida não deveria gerar aviso");
+        // 42 — equipe de OUTRA OS não conta para o eixo Função desta OS
+        const EQ = [
+          { fields: { OSLookupId: 5, Funcao: "Eletricista" } },
+          { fields: { OSLookupId: 5, Funcao: "Eletricista" } },
+          { fields: { OSLookupId: 9, Funcao: "Eletricista" } }
+        ];
+        ok(funcoesDaEquipe(EQ, 5).length === 2 && faltasFuncao(avaliarFuncao(exs, funcoesDaEquipe(EQ, 5))).length === 0 &&
+           faltasFuncao(avaliarFuncao(exs, funcoesDaEquipe(EQ, 9))).length === 1,
+          "equipe: só as linhas da OS corrente deveriam contar no eixo Função");
+
+        const r = { ok: falhas.length === 0, total: 42, falhas };
         console.log("OSR.assert:", JSON.stringify(r));
         return r;
       }
@@ -1938,6 +2026,170 @@
     }
 
     /* ==================================================================
+       MATRIZ DE EXIGÊNCIAS — o que o SERVIÇO da OS exige (6 eixos)
+
+       Fonte: lista Servico_Ferramenta_Obrigatoria, estendida do par
+       serviço×ferramenta para um eixo genérico (Eixo: Função | EPI |
+       Ferramenta | Material | Evidência). O eixo-âncora continua sendo
+       Tipo_OS_Completo_Valor — uma leitura só devolve TODOS os eixos.
+
+       Esta tela é SÓ LEITURA da matriz: quem cadastra exigência de
+       ferramenta é ferramental.html (linhas sem Eixo, que o SERVIDOR
+       preenche com o default "Ferramenta" — provado empiricamente).
+
+       APONTA PARA A RAIZ ESTÁVEL: Alvo_Codigo guarda o Codigo_Interno do
+       catálogo (Ferramentas_Catalogo/Produtos), NUNCA o id da revisão —
+       senão a exigência quebraria a cada revisão do item versionado.
+
+       O QUE É AVALIADO AQUI (e o que não é):
+        - Função  → avaliado contra OS_Equipe (esta tela é dona da equipe);
+        - Evidência → avaliado só quando Alvo_Codigo nomeia um campo da OS
+          que esta tela já lê (Fotos_Evidencia / Laudo_URL / Assinatura_URL);
+        - EPI / Ferramenta / Material → EXIBIDOS, não avaliados: esta tela
+          não tem o dado de consumo/uso real. Marcar como "atendido" sem
+          dado seria mentir — aparecem como "não verificável aqui".
+
+       NÃO TOCA nos 4 pré-requisitos de conclusão nem na trava do snapshot.
+       ================================================================== */
+    const EIXOS_EXIGENCIA = ["Função", "EPI", "Ferramenta", "Material", "Evidência"];
+
+    // campos de evidência que ESTA tela já lê — mapeia Alvo_Codigo → contagem
+    const CAMPOS_EVIDENCIA_OS = {
+      Fotos_Evidencia: (f) => contarFotos(f.Fotos_Evidencia),
+      Laudo_URL: (f) => (temTexto(f.Laudo_URL) ? 1 : 0),
+      Assinatura_URL: (f) => (temTexto(f.Assinatura_URL) ? 1 : 0)
+    };
+
+    // linhas da matriz que valem para este serviço. Ativo !== false: linha
+    // antiga (criada antes da coluna Ativo existir) vem sem o campo e CONTA.
+    function exigenciasDoServico(linhas, tipo) {
+      if (!temTexto(tipo)) return [];
+      return (linhas || [])
+        .map(r => (r && r.fields) ? r.fields : r)
+        .filter(f => f && f.Tipo_OS_Completo_Valor === tipo && f.Ativo !== false);
+    }
+
+    const minExigido = (e) => (ehNumOS(e.Quantidade_Minima) && Number(e.Quantidade_Minima) > 0)
+      ? Number(e.Quantidade_Minima) : 1;
+    const ehObrigatoria = (e) => e.Exigencia === "Obrigatória";
+    const rotuloAlvo = (e) => temTexto(e.Alvo_Rotulo) ? e.Alvo_Rotulo : (e.Alvo_Codigo || "(alvo não nomeado)");
+
+    // eixo FUNÇÃO × composição real da equipe (OS_Equipe.Funcao)
+    function avaliarFuncao(exs, funcoesEquipe) {
+      const conta = {};
+      (funcoesEquipe || []).forEach(fn => { if (temTexto(fn)) conta[fn] = (conta[fn] || 0) + 1; });
+      return (exs || []).filter(e => e.Eixo === "Função").map(e => {
+        const min = minExigido(e), tem = conta[e.Alvo_Codigo] || 0;
+        return {
+          eixo: "Função", alvo: e.Alvo_Codigo || "", rotulo: rotuloAlvo(e), min, tem,
+          obrigatoria: ehObrigatoria(e), avaliavel: true, atendida: tem >= min, condicao: e.Condicao || ""
+        };
+      });
+    }
+
+    // eixo EVIDÊNCIA × campos da própria OS (só os que esta tela lê)
+    function avaliarEvidencia(exs, f) {
+      return (exs || []).filter(e => e.Eixo === "Evidência").map(e => {
+        const min = minExigido(e), fn = CAMPOS_EVIDENCIA_OS[e.Alvo_Codigo];
+        const tem = fn ? fn(f || {}) : null;
+        return {
+          eixo: "Evidência", alvo: e.Alvo_Codigo || "", rotulo: rotuloAlvo(e), min, tem,
+          obrigatoria: ehObrigatoria(e), avaliavel: tem !== null,
+          atendida: tem !== null && tem >= min, condicao: e.Condicao || ""
+        };
+      });
+    }
+
+    // eixos exibidos sem avaliação (esta tela não tem o dado de uso real)
+    function listarNaoAvaliaveis(exs) {
+      return (exs || []).filter(e => ["EPI", "Ferramenta", "Material"].indexOf(e.Eixo) > -1 ||
+                                     (!temTexto(e.Eixo)))
+        .map(e => ({
+          eixo: temTexto(e.Eixo) ? e.Eixo : "Ferramenta", alvo: e.Alvo_Codigo || "", rotulo: rotuloAlvo(e),
+          min: minExigido(e), tem: null, obrigatoria: ehObrigatoria(e), avaliavel: false,
+          atendida: false, condicao: e.Condicao || ""
+        }));
+    }
+
+    // BURACO CONHECIDO (prova P11 / P7): o SharePoint GRAVA Choice fora da
+    // lista. Na leitura, um Eixo desconhecido NÃO pode ser silenciosamente
+    // ignorado — vira aviso na tela em vez de exigência que some.
+    function eixosDesconhecidos(exs) {
+      const vistos = {};
+      (exs || []).forEach(e => {
+        if (temTexto(e.Eixo) && EIXOS_EXIGENCIA.indexOf(e.Eixo) < 0) vistos[e.Eixo] = true;
+      });
+      return Object.keys(vistos);
+    }
+
+    // faltas que BLOQUEIAM o de acordo do líder: só o eixo Função, só as
+    // obrigatórias. Recomendada nunca bloqueia — só aparece.
+    function faltasFuncao(avaliacoes) {
+      return (avaliacoes || [])
+        .filter(a => a.obrigatoria && !a.atendida)
+        .map(a => a.rotulo + " (" + a.tem + " de " + a.min + ")");
+    }
+
+    // funções da equipe DESTA OS — entrada do eixo Função
+    function funcoesDaEquipe(linhasEquipe, osId) {
+      return (linhasEquipe || [])
+        .filter(r => String((r.fields || {}).OSLookupId ?? "") === String(osId))
+        .map(r => (r.fields || {}).Funcao);
+    }
+
+    function blocoExigencias() {
+      return `
+        <div class="grupo">Exigências do serviço</div>
+        <div id="exgLista"></div>`;
+    }
+
+    // `estado` é o ponto de injeção do teste (homologação sem login): em
+    // produção NINGUÉM passa o 2º argumento e vale o estado do módulo.
+    function renderExigencias(o, estado) {
+      const st = estado || { linhas: exigencias, carregadas: exigenciasCarregadas, equipe: equipe };
+      const cont = $("exgLista");
+      if (!cont) return;
+      const f = o.fields || {};
+      if (!st.carregadas) {
+        cont.innerHTML = '<div class="ed-msg err">Matriz de exigências não carregou — o “De acordo do líder” fica bloqueado até recarregar (não se atesta equipe sem poder conferir o que o serviço exige).</div>';
+        return;
+      }
+      if (!temTexto(f.Tipo_OS_Completo)) {
+        cont.innerHTML = '<div class="ed-msg">OS sem Tipo (completo) — sem o tipo do serviço não há como determinar exigências.</div>';
+        return;
+      }
+      const exs = exigenciasDoServico(st.linhas, f.Tipo_OS_Completo);
+      if (!exs.length) {
+        cont.innerHTML = '<div class="ed-msg">Nenhuma exigência cadastrada para “' + esc(f.Tipo_OS_Completo) +
+          '” — nada é exigido. Cadastre em ferramental.html (eixo ferramenta) ou direto na lista Servico_Ferramenta_Obrigatoria.</div>';
+        return;
+      }
+      const avFunc = avaliarFuncao(exs, funcoesDaEquipe(st.equipe, o.id));
+      const avEvid = avaliarEvidencia(exs, f);
+      const naoAval = listarNaoAvaliaveis(exs);
+      const desconhecidos = eixosDesconhecidos(exs);
+
+      const item = (a) => {
+        const marca = !a.avaliavel ? "•" : (a.atendida ? "✔" : "✘");
+        const cls = !a.avaliavel ? "" : (a.atendida ? "ok" : "falta");
+        const cont1 = a.avaliavel ? " — " + a.tem + " de " + a.min : " — não verificável nesta tela";
+        const forca = a.obrigatoria ? "obrigatória" : "recomendada";
+        return `<li class="${cls}">${marca} <strong>${esc(a.eixo)}</strong>: ${esc(a.rotulo)}${esc(cont1)} <span class="ro">(${forca})</span>${a.condicao ? " <span class='ro'>" + esc(a.condicao) + "</span>" : ""}</li>`;
+      };
+      const faltas = faltasFuncao(avFunc);
+      cont.innerHTML =
+        (desconhecidos.length
+          ? '<div class="ed-msg err">Eixo(s) fora da lista de choices: ' + esc(desconhecidos.join(", ")) +
+            ' — o servidor aceita Choice inválido; corrija a linha na lista.</div>'
+          : "") +
+        '<ul class="chk">' + avFunc.map(item).join("") + avEvid.map(item).join("") + naoAval.map(item).join("") + "</ul>" +
+        (faltas.length
+          ? '<div class="ed-msg err">Equipe não atende ao serviço: ' + esc(faltas.join("; ")) +
+            '. O “De acordo do líder” está bloqueado até a equipe cumprir o exigido.</div>'
+          : '<div class="ed-msg">Composição de equipe compatível com o serviço.</div>');
+    }
+
+    /* ==================================================================
        FRENTE C — EQUIPE DA OS (lista OS_Equipe — entrada individual)
 
        GATILHO FINANCEIRO: Elegivel_Financeiro = Selfie_URL preenchida E
@@ -1971,6 +2223,10 @@
     }
 
     function renderEquipe(o) {
+      // a matriz reavalia junto: mudar a composição da equipe muda o
+      // atendimento do eixo Função. Fica ANTES do early-return de equipe
+      // vazia — é justamente aí que a exigência costuma estar em falta.
+      renderExigencias(o);
       const cont = $("eqLista");
       if (!cont) return;
       const linhas = equipe.filter(r => String((r.fields || {}).OSLookupId ?? "") === String(o.id));
@@ -2137,6 +2393,28 @@
       const msg = q("Msg");
       const f = r.fields || {};
       if (f.De_Acordo_Lider === true) { msg.className = "ed-msg"; msg.textContent = "De acordo já registrado."; return; }
+
+      /* TRAVA DA MATRIZ (eixo Função) — ÚNICO ponto de imposição desta
+         entrega. O "de acordo" é o momento em que o líder ATESTA a equipe:
+         atestar equipe que não cumpre o que o serviço exige é exatamente o
+         que a matriz existe para impedir. Escolhido por ser domínio próprio
+         desta tela (OS_Equipe) — NÃO mexe nos 4 pré-requisitos de conclusão
+         nem na trava do snapshot. Botão segue visível: recusa com motivo.  */
+      const fOS = o.fields || {};
+      if (!exigenciasCarregadas) {  // fail-closed: sem poder conferir, não atesta
+        msg.className = "ed-msg err";
+        msg.textContent = "Matriz de exigências não carregou — de acordo bloqueado (não se atesta equipe sem conferir o que o serviço exige). Recarregue a página.";
+        return;
+      }
+      const faltasEq = faltasFuncao(avaliarFuncao(
+        exigenciasDoServico(exigencias, fOS.Tipo_OS_Completo), funcoesDaEquipe(equipe, o.id)));
+      if (faltasEq.length) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Equipe não atende ao serviço “" + (fOS.Tipo_OS_Completo || "—") + "”: " +
+          faltasEq.join("; ") + ". Ajuste a equipe antes do de acordo.";
+        return;
+      }
+
       const nome = f.TecnicoLookupId != null ? (nomeTecnico[f.TecnicoLookupId] || ("técnico #" + f.TecnicoLookupId)) : (f.Title || r.id);
       try {
         eqOcupado = true;
