@@ -141,6 +141,7 @@
     let equipeCarregada = false; // distingue "lista vazia" de "falha ao carregar OS_Equipe"
     let locaisCli = [], mapLocal = {};   // itens crus de Clientes_Locais (Parte 2 — locais de atendimento)
     let locaisCarregados = false;        // distingue "sem locais" de "falha ao carregar Clientes_Locais"
+    let mapLoteMed = {};                 // OS_Medicoes_Lotes por id — SÓ LEITURA (resolve o Title do lote no botão Reabrir OS)
 
     /* =================================================================
        DONO DE CAMPO — OrdensDeServico é reescrita pelo cenário Make "1A"
@@ -180,6 +181,18 @@
          Local_AtendimentoLookupId (lookup p/ Clientes_Locais — só o editor
            da OS grava; Parte 2 da Onda 2),
          Estado_Operacional (B4 — ver o mapa dos 4 estados logo abaixo).
+
+       NOVOS (Reabertura de OS — regra dos DOIS ESTADOS por situação de lote):
+         Trilha_Reaberturas (Note, APPEND-ONLY — nunca sobrescrever, só
+           acrescentar linha) ........ ESTA TELA (reabrirOS);
+         Medicao_Situacao_Lote (Choice "Sem lote"|"Em lote") — DOIS escritores
+           com valores disjuntos: ESTA TELA grava SÓ "Sem lote" (junto do
+           PATCH de concluirOS — a OS acabou de concluir, não está em lote);
+           medicao.html grava SÓ "Em lote" no fechar-lote. VAZIO (legado) é
+           LIDO como "Em lote" (restritivo) até marcação explícita;
+         Medicao_Lote (lookup p/ OS_Medicoes_Lotes) — escritor é medicao.html
+           no fechar-lote; aqui é SÓ LEITURA (resolve o Title do lote no
+           motivo do botão "Reabrir OS").
 
        B4 — 4 ESTADOS INDEPENDENTES da OS (mesmo padrão dos 3 status
        ortogonais do CRM: CADA TELA ESCREVE SÓ O SEU, com comentário de dono
@@ -260,15 +273,21 @@
     $("btnLoad").onclick = async () => {
       try {
         setStatus("Carregando ordens de serviço...");
-        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
-        EG.validarChoices("OrdensDeServico", "Status", STATUS_OS)
+        // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
+        // travarChoices (e não só validarChoices): esta tela GRAVA Status
+        // ("Concluída" no concluir, "Em Andamento" na reabertura) — divergência
+        // de rótulo vira bloqueio fail-closed do PATCH, não só aviso.
+        EG.travarChoices("OrdensDeServico", "Status", STATUS_OS)
           .then(v => EG.renderAvisoChoices($("choiceWarn"), v, "Status de OS"))
           .catch(() => {});
+        // Medicao_Situacao_Lote também é gravado aqui ("Sem lote" no concluir) —
+        // mesma trava fail-closed; sem render (os 2 valores são a regra inteira).
+        EG.travarChoices("OrdensDeServico", "Medicao_Situacao_Lote", ["Sem lote", "Em lote"]).catch(() => {});
         // lookups voltam do Graph como ClienteLookupId / TecnicoLookupId — resolvemos o nome pelo join local.
         // As colunas entram na mesma leva para popular os selects de Choice DINAMICAMENTE
         // (Prioridade/Tipo_OS/Categoria — nada de rótulo hardcodado; Categoria é novo e mudaria por baixo).
         // Falha na leitura de colunas não derruba a tela: só desabilita os selects de Choice.
-        const [os, cli, tec, cols, eq, colsEq, loc] = await Promise.all([
+        const [os, cli, tec, cols, eq, colsEq, loc, lts] = await Promise.all([
           EG.listItems("OrdensDeServico"),
           EG.listItems("Clientes", "expand=fields($select=Title)&$top=500"),
           // Valor_Hora_Contratado entra no $select: é a fonte do Valor_Hora_Snapshot
@@ -280,7 +299,11 @@
           EG.listColumns("OS_Equipe").catch(e => { console.warn("Falha ao ler colunas de OS_Equipe:", e.message); return []; }),
           // Parte 2 — Clientes_Locais (soft): falha não derruba a tela, só
           // desabilita o select "Local de atendimento" do editor.
-          EG.listItems("Clientes_Locais").catch(e => { console.warn("Falha ao carregar Clientes_Locais:", e.message); return null; })
+          EG.listItems("Clientes_Locais").catch(e => { console.warn("Falha ao carregar Clientes_Locais:", e.message); return null; }),
+          // Reabertura — OS_Medicoes_Lotes (soft, SÓ LEITURA): resolve o Title
+          // do lote no motivo do botão "Reabrir OS"; falha não derruba a tela
+          // (o motivo cai no fallback "lote #id").
+          EG.listItems("OS_Medicoes_Lotes").catch(e => { console.warn("Falha ao carregar OS_Medicoes_Lotes:", e.message); return null; })
         ]);
         nomeCliente = {}; cli.forEach(c => nomeCliente[c.id] = c.fields && c.fields.Title);
         nomeTecnico = {}; tec.forEach(t => nomeTecnico[t.id] = t.fields && t.fields.Title);
@@ -294,6 +317,7 @@
         locaisCarregados = loc != null;
         locaisCli = loc || [];
         mapLocal = {}; locaisCli.forEach(l => { mapLocal[String(l.id)] = l; });
+        mapLoteMed = {}; (lts || []).forEach(l => { mapLoteMed[String(l.id)] = l; });
         itemMap = {}; os.forEach(o => itemMap[o.id] = o);
         todas = os.slice().sort((a, b) => new Date(b.fields && b.fields.DataAbertura || 0) - new Date(a.fields && a.fields.DataAbertura || 0));
         indicadores(todas);
@@ -1225,6 +1249,16 @@
           // B4 — DONO: Estado_Operacional é DESTA tela (1º check-in + aqui).
           // "Concluído" vai junto do mesmo PATCH da conclusão — nunca sozinho.
           Estado_Operacional: "Concluído",
+          // Reabertura (dois estados) — DONO: a OS acabou de concluir e ainda
+          // não está em lote nenhum; ESTA escrita torna a situação conhecida
+          // ("Sem lote" = reabertura direta permitida). "Em lote" é gravado SÓ
+          // por medicao.html no fechar-lote. OSs legadas (campo vazio) seguem
+          // lidas como "Em lote" (restritivo) até marcação explícita.
+          // NOTA reconclusão: este fluxo roda por inteiro de novo após uma
+          // reabertura — manifesto/SHA-256/Snapshot_Confirmado_Em são sempre
+          // REGERADOS (não há guarda "já tem snapshot, pula") e re-verificados
+          // na releitura abaixo.
+          Medicao_Situacao_Lote: "Sem lote",
           Snapshot_Manifesto: manifesto,
           Snapshot_SHA256: sha,
           Snapshot_Confirmado_Em: agora
@@ -1255,23 +1289,98 @@
     }
 
     /* ==================================================================
-       C6 — RETIFICAÇÃO POR OS FILHA
-       OS com Status="Concluída" é IMUTÁVEL (trava server-side; NÃO existe
-       reabertura). Correção = OS FILHA nova ("RETIF-<Title>") apontando para
-       a origem via Origem_OSLookupId, com Motivo_Retorno OBRIGATÓRIO.
+       C6 — RETIFICAÇÃO POR OS FILHA + REABERTURA PELO GESTOR (dois estados)
+       A regra da OS concluída passa a ser discriminada por
+       Medicao_Situacao_Lote (aprovada pelo dono):
+         "Sem lote" ..... o gestor PODE reabrir direto (reabrirOS abaixo):
+                          Status volta a "Em Andamento", snapshot é invalidado
+                          (Snapshot_Confirmado_Em: null) e a Trilha_Reaberturas
+                          recebe linha append-only com quem/quando/motivo/hash.
+         "Em lote" ...... o lastro de pagamento está CONGELADO no lote de
+                          medição (Calculation_JSON/Espelho) — a OS segue
+                          IMUTÁVEL; correção SÓ por OS filha (fluxo abaixo).
+         VAZIO (legado) . tratado como "Em lote" (restritivo) até marcação
+                          explícita — cuidado nº 2 do dono.
+       EXIGÊNCIA DE UI: o botão "Reabrir OS" NUNCA some — quando não
+       aplicável fica DESABILITADO com o motivo visível ("sumiço vira
+       mistério; desabilitado com motivo vira instrução").
+       Retificação (inalterada): OS FILHA nova ("RETIF-<Title>") apontando
+       para a origem via Origem_OSLookupId, com Motivo_Retorno OBRIGATÓRIO.
        Idempotente por Operation_ID="RETIF-<id original>" (Text ÚNICO no
        SharePoint): segunda tentativa falha na unicidade → tratada como
        "já existe" e mostramos o número da retificação existente.
        SEM Status no create (dono do campo é o 1A — fica o default da lista).
        ================================================================== */
+    // resolve o Title do lote pelos itens carregados de OS_Medicoes_Lotes
+    // (SÓ LEITURA); null quando não carregado/não achado — o chamador faz
+    // o fallback "lote #id".
+    const tituloLoteMed = (id) => {
+      const l = mapLoteMed[String(id)];
+      return (l && (l.fields || {}).Title) || null;
+    };
+
+    // FUNÇÃO PURA (testável via window.OSR) — decide o estado do botão
+    // "Reabrir OS" nos 3 casos da regra. `resolverTituloLote` é injetado
+    // (id -> Title|null) para a função não depender de estado global.
+    function decidirReabertura(f, resolverTituloLote) {
+      const sit = (f || {}).Medicao_Situacao_Lote;
+      if (sit === "Sem lote") return { habilitado: true, motivo: "" };
+      if (sit === "Em lote") {
+        const id = (f || {}).Medicao_LoteLookupId;
+        const titulo = id != null
+          ? ((resolverTituloLote ? resolverTituloLote(id) : null) || ("lote #" + id))
+          : "de medição (vínculo não registrado)";
+        return { habilitado: false, motivo: "esta OS já está no lote " + titulo + "; use Criar OS de correção" };
+      }
+      // vazio/legado (ou valor desconhecido) — restritivo por segurança
+      return { habilitado: false, motivo: "sem vínculo de lote registrado — tratada como em lote por segurança; marque a situação de lote para habilitar" };
+    }
+
+    // FUNÇÃO PURA — linha append-only da Trilha_Reaberturas: ISO-timestamp,
+    // quem (nome/email do gestor logado), motivo e o REGISTRO do snapshot
+    // invalidado (o hash antigo permanece nos campos como histórico até a
+    // reconclusão sobrescrever; a trilha guarda a referência).
+    function linhaTrilhaReabertura(ev) {
+      const quem = ((ev || {}).nome || "(usuário não identificado)") + (ev && ev.email ? " (" + ev.email + ")" : "");
+      const snap = (ev && temTexto(ev.shaAnterior))
+        ? "snapshot anterior invalidado: " + String(ev.shaAnterior)
+        : "sem snapshot anterior registrado";
+      return "[" + (ev || {}).quando + "] REABERTURA por " + quem + " — motivo: " + (ev || {}).motivo + " — " + snap;
+    }
+
+    // FUNÇÃO PURA — PATCH mínimo da reabertura (e nada além dele):
+    //   Status: "Em Andamento" — rótulo EXATO do Choice (está em STATUS_OS,
+    //     validado/travado por EG.travarChoices no carregamento);
+    //   Trilha_Reaberturas: APPEND (conteúdo anterior + \n + linha nova) —
+    //     nunca sobrescreve; nunca grava "" (motivo é obrigatório);
+    //   Snapshot_Confirmado_Em: null — limpeza INTENCIONAL (invalida a
+    //     confirmação do snapshot; Snapshot_Manifesto/Snapshot_SHA256 NÃO são
+    //     apagados: ficam como histórico até a reconclusão regenerar ambos).
+    function payloadReabertura(f, linha) {
+      return {
+        Status: "Em Andamento",
+        Trilha_Reaberturas: temTexto((f || {}).Trilha_Reaberturas)
+          ? String(f.Trilha_Reaberturas) + "\n" + linha
+          : linha,
+        Snapshot_Confirmado_Em: null // limpeza intencional — ver comentário acima
+      };
+    }
+
     function blocoRetificacao(f) {
       if (f.Status !== "Concluída") return "";
+      const dec = decidirReabertura(f, tituloLoteMed);
       return `
         <div class="grupo">Retificação</div>
-        <div class="ed-msg" style="margin-top:6px">Esta OS está concluída e é IMUTÁVEL
-          (trava server-side — não há reabertura). Para corrigir qualquer coisa,
-          crie uma OS de correção encadeada a esta.</div>
-        <button id="rtfToggle" class="sec" style="margin-top:8px">Criar OS de correção</button>
+        <div class="ed-msg" style="margin-top:6px">Esta OS está concluída. A reabertura
+          segue a situação de lote: “Sem lote” → o gestor pode reabrir direto (botão
+          abaixo); “Em lote” (ou sem situação registrada — legado) → o lastro de
+          pagamento está congelado no lote de medição e a OS é IMUTÁVEL
+          (trava server-side) — correção só por OS de correção encadeada a esta.</div>
+        <div class="ed-btns" style="margin-top:8px">
+          <button id="rtfToggle" class="sec">Criar OS de correção</button>
+          <button id="reabToggle" class="sec" ${dec.habilitado ? "" : `disabled title="${esc(dec.motivo)}"`}>Reabrir OS</button>
+        </div>
+        ${dec.habilitado ? "" : `<div class="ed-msg" style="margin-top:4px">Reabrir OS desabilitado: ${esc(dec.motivo)}.</div>`}
         <div id="rtfForm" class="ed" hidden>
           <label>Motivo da correção (obrigatório) <textarea id="rtfMotivo"></textarea></label>
           <div class="ed-btns">
@@ -1279,7 +1388,15 @@
             <button id="rtfCancelar" class="sec">Cancelar</button>
           </div>
         </div>
-        <div id="rtfMsg" class="ed-msg"></div>`;
+        <div id="rtfMsg" class="ed-msg"></div>
+        <div id="reabForm" class="ed" hidden>
+          <label>Motivo da reabertura (obrigatório) <textarea id="reabMotivo"></textarea></label>
+          <div class="ed-btns">
+            <button id="reabConfirmar">Reabrir OS (Status volta a “Em Andamento”)</button>
+            <button id="reabCancelar" class="sec">Cancelar</button>
+          </div>
+        </div>
+        <div id="reabMsg" class="ed-msg"></div>`;
     }
 
     function ligarRetificacao(o) {
@@ -1288,7 +1405,106 @@
       tg.onclick = () => { $("rtfForm").hidden = false; tg.hidden = true; };
       $("rtfCancelar").onclick = () => { $("rtfForm").hidden = true; tg.hidden = false; };
       $("rtfCriar").onclick = () => criarRetificacao(o);
+      // Reabertura — o botão desabilitado (Em lote/legado) não ganha handler:
+      // a explicação visível ao lado é a instrução. Habilitado só em "Sem lote".
+      const rb = $("reabToggle");
+      if (rb && !rb.disabled) {
+        rb.onclick = () => { $("reabForm").hidden = false; rb.disabled = true; };
+        $("reabCancelar").onclick = () => { $("reabForm").hidden = true; rb.disabled = false; };
+        $("reabConfirmar").onclick = () => reabrirOS(o);
+      }
     }
+
+    /* Reabertura pelo gestor (só "Sem lote") — PATCH mínimo + releitura.
+       *** CONFLITO DE DONO DE CAMPO *** Status pertence ao 1A (CAMPOS_1A),
+       mesma exceção controlada do concluirOS/Frente B: escrita explícita,
+       segura só porque o 1A está PAUSADO. NÃO remova Status de CAMPOS_1A.
+       Idempotência: reabertura é evento raro e o PATCH é naturalmente
+       idempotente — re-clique com a OS já reaberta nem chega aqui (a seção
+       Retificação some quando Status≠"Concluída"); sem Operation_ID. */
+    let reabOcupado = false;
+    async function reabrirOS(o) {
+      if (reabOcupado) return;
+      const msg = $("reabMsg");
+      const f = o.fields || {};
+      // revalida a regra dos dois estados com o estado em memória — o drawer
+      // pode ter sido montado antes de o lote entrar (dados velhos)
+      const dec = decidirReabertura(f, tituloLoteMed);
+      if (!dec.habilitado) { msg.className = "ed-msg err"; msg.textContent = "Reabertura bloqueada: " + dec.motivo + "."; return; }
+      if (f.Status !== "Concluída") { msg.className = "ed-msg err"; msg.textContent = "OS não está “Concluída” — nada a reabrir."; return; }
+      const motivo = ($("reabMotivo").value || "").trim();
+      if (!motivo) {
+        msg.className = "ed-msg err"; msg.textContent = "Motivo da reabertura é obrigatório.";
+        $("reabMotivo").focus();
+        return;
+      }
+      const btns = [$("reabConfirmar"), $("reabCancelar")];
+      try {
+        reabOcupado = true;
+        btns.forEach(b => { if (b) b.disabled = true; });
+        msg.className = "ed-msg"; msg.textContent = "Reabrindo OS...";
+        const u = await EG.me(); // nome (email): homônimos indistinguíveis sem o email na auditoria
+        const linha = linhaTrilhaReabertura({
+          quando: new Date().toISOString(),
+          nome: u.nome, email: u.email,
+          motivo, shaAnterior: f.Snapshot_SHA256
+        });
+        // PATCH mínimo (payloadReabertura) — If-Match/ETag e releitura vêm do
+        // padrão B3 de EG.patchItemFields + relerOS.
+        await EG.patchItemFields("OrdensDeServico", o.id, payloadReabertura(f, linha));
+        const novo = await relerOS(o.id); // releitura do servidor — nunca o eco local
+        openDrawer(novo);
+        setStatus("OS " + (((novo.fields || {}).Title) || o.id) + " REABERTA — Status: Em Andamento; " +
+                  "snapshot invalidado (referência do hash guardada na Trilha_Reaberturas).");
+      } catch (e) {
+        msg.className = "ed-msg err"; msg.textContent = "Falha ao reabrir: " + e.message;
+        btns.forEach(b => { if (b) b.disabled = false; });
+      } finally { reabOcupado = false; }
+    }
+
+    // Hooks de teste (console/homologação): window.OSR expõe as funções PURAS
+    // da reabertura + asserções dos 3 casos do botão, da linha de trilha e do
+    // payload do PATCH. Não toca rede nem DOM.
+    window.OSR = {
+      decidirReabertura, linhaTrilhaReabertura, payloadReabertura,
+      assert() {
+        const falhas = [];
+        const ok = (cond, rotulo) => { if (!cond) falhas.push(rotulo); };
+        // botão — caso 1: "Sem lote" habilita
+        const d1 = decidirReabertura({ Medicao_Situacao_Lote: "Sem lote" }, () => "LOTE-X");
+        ok(d1.habilitado === true && d1.motivo === "", "caso 1: Sem lote deveria habilitar sem motivo");
+        // botão — caso 2: "Em lote" desabilita com o Title do lote resolvido
+        const d2 = decidirReabertura({ Medicao_Situacao_Lote: "Em lote", Medicao_LoteLookupId: 7 }, () => "LOTE-2026-07");
+        ok(d2.habilitado === false && d2.motivo.indexOf("LOTE-2026-07") > -1 && d2.motivo.indexOf("Criar OS de correção") > -1,
+          "caso 2: Em lote deveria desabilitar citando o Title do lote e a saída (OS de correção)");
+        // caso 2b: "Em lote" sem Title carregado cai no fallback "lote #id"
+        const d2b = decidirReabertura({ Medicao_Situacao_Lote: "Em lote", Medicao_LoteLookupId: 7 }, () => null);
+        ok(d2b.habilitado === false && d2b.motivo.indexOf("lote #7") > -1, "caso 2b: sem Title deveria usar 'lote #7'");
+        // botão — caso 3: vazio/legado desabilita restritivo
+        const d3 = decidirReabertura({}, () => "LOTE-X");
+        ok(d3.habilitado === false && d3.motivo.indexOf("em lote por segurança") > -1,
+          "caso 3: legado (vazio) deveria desabilitar como 'em lote por segurança'");
+        // trilha — linha completa com hash invalidado
+        const l1 = linhaTrilhaReabertura({ quando: "2026-08-04T12:00:00.000Z", nome: "Geovane", email: "g@ex.com", motivo: "medição errada", shaAnterior: "abc123" });
+        ok(l1.indexOf("[2026-08-04T12:00:00.000Z]") === 0 && l1.indexOf("REABERTURA por Geovane (g@ex.com)") > -1 &&
+           l1.indexOf("motivo: medição errada") > -1 && l1.indexOf("snapshot anterior invalidado: abc123") > -1,
+          "trilha: linha deveria ter timestamp, quem, motivo e hash invalidado");
+        // trilha — sem snapshot anterior
+        const l2 = linhaTrilhaReabertura({ quando: "2026-08-04T12:00:00.000Z", nome: "Geovane", email: "g@ex.com", motivo: "m", shaAnterior: null });
+        ok(l2.indexOf("sem snapshot anterior registrado") > -1, "trilha: sem hash deveria registrar 'sem snapshot anterior'");
+        // payload — mínimo, com APPEND (conteúdo anterior preservado)
+        const p1 = payloadReabertura({ Trilha_Reaberturas: "linha antiga" }, "linha nova");
+        ok(p1.Status === "Em Andamento" && p1.Trilha_Reaberturas === "linha antiga\nlinha nova" &&
+           p1.Snapshot_Confirmado_Em === null && Object.keys(p1).length === 3,
+          "payload: deveria ser mínimo (3 campos), Status='Em Andamento', trilha em append e Snapshot_Confirmado_Em=null");
+        // payload — primeira reabertura (sem trilha anterior) não grava \n órfão
+        const p2 = payloadReabertura({}, "linha nova");
+        ok(p2.Trilha_Reaberturas === "linha nova", "payload: primeira reabertura deveria gravar só a linha nova");
+        const r = { ok: falhas.length === 0, total: 8, falhas };
+        console.log("OSR.assert:", JSON.stringify(r));
+        return r;
+      }
+    };
 
     let rtfOcupado = false;
     async function criarRetificacao(o) {

@@ -184,6 +184,11 @@
        - OrdensDeServico.Estado_Financeiro_Prestador ................. ESTA TELA, só no "Fechar lote"
          (B4: "Em análise" se o lote tem item Em análise, senão "Liberado",
          nas OS incluídas no lote — PATCH mínimo por OS; falha registra e segue)
+       - OrdensDeServico.Medicao_Lote / Medicao_Situacao_Lote ........ dono por VALOR:
+         "Em lote" + Medicao_LoteLookupId: ESTA TELA, só no "Fechar lote"
+         (PATCH mínimo por OS, DEPOIS do item de medição persistir — congela
+         a OS contra reabertura direta; em lote, retificação só por OS filha);
+         "Sem lote": os.html, na conclusão da OS (esta tela NÃO grava "Sem lote")
        - OrdensDeServico.Estado_Cliente_Qualidade .................... SEM ESCRITOR por ora — o dono
          é o aceite do cliente/NCs (módulo futuro); NENHUMA tela grava
        - Clientes_Locais / OrdensDeServico.Local_Atendimento ......... tela de OS (aqui só LEITURA,
@@ -237,6 +242,15 @@
     };
     const temValor = (v) => v != null && v !== "";
     const ehNum = (v) => temValor(v) && isFinite(Number(v));
+
+    /* Vínculo de lote na OS (Fechar lote): payload MÍNIMO e puro — testável
+       sem login via MED.montarPayloadVinculoLote. "Em lote" congela a OS
+       contra reabertura direta (regra dos dois estados: em lote, retificação
+       só por OS filha). "Sem lote" é do os.html — aqui nunca. */
+    const montarPayloadVinculoLote = (loteId) => ({
+      Medicao_LoteLookupId: Number(loteId),
+      Medicao_Situacao_Lote: "Em lote"
+    });
     const fmtN = (v, casas) => num(v).toLocaleString("pt-BR", { minimumFractionDigits: casas || 0, maximumFractionDigits: casas || 0 });
     const cel = (v, casas) => ehNum(v) ? fmtN(v, casas) : "—";
     const brl = (v) => EG.BRL(num(v));
@@ -857,7 +871,19 @@
             if (valores.length) fi.Valor = valores.reduce((s, r) => s + num(r.valor), 0);
             if (pend.length) fi.Pendencias = pend.join("; ");
             try { await EG.createItem("OS_Medicoes_Itens", fi); }
-            catch (e) { falhas.push("item " + fi.Chave_Item + ": " + e.message); }   // registra e segue
+            catch (e) { falhas.push("item " + fi.Chave_Item + ": " + e.message); continue; }   // registra e segue; sem item persistido, sem vínculo
+
+            // Vínculo de lote na OS (dono: ESTA tela, só aqui — ver mapa no
+            // topo): gravado por OS DEPOIS do item de medição persistir.
+            // PATCH mínimo (pula se a OS já aponta para este lote); falha
+            // registra no resumo qual OS ficou SEM vínculo e segue — o lote
+            // fechado NÃO é desfeito (sem rollback fantasma, mesmo padrão
+            // dos itens). "Em lote" congela a OS contra reabertura direta.
+            const fOS = (mapOS[osId] || {}).fields || {};
+            if (String(fOS.Medicao_LoteLookupId ?? "") === String(novoLote.id) &&
+                fOS.Medicao_Situacao_Lote === "Em lote") continue;
+            try { await EG.patchItemFields("OrdensDeServico", osId, montarPayloadVinculoLote(novoLote.id)); }
+            catch (e) { falhas.push("vínculo de lote da " + osTitulo(osId) + " (lote " + novoLote.id + "): " + e.message + " — OS ficou SEM vínculo (lote mantido; refaça o vínculo manualmente ou reprocesse)"); }
           }
 
           // B4 — DONO: OrdensDeServico.Estado_Financeiro_Prestador é DESTA
@@ -1132,7 +1158,7 @@
        MED.forcarCarregado(); MED.montarFiltros(); MED.render(); */
     window.MED = {
       setDados, montarFiltros, render, classificar, calcularLinha, tarifaVigente, fecharLote,
-      mKey, dataBase, num, ehNum, cel, celBRL, nomeAba, enderecoAtendimento,
+      mKey, dataBase, num, ehNum, cel, celBRL, nomeAba, enderecoAtendimento, montarPayloadVinculoLote,
       forcarCarregado: (v) => { carregado = v !== false; $("conteudo").hidden = !carregado; habilitarBotoes(); }
     };
 
