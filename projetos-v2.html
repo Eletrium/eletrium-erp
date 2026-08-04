@@ -527,6 +527,14 @@
         });
       };
       desce(raizes, 0);
+      // CICLO PURO (A.EAP_Pai=B e B.EAP_Pai=A, ambos no projeto): nenhum dos dois é
+      // raiz, então a descida acima nunca os alcança e eles SUMIRIAM da aba enquanto o
+      // rótulo continuaria contando — dado existente que a tela deixava invisível.
+      // Mesma classe do "pai de outro projeto" tratado na montagem das raízes: dado
+      // inconsistente vira raiz VISÍVEL, nunca desaparece. O `visitado` já impede laço
+      // infinito, então basta reoferecer o que sobrou como raiz.
+      const sobraram = itens.filter(o => !visitado.has(String(o.id)));
+      if (sobraram.length) desce(sobraram, 0);
       return { linhas, total: itens.length };
     }
 
