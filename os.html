@@ -1532,11 +1532,21 @@
           Descricao: "OS de correção da OS " + (f.Title || o.id) +
                      " (concluída — imutável). Motivo da correção: " + motivo
         };
-        // copiados quando existirem na origem (nunca enviar vazio)
+        // copiados quando existirem na origem (nunca enviar vazio).
+        // Herança ampliada (04/08, ordem do dono): Local_Atendimento é OBRIGATÓRIO
+        // herdar quando existir (o Espelho da medição exige endereço por OS);
+        // Prioridade e Líder vêm junto — a correção acontece no mesmo lugar, com a
+        // mesma urgência e a mesma liderança, salvo edição posterior do gestor.
+        // Datas NÃO são herdadas de propósito: DataAbertura da filha é o momento
+        // dela, e a DataPrevista da origem já venceu — herdá-la criaria uma OS
+        // nascida atrasada.
         if (f.ClienteLookupId != null) campos.ClienteLookupId = Number(f.ClienteLookupId);
         if (f.TecnicoLookupId != null) campos.TecnicoLookupId = Number(f.TecnicoLookupId);
+        if (f.Local_AtendimentoLookupId != null) campos.Local_AtendimentoLookupId = Number(f.Local_AtendimentoLookupId);
+        if (f.Lider_EletricistaLookupId != null) campos.Lider_EletricistaLookupId = Number(f.Lider_EletricistaLookupId);
         if (temTexto(f.Tipo_OS)) campos.Tipo_OS = f.Tipo_OS;
         if (temTexto(f.Categoria)) campos.Categoria = f.Categoria;
+        if (temTexto(f.Prioridade)) campos.Prioridade = f.Prioridade;
         // B2 — opt-in do outbox: SÓ offline declarado (ou erro de rede do
         // fetch, no catch abaixo) desvia pra fila. Online e sem erro, o
         // caminho atual segue INTACTO. O finally re-habilita os botões.
