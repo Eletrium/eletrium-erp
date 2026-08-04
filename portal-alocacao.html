@@ -36,6 +36,10 @@
        - OrdensDeServico : SOMENTE LEITURA aqui (dono: os.html / pipeline).
        - TecnicosMEI     : SOMENTE LEITURA aqui (dono: cadastro de técnicos).
        - Clientes        : SOMENTE LEITURA aqui.
+       - Politicas_Operacionais_Versoes : SOMENTE LEITURA aqui. Dono = gestão,
+           que versiona pelo SharePoint (nenhuma tela escreve nesta lista).
+           Esta tela consome OFERTA_EXPIRACAO_HORAS como prazo PADRÃO da
+           oferta; sem versão vigente cai no default 24h (valor pré-migração).
 
        EXPIRAÇÃO ON-READ (não há job server-side): ao carregar, toda proposta
        "Proposta Enviada" com Expira_Em < agora é exibida como Expirada E
@@ -165,7 +169,10 @@
         </div>
         <div class="campo">
           <label>Prazo de resposta <span class="obr">*</span></label>
-          <div class="radios">
+          <!-- Os radios abaixo são o FAIL-SAFE renderizado no HTML (24h padrão,
+               igual a antes da migração). renderPrazos() os reescreve a partir
+               da política OFERTA_EXPIRACAO_HORAS quando ela carrega. -->
+          <div class="radios" id="gPrazoRadios">
             <label><input type="radio" name="gPrazo" value="24" checked /> 24 horas</label>
             <label><input type="radio" name="gPrazo" value="48" /> 48 horas</label>
           </div>
@@ -341,6 +348,46 @@
       return h >= 1 ? ("expira em " + h + "h") : ("expira em " + Math.max(1, Math.floor(ms / 60000)) + "min");
     };
 
+    /* ==================================================================
+       POLÍTICA VERSIONADA — prazo de resposta da oferta.
+       O prazo PADRÃO saiu do código e virou OFERTA_EXPIRACAO_HORAS em
+       Politicas_Operacionais_Versoes (mesmo padrão do B5/Tarifas_Versoes;
+       resolução em EG.politica). O 24 abaixo NÃO sumiu: é o DEFAULT/fail-safe,
+       idêntico ao de antes da migração — vale quando a lista não carrega ou não
+       há versão vigente. As 48h continuam como a opção longa FIXA da tela (não
+       é política; o que a política define é o prazo pré-selecionado).
+       LIMITAÇÃO: Expira_Em é calculado e conferido no CLIENTE — sem o gateway
+       B1 (inexistente) não há imposição server-side. Ver graph.js.
+       ================================================================== */
+    const PRAZO_PADRAO_HORAS_DEFAULT = 24;
+    const PRAZO_ALTERNATIVO_HORAS = 48;
+    let prazoPadraoHoras = PRAZO_PADRAO_HORAS_DEFAULT;
+    // prazos aceitos = o da política + a opção longa fixa (sem duplicar)
+    const prazosPermitidos = () =>
+      [prazoPadraoHoras, PRAZO_ALTERNATIVO_HORAS].filter((v, i, a) => a.indexOf(v) === i).sort((a, b) => a - b);
+
+    // reescreve os radios a partir do prazo vigente; o padrão fica pré-marcado
+    function renderPrazos() {
+      const box = $("gPrazoRadios");
+      if (!box) return;
+      box.innerHTML = prazosPermitidos().map((h) =>
+        '<label><input type="radio" name="gPrazo" value="' + esc(h) + '"' +
+        (h === prazoPadraoHoras ? " checked" : "") + " /> " + esc(h) + " horas</label>").join("");
+    }
+
+    // lê a política e re-renderiza. Nunca lança: falha mantém o default.
+    async function aplicarPoliticaPrazo() {
+      try {
+        const p = await EG.politica("OFERTA_EXPIRACAO_HORAS");
+        if (p && isFinite(p.valor) && p.valor > 0) prazoPadraoHoras = p.valor;
+      } catch (e) {
+        console.warn("Política OFERTA_EXPIRACAO_HORAS indisponível (" + ((e && e.message) || e) +
+                     ") — mantendo " + prazoPadraoHoras + "h.");
+      }
+      renderPrazos();
+      return prazoPadraoHoras;
+    }
+
     /* ============================== estado ============================== */
     let alocacoes = [], ordens = [], tecnicos = [], clientes = [];
     let mapAloc = {}, mapOS = {}, mapTec = {}, nomeCliente = {};
@@ -370,6 +417,9 @@
         usuarioObjectId = (EG.getAccount() || {}).localAccountId || "";
         $("user").textContent = "👤 " + usuarioNome;
       }
+      // política do prazo: só depois do login (antes disso EG.politica abriria
+      // popup de auth). Falha aqui não derruba a sessão — o default continua.
+      await aplicarPoliticaPrazo();
     }
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
@@ -511,12 +561,12 @@
       const msg = $("gMsg");
       const erro = (t) => { msg.className = "form-msg err"; msg.textContent = t; };
       const osId = $("gOS").value, tecId = $("gTec").value;
-      const prazo = Number((document.querySelector("input[name=gPrazo]:checked") || {}).value || 24);
+      const prazo = Number((document.querySelector("input[name=gPrazo]:checked") || {}).value || prazoPadraoHoras);
       const escopo = $("gEscopo").value.trim();
       const valorRaw = $("gValor").value.trim();
       if (!osId) return erro("Selecione a ordem de serviço.");
       if (!tecId) return erro("Selecione o parceiro MEI.");
-      if (prazo !== 24 && prazo !== 48) return erro("Prazo inválido.");
+      if (prazosPermitidos().indexOf(prazo) === -1) return erro("Prazo inválido.");
       if (!escopo) return erro("O resumo do escopo é obrigatório — é o que o parceiro vai ler antes de aceitar.");
       let valor = null;
       if (valorRaw !== "") {
@@ -1039,6 +1089,11 @@
       abrirGesDrawer, abrirParDrawer, abrirAgeDrawer,
       statusEfetivo, expirou, msRestante, countdown, osElegivel, tecAtivo, norm, cftInfo,
       expirarOnRead, relerAloc,
+      // política OFERTA_EXPIRACAO_HORAS — hooks p/ inspeção e teste sem login
+      renderPrazos, aplicarPoliticaPrazo, prazosPermitidos,
+      prazoPadrao: () => prazoPadraoHoras,
+      setPrazoPadrao: (h) => { prazoPadraoHoras = h; renderPrazos(); },
+      PRAZO_PADRAO_HORAS_DEFAULT,
       forcarCarregado: (v) => { carregado = v !== false; },
       setUsuario: (n, e, oid) => { usuarioNome = n; usuarioEmail = e || ""; usuarioObjectId = oid || ""; }
     };

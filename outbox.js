@@ -15,6 +15,11 @@
 //     = a operação JÁ EXISTIU = CONFIRMADO (não é falha). Mesmo padrão de
 //     convergência de romperCadeia()/criarRetificacao() em os.html.
 //
+// MAPA DE DONO DE CAMPO — Politicas_Operacionais_Versoes: SOMENTE LEITURA aqui.
+// Dono = gestão, que versiona pelo SharePoint (nenhuma tela escreve nesta
+// lista). Este módulo consome OUTBOX_DESCARTE_DIAS como prazo de descarte de
+// item terminal; sem versão vigente cai no default 7 dias (valor pré-migração).
+//
 // ESTADOS DA OPERAÇÃO:  local -> enviando -> confirmado
 //                                        \-> falha (volta pra fila: retry
 //                                             automático com backoff quando
@@ -37,7 +42,16 @@ window.OB = (function () {
   const BACKOFF_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
   const ENVIANDO_ORFAO_MS = 2 * 60 * 1000;  // "enviando" parado além disso = envio interrompido (aba fechada no meio)
   const RECONCILIA_CADA_MS = 5 * 60 * 1000; // reconciliação periódica com a página aberta
-  const RETENCAO_TERMINAL_MS = 7 * 24 * 60 * 60 * 1000; // confirmada/descartada sai do banco após 7 dias
+
+  // POLÍTICA VERSIONADA — o prazo de descarte de item terminal saiu do código e
+  // virou OUTBOX_DESCARTE_DIAS em Politicas_Operacionais_Versoes (mesmo padrão
+  // do B5/Tarifas_Versoes; resolução em EG.politica).
+  // O 7 abaixo NÃO sumiu: é o DEFAULT/fail-safe, idêntico ao valor de antes da
+  // migração — vale quando a lista não carrega ou não há versão vigente.
+  // LIMITAÇÃO: aplicação é client-side (o gateway B1 não existe) — ver graph.js.
+  const RETENCAO_TERMINAL_DIAS_DEFAULT = 7;
+  let retencaoTerminalDias = RETENCAO_TERMINAL_DIAS_DEFAULT;
+  const retencaoTerminalMs = () => retencaoTerminalDias * 24 * 60 * 60 * 1000;
 
   let dbPromessa = null;
   let processando = false;
@@ -340,13 +354,32 @@ window.OB = (function () {
   /** Snapshot da fila inteira (inclui confirmadas/descartadas ainda retidas). */
   const listar = async () => ordenar(await obterTodas());
 
-  // higiene: confirmada/descartada com mais de 7 dias sai do banco (a fila é
-  // operacional, não é arquivo — a trilha permanente é o próprio SharePoint)
+  // Lê OUTBOX_DESCARTE_DIAS e atualiza o prazo em memória. Só consulta COM
+  // sessão ativa: sem conta, EG.token() abriria popup de login no meio de uma
+  // limpeza de fila (mesma guarda de podeTransmitir()). Sem sessão, sem lista
+  // ou com valor inválido, o prazo atual (default) permanece — nunca quebra.
+  async function atualizarPoliticaRetencao() {
+    if (!(window.EG && EG.politica && EG.getAccount && EG.getAccount())) return retencaoTerminalDias;
+    try {
+      const p = await EG.politica("OUTBOX_DESCARTE_DIAS");
+      if (p && isFinite(p.valor) && p.valor > 0) retencaoTerminalDias = p.valor;
+    } catch (e) {
+      console.warn("outbox: política OUTBOX_DESCARTE_DIAS indisponível (" + ((e && e.message) || e) +
+                   ") — mantendo " + retencaoTerminalDias + " dia(s).");
+    }
+    return retencaoTerminalDias;
+  }
+
+  // higiene: confirmada/descartada além do prazo da política sai do banco (a
+  // fila é operacional, não é arquivo — a trilha permanente é o próprio
+  // SharePoint). Prazo = OUTBOX_DESCARTE_DIAS, default 7 dias.
   async function limparTerminais() {
+    await atualizarPoliticaRetencao();
     const agora = Date.now();
+    const limite = retencaoTerminalMs();
     for (const op of await obterTodas()) {
       const fim = op.estado === "confirmado" ? op.confirmadaEm : (op.estado === "descartada" ? op.descartadaEm : null);
-      if (fim && (agora - Date.parse(fim)) > RETENCAO_TERMINAL_MS) await removerOp(op.operationId);
+      if (fim && (agora - Date.parse(fim)) > limite) await removerOp(op.operationId);
     }
   }
 
@@ -489,6 +522,10 @@ window.OB = (function () {
     descartar,      // (operationId, motivo) — motivo obrigatório, registro fica na trilha
     listar,         // snapshot ordenado da fila
     ehErroDeRede,   // (e) — usado pelas telas para decidir o desvio pra fila
-    iniciar         // idempotente; auto-chamado no load do script
+    iniciar,        // idempotente; auto-chamado no load do script
+    // política OUTBOX_DESCARTE_DIAS — expostos p/ inspeção e teste sem login
+    atualizarPoliticaRetencao,
+    retencaoTerminalDias: () => retencaoTerminalDias,
+    RETENCAO_TERMINAL_DIAS_DEFAULT
   };
 })();

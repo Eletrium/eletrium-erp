@@ -136,7 +136,28 @@
     // desabilitado com hint, e NENHUM KM_Divergencia_Pct/Alerta_KM_Divergente
     // é calculado ou gravado. O código da regra permanece (parametrizado por
     // pct), atrás deste flag.
-    const KM_VALIDACAO_DESVIO = { ativa: false, pct: 20 }; // C5: só religar com referência de rota homologada.
+    // POLÍTICA VERSIONADA — só o LIMIAR (pct) saiu do código: virou KM_DESVIO_PCT
+    // em Politicas_Operacionais_Versoes (mesmo padrão do B5/Tarifas_Versoes;
+    // resolução em EG.politica). O 20 abaixo NÃO sumiu: é o DEFAULT/fail-safe,
+    // idêntico ao de antes da migração.
+    // *** `ativa` NÃO é política e continua false (C5) *** — a política
+    // parametriza o limiar, NÃO religa a validação. Religar segue dependendo de
+    // referência de rota homologada e de decisão do dono, não desta lista.
+    // LIMITAÇÃO: cálculo/aplicação são client-side (gateway B1 inexistente).
+    const KM_DESVIO_PCT_DEFAULT = 20;
+    let KM_VALIDACAO_DESVIO = { ativa: false, pct: KM_DESVIO_PCT_DEFAULT }; // C5: só religar com referência de rota homologada.
+
+    // lê KM_DESVIO_PCT e atualiza SÓ o pct. Nunca lança; nunca mexe em `ativa`.
+    async function aplicarPoliticaKM() {
+      try {
+        const p = await EG.politica("KM_DESVIO_PCT");
+        if (p && isFinite(p.valor) && p.valor > 0) KM_VALIDACAO_DESVIO.pct = p.valor;
+      } catch (e) {
+        console.warn("Política KM_DESVIO_PCT indisponível (" + ((e && e.message) || e) +
+                     ") — mantendo " + KM_VALIDACAO_DESVIO.pct + "%.");
+      }
+      return KM_VALIDACAO_DESVIO.pct;
+    }
 
     let itemMap = {}, todas = [], nomeCliente = {}, nomeTecnico = {};
     let tecnicosOS = [];   // itens crus de TecnicosMEI — popula os selects de técnico/líder (traz Valor_Hora_Contratado p/ snapshot)
@@ -177,6 +198,12 @@
        KM_Divergencia_Pct, Alerta_KM_Divergente, OS_Logistica, Laudo_URL,
        Assinatura_URL. (Assinatura_URL/Fotos_Evidencia/Selfie_URL serão
        alimentados também pela captura mobile — integração pendente.)
+
+       Politicas_Operacionais_Versoes: SOMENTE LEITURA aqui. Dono = gestão, que
+       versiona pelo SharePoint (nenhuma tela escreve nesta lista). Esta tela
+       consome KM_DESVIO_PCT como limiar de desvio; sem versão vigente cai no
+       default 20% (valor pré-migração). A política NÃO controla o liga/desliga
+       da validação — `ativa` segue false por decisão do dono (C5).
 
        NOVOS (Roadmap OS v2.1 — escritos por ESTA tela):
          Operation_ID (Text ÚNICO no SharePoint — chave de idempotência dos
@@ -273,6 +300,9 @@
       setStatus("Autenticado como " + EG.getAccount().username);
       $("btnLogin").disabled = true; $("btnLoad").disabled = false; $("btnLogout").disabled = false;
       try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
+      // política do limiar de KM: só depois do login (antes disso EG.politica
+      // abriria popup de auth). Falha aqui não derruba a sessão.
+      await aplicarPoliticaKM();
     }
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };

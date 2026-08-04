@@ -387,5 +387,152 @@ window.EG = (function () {
     console.warn("EG.renderEstado: estado desconhecido '" + estado + "' (esperado: carregando | vazio | erro | ok)");
   }
 
-  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, ehDataPura, validarChoices, renderAvisoChoices, renderAvisosChoices, travarChoices, travasAtivas, renderEstado };
+  // ---------------------------------------------------------------------------
+  // POLÍTICAS OPERACIONAIS VERSIONADAS — parâmetro de negócio fora do código.
+  //
+  // MESMO PADRÃO DO B5 (Tarifas_Versoes + tarifaVigente() em medicao.html): o
+  // valor mora numa lista COM VIGÊNCIA, a versão que vale é resolvida por data,
+  // e a ausência de versão é tratada explicitamente. Deliberadamente NÃO é um
+  // segundo padrão para o mesmo problema — herda os mesmos nomes de campo
+  // (Vigencia_Inicio / Vigencia_Fim DateOnly, Ativa Boolean, Notas Note) e a
+  // mesma regra de desempate. Só muda a granularidade da chave de tempo:
+  // tarifa resolve por COMPETÊNCIA (AAAA-MM, é o que o negócio fatura),
+  // política resolve por DIA (AAAA-MM-DD), porque a pergunta aqui é "quanto
+  // vale HOJE", não "quanto valia no mês de referência".
+  //
+  // *** LIMITAÇÃO DECLARADA — imposição é CLIENT-SIDE ***
+  // A imposição server-side destes limites dependeria do gateway B1, que NÃO
+  // EXISTE. Hoje a política é lida e aplicada SOMENTE NO CLIENTE: quem escrever
+  // direto no Graph contorna o limite. Mudar um valor aqui muda o que as TELAS
+  // fazem, não o que o SharePoint aceita. Mesmo padrão de limitação declarada
+  // já usado no repo (ver cabeçalho de outbox.js sobre o transmissor B1).
+  //
+  // FAIL-SAFE: se a lista não carregar (offline / sem login / sem permissão) ou
+  // não houver versão vigente, vale o DEFAULT abaixo — que é EXATAMENTE o valor
+  // que estava hardcoded antes desta migração. A tela nunca quebra e nunca
+  // aplica valor arbitrário; o desvio é avisado no console.
+  // ---------------------------------------------------------------------------
+  const POLITICAS_LISTA = "Politicas_Operacionais_Versoes";
+
+  // Valores em vigor ANTES da migração — NÃO somem do código, são o piso de
+  // segurança de quem está sem acesso à lista. Para MUDAR um valor de verdade,
+  // crie uma versão nova na lista (nova Vigencia_Inicio); mexer aqui só muda o
+  // comportamento do fallback.
+  const POLITICAS_DEFAULT = {
+    OUTBOX_DESCARTE_DIAS:   { valor: 7,  unidade: "dias"     }, // outbox.js — descarte de item terminal da fila
+    OFERTA_EXPIRACAO_HORAS: { valor: 24, unidade: "horas"    }, // portal-alocacao.html — prazo padrão da oferta
+    KM_DESVIO_PCT:          { valor: 20, unidade: "porcento" }  // os.html — limiar de desvio de KM (regra DESLIGADA, C5)
+  };
+
+  // Chave AAAA-MM-DD. Campo DateOnly chega do Graph como "2026-08-04T00:00:00Z":
+  // fatiar os 10 primeiros caracteres preserva a data CALENDÁRIA gravada e evita
+  // o deslocamento de 1 dia que um new Date() em Brasília (UTC-3) causaria — é o
+  // mesmo cuidado que parseD()/ehDataPura() tomam em medicao.html. Um Date real
+  // (ex.: "agora") vira a data LOCAL, que é o "hoje" que o usuário enxerga.
+  function dKeyPolitica(v) {
+    if (v == null || v === "") return null;
+    if (v instanceof Date) {
+      if (isNaN(v.getTime())) return null;
+      return v.getFullYear() + "-" + String(v.getMonth() + 1).padStart(2, "0") + "-" + String(v.getDate()).padStart(2, "0");
+    }
+    const s = String(v);
+    const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (m) return m[1];
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return null;
+    return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  }
+
+  /**
+   * Versão VIGENTE de uma política num instante. PURA — não faz rede.
+   * Regra idêntica à de tarifaVigente() (B5):
+   *   Ativa === true; Vigencia_Inicio <= dia; sem Vigencia_Fim = vigência aberta,
+   *   com Vigencia_Fim exige dia <= fim; sem Vigencia_Inicio NÃO vigora;
+   *   sobreposição desempata pela Vigencia_Inicio MAIS RECENTE.
+   * @param {Array|null} itens itens crus da lista (fields expandidos); null = não carregou
+   * @param {string} chave ex.: "OUTBOX_DESCARTE_DIAS"
+   * @param {Date|string} [quando] default: agora
+   * @returns {object|null} o item vigente, ou null
+   */
+  function politicaVigenteEm(itens, chave, quando) {
+    const dia = dKeyPolitica(quando || new Date());
+    if (!Array.isArray(itens) || !dia) return null;
+    const cand = itens.filter((it) => {
+      const f = (it && it.fields) || {};
+      if (String(f.Chave_Politica || "") !== String(chave)) return false;
+      if (f.Ativa !== true) return false;
+      const ini = dKeyPolitica(f.Vigencia_Inicio);
+      if (!ini || ini > dia) return false;          // sem início não há vigência definida; início futuro ainda não vale
+      const fim = dKeyPolitica(f.Vigencia_Fim);
+      if (fim && fim < dia) return false;           // vigência encerrada
+      return true;
+    });
+    if (!cand.length) return null;
+    cand.sort((a, b) => String(dKeyPolitica((b.fields || {}).Vigencia_Inicio) || "")
+      .localeCompare(String(dKeyPolitica((a.fields || {}).Vigencia_Inicio) || "")));
+    return cand[0];
+  }
+
+  /**
+   * Valor EFETIVO de uma política, já com o fail-safe aplicado. PURA — não faz
+   * rede, é o hook testável da regra. NUNCA lança e NUNCA devolve valor
+   * arbitrário: ou vem da lista, ou vem do DEFAULT documentado.
+   * @returns {{chave,valor,unidade,fonte:"politica"|"default",versaoId,motivo}|null}
+   *          null só para chave desconhecida (erro de programação).
+   */
+  function resolverPolitica(itens, chave, quando) {
+    const def = POLITICAS_DEFAULT[chave];
+    if (!def) {
+      console.warn("EG.resolverPolitica: chave desconhecida '" + chave + "' — sem DEFAULT declarado em POLITICAS_DEFAULT.");
+      return null;
+    }
+    const cair = (motivo) => ({ chave, valor: def.valor, unidade: def.unidade, fonte: "default", versaoId: null, motivo });
+    if (!Array.isArray(itens)) return cair("lista " + POLITICAS_LISTA + " não carregou");
+    const item = politicaVigenteEm(itens, chave, quando);
+    if (!item) return cair("nenhuma versão vigente de '" + chave + "'");
+    const f = item.fields || {};
+    // Valor vazio NÃO pode virar 0: Number(null)/Number("") === 0 e isFinite(0)
+    // é true — um 0 aqui zeraria a retenção da fila (apagaria tudo na hora) ou o
+    // prazo da oferta (expiraria toda proposta na criação). Vazio = inválido.
+    const bruto = f.Valor;
+    const v = (bruto === null || bruto === undefined || bruto === "") ? NaN : Number(bruto);
+    // Todas as políticas declaradas em POLITICAS_DEFAULT são GRANDEZAS
+    // ESTRITAMENTE POSITIVAS (dias, horas, porcento). Zero/negativo é dado
+    // ruim, não configuração — cai no default em vez de virar comportamento
+    // destrutivo. Se algum dia existir política que aceite 0, esta guarda
+    // precisa descer para o consumidor, não sumir daqui.
+    if (!isFinite(v) || v <= 0) {
+      return cair("versão #" + item.id + " de '" + chave + "' tem Valor inválido (" + JSON.stringify(bruto) + ")");
+    }
+    return { chave, valor: v, unidade: f.Unidade || def.unidade, fonte: "politica", versaoId: item.id, motivo: null };
+  }
+
+  // Cache por aba: a lista é minúscula e as telas perguntam várias vezes. Falha
+  // NÃO fica grudada no cache — a próxima chamada tenta de novo.
+  let politicasPromessa = null;
+  function carregarPoliticas(forcar) {
+    if (forcar) politicasPromessa = null;
+    if (!politicasPromessa) {
+      politicasPromessa = listItems(POLITICAS_LISTA).catch((e) => {
+        console.warn("EG.carregarPoliticas: " + POLITICAS_LISTA + " não carregou (" + ((e && e.message) || e) +
+                     ") — as telas seguem nos DEFAULTS do código.");
+        politicasPromessa = null;
+        return null;
+      });
+    }
+    return politicasPromessa;
+  }
+
+  /** Valor efetivo da política (assíncrono, com cache). Nunca lança. */
+  async function politica(chave, quando) {
+    const r = resolverPolitica(await carregarPoliticas(), chave, quando);
+    if (r && r.fonte === "default" && r.motivo) {
+      console.warn("EG.politica('" + chave + "'): " + r.motivo + " — usando DEFAULT " + r.valor + " " + r.unidade +
+                   " (mesmo valor de antes da migração; comportamento preservado).");
+    }
+    return r;
+  }
+
+  return { CONFIG, GRAPH, init, login, logout, getAccount, token, gget, gpatch, gpost, me, resolveSite, listItems, listColumns, patchItemFields, createItem, BRL, fmtDate, ehDataPura, validarChoices, renderAvisoChoices, renderAvisosChoices, travarChoices, travasAtivas, renderEstado,
+           POLITICAS_LISTA, POLITICAS_DEFAULT, dKeyPolitica, politicaVigenteEm, resolverPolitica, carregarPoliticas, politica };
 })();
