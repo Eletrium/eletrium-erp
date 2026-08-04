@@ -63,12 +63,16 @@
 
   <main>
     <div class="kpis" id="kpis" hidden>
-      <div class="kpi"><div class="k">Certificações vencidas</div><div class="v" id="kVenc" style="color:#F85149">—</div></div>
-      <div class="kpi"><div class="k">Vencem em 30 dias</div><div class="v" id="k30" style="color:#F0883E">—</div></div>
-      <div class="kpi"><div class="k">Válidas</div><div class="v" id="kOk" style="color:#22B573">—</div></div>
-      <div class="kpi"><div class="k">Técnicos bloqueados p/ OS</div><div class="v" id="kBloq" style="color:#F85149">—</div></div>
+      <!-- 2º canal (daltonismo): a cor destes KPIs carrega VALÊNCIA (bom/atenção/ruim),
+           que o rótulo sozinho não diz. Glifo de faixa do app.css antes do número —
+           ● bom, ◐ atenção, ○ ruim — mesmo padrão já usado no dashboard.
+           É ::before de CSS: sobrevive ao textContent que o render escreve. -->
+      <div class="kpi"><div class="k">Certificações vencidas</div><div class="v fx-ruim" id="kVenc" style="color:#F85149">—</div></div>
+      <div class="kpi"><div class="k">Vencem em 30 dias</div><div class="v fx-medio" id="k30" style="color:#F0883E">—</div></div>
+      <div class="kpi"><div class="k">Válidas</div><div class="v fx-bom" id="kOk" style="color:#22B573">—</div></div>
+      <div class="kpi"><div class="k">Técnicos bloqueados p/ OS</div><div class="v fx-ruim" id="kBloq" style="color:#F85149">—</div></div>
       <!-- pilar CFT: conta ausente OU vencido (qualquer pendência do registro) -->
-      <div class="kpi"><div class="k">Técnicos sem CFT</div><div class="v" id="kCft" style="color:#F0883E">—</div></div>
+      <div class="kpi"><div class="k">Técnicos sem CFT</div><div class="v fx-medio" id="kCft" style="color:#F0883E">—</div></div>
     </div>
 
     <div class="toolbar" id="toolbar" hidden>
@@ -86,13 +90,15 @@
     </div>
 
     <div class="secao" id="secQualif" hidden>Certificações <span>— situação calculada pela data de vencimento</span></div>
+    <!-- estado da SEÇÃO (carregando/vazio/erro) — controlado SÓ por EG.renderEstado -->
+    <div class="estado" id="empty" hidden></div>
     <table id="tbl" hidden>
       <thead><tr><th>Certificação</th><th>Técnico</th><th>Tipo</th><th>Emissão</th><th>Vencimento</th><th>Situação</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
-    <div class="empty" id="empty" hidden></div>
 
     <div class="secao" id="secCob" hidden>Cobertura por técnico <span>— exigências do nível vs. o que o técnico tem</span></div>
+    <div class="estado" id="cobEstado" hidden></div>
     <div class="cob" id="cob"></div>
   </main>
 
@@ -220,9 +226,15 @@
       el.hidden = false;
     }
 
-    $("btnLoad").onclick = async () => {
+    /* função de carga da tela — nomeada para poder ser o onRetry do estado "erro" */
+    async function carregar() {
       try {
         setStatus("Carregando habilitações...");
+        // estado de SEÇÃO (componente compartilhado). A barra global #status continua
+        // existindo e dizendo a mesma coisa que dizia antes — isto é ADICIONAL.
+        EG.renderEstado($("empty"), "carregando", { mensagem: "Carregando certificações…" });
+        EG.renderEstado($("cobEstado"), "carregando", { mensagem: "Carregando cobertura por técnico…" });
+        $("tbl").hidden = true; $("tbody").innerHTML = ""; $("cob").innerHTML = "";
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
         // EG.travarChoices (padrão novo do repo) valida o que a cobertura REALMENTE
         // cruza: as DUAS pontas de Nivel_Tecnico e as DUAS de Tipo_Qualificacao.
@@ -260,8 +272,13 @@
         renderCobertura();
         ["kpis", "toolbar", "secQualif", "secCob"].forEach(id => $(id).hidden = false);
         setStatus("OK — " + quals.length + " certificação(ões), " + tecnicos.length + " técnico(s), " + exigencias.length + " regra(s) de exigência.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("empty"), "erro", { mensagem: "Falha ao carregar certificações: " + e.message, onRetry: carregar });
+        EG.renderEstado($("cobEstado"), "erro", { mensagem: "Falha ao carregar cobertura por técnico: " + e.message, onRetry: carregar });
+      }
+    }
+    $("btnLoad").onclick = carregar;
 
     function montarFiltroTecnicos() {
       const sel = $("fTecnico");
@@ -295,13 +312,17 @@
       const tb = $("tbody");
       tb.innerHTML = "";
       if (!lista.length) {
-        $("tbl").hidden = true; $("empty").hidden = false;
-        $("empty").textContent = quals.length === 0
-          ? "Nenhuma certificação cadastrada em Tecnico_Qualificacoes."
-          : "Nenhuma certificação corresponde aos filtros.";
+        $("tbl").hidden = true;
+        // "vazio de verdade" x "vazio por filtro" — as DUAS mensagens preservadas
+        EG.renderEstado($("empty"), "vazio", {
+          mensagem: quals.length === 0
+            ? "Nenhuma certificação cadastrada em Tecnico_Qualificacoes."
+            : "Nenhuma certificação corresponde aos filtros."
+        });
         return;
       }
-      $("empty").hidden = true; $("tbl").hidden = false;
+      EG.renderEstado($("empty"), "ok");
+      $("tbl").hidden = false;
       // ordena por vencimento mais próximo primeiro; sem data vai pro fim
       const ord = lista.slice().sort((a, b) => {
         const da = diasAte((a.fields || {}).Data_Vencimento), db = diasAte((b.fields || {}).Data_Vencimento);
@@ -330,7 +351,12 @@
        É aqui que as 50 regras de Nivel_Qualificacoes_Exigidas ganham uso: mostram a LACUNA.
        Funciona mesmo com zero certificações cadastradas (tudo aparece como faltando). */
     function renderCobertura() {
-      if (!tecnicos.length) { $("cob").innerHTML = "<div class='empty'>Nenhum técnico cadastrado.</div>"; return; }
+      if (!tecnicos.length) {
+        $("cob").innerHTML = "";
+        EG.renderEstado($("cobEstado"), "vazio", { mensagem: "Nenhum técnico cadastrado." });
+        return;
+      }
+      EG.renderEstado($("cobEstado"), "ok");
       $("cob").innerHTML = tecnicos.map(t => {
         const tf = t.fields || {};
         const nivel = tf.Nivel_Tecnico || null;
@@ -426,11 +452,9 @@
         "<button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'><dl>" + rows + "</dl>" +
         (url ? "<a href='" + esc(url) + "' target='_blank' rel='noopener' style='color:#58a6ff;font-size:.85rem'>Abrir certificado ↗</a><br>" : "") +
-        "<span class='raw-toggle' id='rt'>ver campos crus (Graph)</span>" +
-        "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre></div>";
+        "</div>";
       $("dc").onclick = fechar;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 

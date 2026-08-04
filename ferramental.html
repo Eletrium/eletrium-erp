@@ -78,7 +78,7 @@
     .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
     .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
     .tab:hover { color: #e6edf3; }
-    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+    .tab.active { background: var(--acao-tenue); border-color: var(--acao-borda); color: #e6edf3; }
 
     .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
     .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
@@ -104,7 +104,7 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
       border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
     }
-    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .f textarea { min-height: 70px; resize: vertical; }
     .f .err { color: #F85149; font-size: .76rem; }
     .f .hint { color: #8b949e; font-size: .74rem; line-height: 1.4; }
@@ -138,6 +138,13 @@
     .desmob-item .cat { color: #8b949e; }
     .desmob-item input[type=text] { flex: 1; min-width: 180px; }
     .desmob-item label.ok { display: flex; gap: 6px; align-items: center; color: #e6edf3; font-size: .84rem; white-space: nowrap; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .aviso-ro::before { content: "ℹ️  "; }
+    .painel.ok::before { content: "✓  "; }
+    .painel.bloq::before { content: "✕  "; }
   </style>
 </head>
 <body>
@@ -185,6 +192,8 @@
         <button id="cNovo">＋ Nova ferramenta no catálogo</button>
         <span class="hint right" id="cContador"></span>
       </div>
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="cEmpty" hidden></div>
       <table id="cTbl" hidden>
         <thead><tr>
           <th>Nome / modelo</th><th>Categoria</th><th>Requer calibração</th>
@@ -192,7 +201,6 @@
         </tr></thead>
         <tbody id="cTbody"></tbody>
       </table>
-      <div class="empty" id="cEmpty" hidden></div>
     </section>
 
     <!-- =========================== 2. PATRIMÔNIO =========================== -->
@@ -204,6 +212,8 @@
         <label><input type="checkbox" id="pSoVenc" /> só calibração vencida</label>
         <span class="hint right" id="pContador"></span>
       </div>
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="pEmpty" hidden></div>
       <table id="pTbl" hidden>
         <thead><tr>
           <th>Código</th><th>Catálogo</th><th>Nº de série</th><th>Status</th>
@@ -211,7 +221,6 @@
         </tr></thead>
         <tbody id="pTbody"></tbody>
       </table>
-      <div class="empty" id="pEmpty" hidden></div>
     </section>
 
     <!-- ============================ 3. VÍNCULOS ============================ -->
@@ -225,13 +234,14 @@
         <button id="vNovo">＋ Novo vínculo</button>
         <span class="hint right" id="vContador"></span>
       </div>
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="vEmpty" hidden></div>
       <table id="vTbl" hidden>
         <thead><tr>
           <th>Tipo de OS</th><th>Ferramenta (catálogo)</th><th>Exigência</th>
         </tr></thead>
         <tbody id="vTbody"></tbody>
       </table>
-      <div class="empty" id="vEmpty" hidden></div>
     </section>
 
     <!-- ============== 4. INÍCIO DE DIA / DESMOBILIZAÇÃO (por OS) ============== -->
@@ -423,9 +433,17 @@
     }
 
     /* ============================== carga ============================== */
-    $("btnLoad").onclick = async () => {
+    // nomeada para poder ser o onRetry do estado de erro de cada seção
+    $("btnLoad").onclick = () => { carregar(); };
+    async function carregar() {
       try {
         setStatus("Carregando ferramental...");
+        // estado por SEÇÃO (a barra #status continua sendo o estado global).
+        // A aba "Início de dia" não tem contêiner: seu vazio é INSTRUÇÃO
+        // ("Escolha uma OS…"), não ausência de dado — ver #diaVazio.
+        EG.renderEstado($("cEmpty"), "carregando", { mensagem: "Carregando catálogo de ferramentas…" });
+        EG.renderEstado($("pEmpty"), "carregando", { mensagem: "Carregando patrimônio…" });
+        EG.renderEstado($("vEmpty"), "carregando", { mensagem: "Carregando vínculos serviço×ferramenta…" });
         const [ca, pa, vi, os, te, cl] = await Promise.all([
           soft(EG.listItems("Ferramentas_Catalogo"), "Ferramentas_Catalogo"),
           soft(EG.listItems("Ferramentas_Patrimonio"), "Ferramentas_Patrimonio"),
@@ -443,8 +461,13 @@
         mostrarSec(secAtual);
         setStatus("OK — " + catalogo.length + " no catálogo, " + patrimonio.length + " patrimônio(s), " +
                   vinculos.length + " vínculo(s), " + oss.length + " OS.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("cEmpty"), "erro", { mensagem: "Falha ao carregar o catálogo de ferramentas: " + e.message, onRetry: carregar });
+        EG.renderEstado($("pEmpty"), "erro", { mensagem: "Falha ao carregar o patrimônio: " + e.message, onRetry: carregar });
+        EG.renderEstado($("vEmpty"), "erro", { mensagem: "Falha ao carregar os vínculos serviço×ferramenta: " + e.message, onRetry: carregar });
+      }
+    }
 
     // separado da carga para poder ser exercitado com dados falsos (window.FER.setDados)
     function setDados(ca, pa, vi, os, te, cl) {
@@ -502,11 +525,11 @@
       const lista = catalogo.slice().sort((a, b) =>
         String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
       if (!lista.length) {
-        $("cTbody").innerHTML = ""; $("cTbl").hidden = true; $("cEmpty").hidden = false;
-        $("cEmpty").textContent = "Nenhuma ferramenta no catálogo (Ferramentas_Catalogo está vazia).";
+        $("cTbody").innerHTML = ""; $("cTbl").hidden = true;
+        EG.renderEstado($("cEmpty"), "vazio", { mensagem: "Nenhuma ferramenta no catálogo (Ferramentas_Catalogo está vazia)." });
         return;
       }
-      $("cEmpty").hidden = true; $("cTbl").hidden = false;
+      EG.renderEstado($("cEmpty"), "ok", {}); $("cTbl").hidden = false;
       $("cTbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const desc = String(f.Descricao || "");
@@ -534,13 +557,15 @@
       $("pContador").textContent = lista.length + " de " + patrimonio.length + " item(ns)";
 
       if (!lista.length) {
-        $("pTbody").innerHTML = ""; $("pTbl").hidden = true; $("pEmpty").hidden = false;
-        $("pEmpty").textContent = patrimonio.length
-          ? "Nenhum item corresponde aos filtros."
-          : "Nenhum item de patrimônio (Ferramentas_Patrimonio está vazia).";
+        $("pTbody").innerHTML = ""; $("pTbl").hidden = true;
+        EG.renderEstado($("pEmpty"), "vazio", {
+          mensagem: patrimonio.length
+            ? "Nenhum item corresponde aos filtros."
+            : "Nenhum item de patrimônio (Ferramentas_Patrimonio está vazia)."
+        });
         return;
       }
-      $("pEmpty").hidden = true; $("pTbl").hidden = false;
+      EG.renderEstado($("pEmpty"), "ok", {}); $("pTbl").hidden = false;
       $("pTbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const c = cor(COR_STATUS_FER, f.Status_Ferramenta);
@@ -573,11 +598,11 @@
         return String(catNome(fa.CatalogoLookupId)).localeCompare(String(catNome(fb.CatalogoLookupId)), "pt-BR");
       });
       if (!lista.length) {
-        $("vTbody").innerHTML = ""; $("vTbl").hidden = true; $("vEmpty").hidden = false;
-        $("vEmpty").textContent = "Nenhum vínculo cadastrado — sem vínculos, o checklist de início de dia não exige nada.";
+        $("vTbody").innerHTML = ""; $("vTbl").hidden = true;
+        EG.renderEstado($("vEmpty"), "vazio", { mensagem: "Nenhum vínculo cadastrado — sem vínculos, o checklist de início de dia não exige nada." });
         return;
       }
-      $("vEmpty").hidden = true; $("vTbl").hidden = false;
+      EG.renderEstado($("vEmpty"), "ok", {}); $("vTbl").hidden = false;
       $("vTbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const c = cor(COR_EXIGENCIA, f.Exigencia);
@@ -653,13 +678,10 @@
           (sub ? "<div style='font-size:.82rem;font-weight:400;color:#8b949e;margin-top:3px'>" + esc(sub) + "</div>" : "") +
         "</div><div class='acs'><button id='de'>Editar ✏️</button><button class='x' id='dc'>Fechar ✕</button></div></div>" +
         "<div class='drawer-body'>" + corpoHtml +
-          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
-          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
         "</div>";
       $("dc").onclick = fecharDrawer;
       $("de").onclick = onEditar;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function fecharDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 

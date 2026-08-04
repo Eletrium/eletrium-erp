@@ -30,6 +30,14 @@
 
     td.neg { color: #f85149; font-weight: 600; }
     tr.semestoque td:first-child { box-shadow: inset 3px 0 0 #f85149; }
+    /* 2º CANAL (acessibilidade): a indisponibilidade era comunicada SÓ pelo vermelho
+       da célula (e pela faixa vermelha da linha) — o número "0" vermelho e o número
+       "0" normal são graficamente idênticos. O selo textual abaixo faz a linha se
+       explicar sozinha, sem depender do drawer. Só apresentação: o teste semDisp()
+       e o limiar (<= 0) não mudam. */
+    .selo-sem { display: inline-block; border: 1px solid #f8514966; color: #f85149; background: #f8514914;
+                border-radius: 999px; padding: 0 7px; margin-left: 6px; font-size: .68rem; font-weight: 600;
+                white-space: nowrap; vertical-align: middle; }
     .inativo { opacity: .55; }
     .sub { color: #8b949e; font-size: .8rem; }
     /* badge âmbar do "Aceito" legado (pode ter chegado pela web sem reserva de estoque) */
@@ -40,7 +48,7 @@
     .eo .eo-t { font-weight: 600; font-size: .88rem; color: #e6edf3; }
     .eo label { color: #8b949e; font-size: .8rem; display: flex; flex-direction: column; gap: 4px; }
     .eo select, .eo input, .eo textarea { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 10px; font-size: .86rem; font-family: inherit; }
-    .eo select:focus, .eo input:focus, .eo textarea:focus { outline: 0; border-color: #1f6feb; }
+    .eo select:focus, .eo input:focus, .eo textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .eo textarea { min-height: 70px; resize: vertical; }
     .eo .eo-btns { display: flex; gap: 8px; }
     .eo .eo-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
@@ -52,6 +60,11 @@
     .ope-form { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
     .ope-form .eo { border-top: none; padding-top: 0; margin-top: 0; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .eo .eo-aviso::before { content: "⚠️  "; }
   </style>
 </head>
 <body>
@@ -494,7 +507,7 @@
           <td>${esc(f.Title ?? "—")}${f.Ativo === false ? ' <span class="sub">(inativo)</span>' : ""}</td>
           <td>${fmtNum(num(f.Estoque_Atual))}</td>
           <td>${fmtNum(num(f.Estoque_Reservado))}</td>
-          <td class="${sem ? "neg" : ""}">${fmtNum(num(f.Estoque_Disponivel))}</td>
+          <td class="${sem ? "neg" : ""}">${fmtNum(num(f.Estoque_Disponivel))}${sem ? ' <span class="selo-sem">sem estoque</span>' : ""}</td>
           <td>${brl(num(f.Custo_Medio))}</td>
           <td class="num">${brl(num(f.Preco_Venda_Sugerido))}</td>
         </tr>`;
@@ -703,12 +716,9 @@
       $("drawer").innerHTML = `
         <div class="drawer-head"><div class="t">${esc(titulo)}</div><button class="x" id="dc">Fechar ✕</button></div>
         <div class="drawer-body">${corpo}
-          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
-          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
       $("dc").onclick = closeDrawer;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
       $("drawer").setAttribute("aria-hidden", "false");
     }
     function closeDrawer() {

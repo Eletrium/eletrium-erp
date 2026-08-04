@@ -35,12 +35,16 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
       padding: 7px 10px; font-size: .86rem; font-family: inherit;
     }
-    .ed input:focus, .ed select:focus, .ed textarea:focus { outline: 0; border-color: #1f6feb; }
+    .ed input:focus, .ed select:focus, .ed textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .ed textarea { min-height: 64px; resize: vertical; }
     .ed-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
     .ed-btns { display: flex; gap: 8px; }
     .ed-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .ed-msg.err { color: #F85149; }
+    /* 2º canal (daltonismo): a mensagem de gravação só mudava de cor entre
+       "gravando/ok" (cinza) e "falhou" (vermelho). Glifo por CSS — o
+       textContent escrito pelo código continua idêntico. */
+    .ed-msg.err::before { content: "✕ "; font-weight: 700; }
 
     /* seções novas do drawer (KM / Fechamento / Equipe) */
     .lock { font-size: .8rem; cursor: help; }
@@ -86,8 +90,11 @@
   <main>
     <div class="kpis" id="kpis" hidden>
       <div class="kpi"><div class="k">Total de OS</div><div class="v" id="kTotal">0</div></div>
-      <div class="kpi"><div class="k">Em andamento</div><div class="v" id="kAnd" style="color:#F0883E">0</div></div>
-      <div class="kpi"><div class="k">Concluídas</div><div class="v" id="kConc" style="color:#22B573">0</div></div>
+      <!-- 2º canal (daltonismo): glifo de faixa do app.css onde a cor carrega
+           valência. "Total de OS" e "Soma de Valor OS" ficam sem glifo — são
+           contagem/soma neutras, o verde ali é acento monetário, não juízo. -->
+      <div class="kpi"><div class="k">Em andamento</div><div class="v fx-medio" id="kAnd" style="color:#F0883E">0</div></div>
+      <div class="kpi"><div class="k">Concluídas</div><div class="v fx-bom" id="kConc" style="color:#22B573">0</div></div>
       <div class="kpi"><div class="k">Soma de Valor OS</div><div class="v" id="kValor" style="color:#3fb950">R$ 0,00</div></div>
     </div>
 
@@ -98,11 +105,13 @@
       <span class="hint" id="hint"></span>
     </div>
 
+    <!-- estado da seção (carregando / vazio / erro) — componente compartilhado
+         EG.renderEstado (graph.js). Conteúdo e visibilidade são SÓ dele. -->
+    <div class="estado" id="empty" hidden></div>
     <table id="tbl" hidden>
       <thead><tr><th>Número</th><th>Cliente</th><th>Técnico</th><th>Status</th><th>Tipo</th><th>Abertura</th><th>Valor</th></tr></thead>
       <tbody id="tbody"></tbody>
     </table>
-    <div class="empty" id="empty" hidden>Nenhuma OS.</div>
   </main>
 
   <div class="overlay" id="overlay"></div>
@@ -311,9 +320,12 @@
     STATUS_OS.forEach(s => { const o = document.createElement("option"); o.value = s; o.textContent = s; $("fStatus").appendChild(o); });
     $("fStatus").onchange = aplicarFiltro;
 
-    $("btnLoad").onclick = async () => {
+    // função nomeada (e não handler anônimo) para poder ser reusada como
+    // onRetry do estado de erro da seção — ver EG.renderEstado abaixo.
+    async function carregarOS() {
       try {
         setStatus("Carregando ordens de serviço...");
+        EG.renderEstado($("empty"), "carregando", { mensagem: "Carregando ordens de serviço…" });
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
         // travarChoices (e não só validarChoices): esta tela GRAVA Status
         // ("Concluída" no concluir, "Em Andamento" na reabertura) — divergência
@@ -386,8 +398,15 @@
         setStatus("OK — " + todas.length + " OS carregada(s)" +
                   (equipeCarregada ? ", " + equipe.length + " linha(s) de equipe" : ". Aviso: OS_Equipe não carregou") +
                   (locaisCarregados ? ", " + locaisCli.length + " local(is) de cliente." : ". Aviso: Clientes_Locais não carregou."));
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        // estado de erro DA SEÇÃO (a barra global acima continua existindo):
+        // só a falha de CARGA cai aqui — as listas secundárias seguem em
+        // console.warn, sem virar erro de tela.
+        EG.renderEstado($("empty"), "erro", { mensagem: "Falha ao carregar ordens de serviço: " + e.message, onRetry: carregarOS });
+      }
+    }
+    $("btnLoad").onclick = carregarOS;
 
     function indicadores(list) {
       const st = (o) => (o.fields || {}).Status;
@@ -407,11 +426,12 @@
     function render(list) {
       if (!list.length) {
         $("tbody").innerHTML = "";
-        $("tbl").hidden = true; $("empty").hidden = false;
-        $("empty").textContent = todas.length ? "Nenhuma OS com esse status." : "Nenhuma OS.";
+        $("tbl").hidden = true;
+        // preserva as DUAS mensagens: vazio por filtro x vazio de verdade
+        EG.renderEstado($("empty"), "vazio", { mensagem: todas.length ? "Nenhuma OS com esse status." : "Nenhuma OS." });
         return;
       }
-      $("empty").hidden = true; $("tbl").hidden = false;
+      EG.renderEstado($("empty"), "ok"); $("tbl").hidden = false;
       $("tbody").innerHTML = list.map(o => {
         const f = o.fields || {};
         const cor = statusCor(f.Status);
@@ -485,11 +505,8 @@
           ${blocoRetificacao(f, o.id)}
           ${blocoEquipe()}
           <div><a href="relatorio-os.html?os=${esc(o.id)}" target="_blank" rel="noopener" style="color:#58a6ff;font-size:.8rem;display:inline-block;margin-top:10px">📄 Relatório consolidado ↗</a></div>
-          <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
-          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
-      $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      ligarEdicao(o);
+      $("dc").onclick = closeDrawer;       ligarEdicao(o);
       ligarKM(o);
       ligarFechamento(o);
       ligarRetificacao(o);

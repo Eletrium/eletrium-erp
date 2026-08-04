@@ -60,8 +60,13 @@
 
     .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
-    a.lnk { color: #58a6ff; font-size: .8rem; text-decoration: none; white-space: nowrap; }
+    a.lnk { color: var(--acao-clara); font-size: .8rem; text-decoration: none; white-space: nowrap; }
     a.lnk:hover { text-decoration: underline; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .aviso-ro::before { content: "ℹ️  "; }
   </style>
 </head>
 <body>
@@ -110,10 +115,15 @@
         <div class="kpi"><div class="k">Técnicos no lote</div><div class="v" id="kTec">0</div><div class="sub">com linhas medíveis no período</div></div>
         <div class="kpi"><div class="k">OS distintas</div><div class="v" id="kOs">0</div></div>
         <div class="kpi"><div class="k">Horas aprovadas</div><div class="v" id="kHoras">0</div><div class="sub">só linhas Aprovadas</div></div>
-        <div class="kpi"><div class="k">Valor aprovado</div><div class="v" id="kValor" style="color:#3fb950">R$ 0,00</div><div class="sub">horas × valor-hora (Aprovadas)</div></div>
-        <div class="kpi"><div class="k">Em análise</div><div class="v" id="kAnalise" style="color:#D29922">R$ 0,00</div><div class="sub" id="kAnaliseSub">0 linha(s) — não soma no aprovado</div></div>
-        <div class="kpi"><div class="k">Bloqueadas</div><div class="v" id="kBloq" style="color:#F85149">0</div><div class="sub">condição insegura (EPI reprovado)</div></div>
-        <div class="kpi"><div class="k">Fora do lote</div><div class="v" id="kFora" style="color:#F0883E">0</div><div class="sub">sem horas — nada a medir</div></div>
+        <!-- 2º canal (daltonismo): estes 4 KPIs são o semáforo do lote — aprovado /
+             em análise / bloqueada / fora — e a valência estava só na cor.
+             Glifo de faixa do app.css (● bom / ◐ atenção / ○ ruim) antes do número;
+             é ::before de CSS, sobrevive ao textContent do render. Os KPIs neutros
+             (técnicos, OS distintas, horas) continuam sem glifo. -->
+        <div class="kpi"><div class="k">Valor aprovado</div><div class="v fx-bom" id="kValor" style="color:#3fb950">R$ 0,00</div><div class="sub">horas × valor-hora (Aprovadas)</div></div>
+        <div class="kpi"><div class="k">Em análise</div><div class="v fx-medio" id="kAnalise" style="color:#D29922">R$ 0,00</div><div class="sub" id="kAnaliseSub">0 linha(s) — não soma no aprovado</div></div>
+        <div class="kpi"><div class="k">Bloqueadas</div><div class="v fx-ruim" id="kBloq" style="color:#F85149">0</div><div class="sub">condição insegura (EPI reprovado)</div></div>
+        <div class="kpi"><div class="k">Fora do lote</div><div class="v fx-medio" id="kFora" style="color:#F0883E">0</div><div class="sub">sem horas — nada a medir</div></div>
       </div>
 
       <div class="toolbar">
@@ -135,6 +145,8 @@
       </div>
 
       <div class="secao" id="secLote">Medição da competência</div>
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="lEmpty" hidden></div>
       <table id="lTbl" hidden>
         <thead><tr>
           <th>OS</th><th>Cliente</th><th>Função</th><th>Check-in</th><th>Check-out</th>
@@ -142,7 +154,6 @@
         </tr></thead>
         <tbody id="lTbody"></tbody>
       </table>
-      <div class="empty" id="lEmpty" hidden></div>
 
       <div class="secao" id="secFora" hidden>Fora do lote <span>— linhas do período sem horas medíveis (nada some em silêncio)</span></div>
       <table id="fTbl" hidden>
@@ -153,6 +164,8 @@
       </table>
 
       <div class="secao" id="secLotes" hidden>Lotes fechados <span>— OS_Medicoes_Lotes (read-only; o lote congelado é a verdade — mudar tarifa não recalcula lote fechado)</span></div>
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="loEmpty" hidden></div>
       <table id="loTbl" hidden>
         <thead><tr>
           <th>Lote</th><th>Competência</th><th>Prestador</th><th>Status</th>
@@ -160,7 +173,6 @@
         </tr></thead>
         <tbody id="loTbody"></tbody>
       </table>
-      <div class="empty" id="loEmpty" hidden></div>
     </div>
   </main>
 
@@ -396,9 +408,17 @@
     const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ":", e.message); return []; });
 
     /* ============================== carga ============================== */
-    $("btnLoad").onclick = async () => {
+    // nomeada para poder ser o onRetry do estado de erro de cada seção
+    $("btnLoad").onclick = () => { carregar(); };
+    async function carregar() {
       try {
         setStatus("Carregando medição...");
+        // estado por SEÇÃO (a barra #status continua sendo o estado global e
+        // continua sendo o canal das VALIDAÇÕES de regra do fechar lote/XLS).
+        // "Fora do lote" não tem contêiner: a seção inteira some quando não há
+        // linha fora — não existe mensagem de vazio aprovada para ela.
+        EG.renderEstado($("lEmpty"), "carregando", { mensagem: "Carregando linhas de medição…" });
+        EG.renderEstado($("loEmpty"), "carregando", { mensagem: "Carregando lotes fechados…" });
         // OrdensDeServico e Clientes usam o expand padrão de EG.listItems
         // ("expand=fields&$top=500"), que já traz Local_AtendimentoLookupId
         // na OS e Endereco/Cidade no cliente — insumos do endereço do
@@ -422,8 +442,12 @@
                   ordens.length + " OS, " + clientes.length + " cliente(s), " +
                   tarifas.length + " tarifa(s), " + lotes.length + " lote(s) fechado(s), " +
                   locais.length + " local(is) de cliente.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("lEmpty"), "erro", { mensagem: "Falha ao carregar linhas de medição: " + e.message, onRetry: carregar });
+        EG.renderEstado($("loEmpty"), "erro", { mensagem: "Falha ao carregar lotes fechados: " + e.message, onRetry: carregar });
+      }
+    }
 
     // separado da carga para poder ser exercitado com dados falsos (window.MED.setDados)
     function setDados(eq, te, os, cl, ta, lo, lc) {
@@ -633,14 +657,16 @@
 
     function renderMedicao(regs, stF) {
       if (!regs.length) {
-        $("lTbody").innerHTML = ""; $("lTbl").hidden = true; $("lEmpty").hidden = false;
-        $("lEmpty").textContent = equipe.length
-          ? (stF ? "Nenhuma linha com status “" + stF + "” nesta competência com os filtros atuais."
-                 : "Nenhuma linha de OS_Equipe é medível nesta competência com os filtros atuais. Veja a seção “Fora do lote” abaixo — se houver linhas lá, o motivo de cada exclusão está indicado.")
-          : "Nenhuma linha registrada em OS_Equipe.";
+        $("lTbody").innerHTML = ""; $("lTbl").hidden = true;
+        EG.renderEstado($("lEmpty"), "vazio", {
+          mensagem: equipe.length
+            ? (stF ? "Nenhuma linha com status “" + stF + "” nesta competência com os filtros atuais."
+                   : "Nenhuma linha de OS_Equipe é medível nesta competência com os filtros atuais. Veja a seção “Fora do lote” abaixo — se houver linhas lá, o motivo de cada exclusão está indicado.")
+            : "Nenhuma linha registrada em OS_Equipe."
+        });
         return;
       }
-      $("lEmpty").hidden = true; $("lTbl").hidden = false;
+      EG.renderEstado($("lEmpty"), "ok", {}); $("lTbl").hidden = false;
 
       $("lTbody").innerHTML = agruparPorTec(regs).map(g => {
         const tf = g.tf || {};
@@ -702,11 +728,10 @@
       mapLote = {}; lotes.forEach(l => { mapLote[l.id] = l; });
       if (!lotes.length) {
         $("loTbody").innerHTML = ""; $("loTbl").hidden = true;
-        $("loEmpty").hidden = false;
-        $("loEmpty").textContent = "Nenhum lote fechado ainda (OS_Medicoes_Lotes vazia).";
+        EG.renderEstado($("loEmpty"), "vazio", { mensagem: "Nenhum lote fechado ainda (OS_Medicoes_Lotes vazia)." });
         return;
       }
-      $("loEmpty").hidden = true; $("loTbl").hidden = false;
+      EG.renderEstado($("loEmpty"), "ok", {}); $("loTbl").hidden = false;
       const ord = lotes.slice().sort((a, b) => {
         const fa = a.fields || {}, fb = b.fields || {};
         return String(fb.Competencia || "").localeCompare(String(fa.Competencia || "")) ||
@@ -993,12 +1018,9 @@
           "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(st) + "</span></div>" +
         "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpo +
-          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
-          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre>" +
         "</div>";
       $("dc").onclick = fechar;
-      $("rt").onclick = () => { const p = $("rf"); p.hidden = !p.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
 
     // drawer read-only de um lote fechado — mostra o cálculo CONGELADO

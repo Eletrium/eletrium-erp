@@ -131,13 +131,12 @@
     .hint { color: #8b949e; font-size: .8rem; }
     .toolbar .hint.right { margin-left: auto; }
     #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
-    #estado .eg-estado-erro { color: #F85149; }
-    #estado .eg-estado-retry { margin-left: 6px; }
+    /* estados de tela: regras .eg-estado-* agora vivem SO no app.css */
 
     td .badge { white-space: nowrap; margin-top: 0; }
     td.dim { color: #8b949e; }
     td.n { text-align: right; white-space: nowrap; }
-    a.lnk { color: #58a6ff; font-size: .8rem; text-decoration: none; white-space: nowrap; }
+    a.lnk { color: var(--acao-clara); font-size: .8rem; text-decoration: none; white-space: nowrap; }
     a.lnk:hover { text-decoration: underline; }
 
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
@@ -153,7 +152,7 @@
     .ver .vt { font-weight: 600; font-size: .88rem; }
     .ver .vs { color: #8b949e; font-size: .78rem; margin-top: 2px; line-height: 1.45; }
     .ver .sha { font-family: ui-monospace, monospace; font-size: .74rem; color: #8b949e; }
-    .ver.atual { border-color: #1f6feb55; background: #1f6feb12; }
+    .ver.atual { border-color: var(--acao-borda); background: var(--acao-tenue); }
     /* publicada ganha faixa lateral própria — some com "atual" na mesma linha
        quando as duas coincidem (documento publicado sem revisão em andamento) */
     .ver.publicada { border-left: 3px solid #58a6ff; }
@@ -167,13 +166,19 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
       padding: 8px 10px; font-size: .88rem; font-family: inherit;
     }
-    .acao input:focus, .acao select:focus, .acao textarea:focus { outline: 0; border-color: #1f6feb; }
+    .acao input:focus, .acao select:focus, .acao textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .acao textarea { min-height: 60px; resize: vertical; }
     .acao label { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
     .acao label .req { color: #F85149; }
     .acao-btns { display: flex; gap: 8px; }
     .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .acao-msg.err { color: #F85149; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .publinfo::before { content: "ℹ️  "; }
+    .diverge::before { content: "⚠️  "; }
   </style>
 </head>
 <body>
@@ -802,12 +807,9 @@
           "<div style='margin-top:6px'><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Estado_Documento || "—") + "</span></div>" +
         "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpo +
-          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
-          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre>" +
         "</div>";
       $("dc").onclick = fecharDrawer;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("eAplicar").onclick = () => mudarEstado(o);
+            $("eAplicar").onclick = () => mudarEstado(o);
       $("rCriar").onclick = () => criarRevisao(o);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }

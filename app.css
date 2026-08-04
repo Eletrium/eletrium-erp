@@ -1,59 +1,163 @@
 /* app.css — estilos compartilhados das telas web do Eletrium ERP */
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; background: #0d1117; color: #e6edf3; }
 
-header { padding: 12px 20px; border-bottom: 1px solid #30363d; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+/* ===========================================================================
+   PALETA INSTITUCIONAL — ponto único de troca de cor.
+   ---------------------------------------------------------------------------
+   ORIGEM DO VERDE (declarado, não herdado): o repositório NÃO tinha cor de
+   marca. Não há logo, favicon, nem variável CSS de marca; a única identidade
+   visual existente era o quadrado da inbound.html, que usava um gradiente AZUL
+   (#0078D4 -> #58a6ff) herdado do tema Microsoft. Portanto o verde abaixo é
+   ESCOLHA DO IMPLEMENTADOR, não a cor oficial da Eletrium. Se o verde real da
+   marca for outro, TROQUE SÓ AQUI: as 19 telas leem estas variáveis.
+
+   Contraste medido sobre os fundos reais do app (WCAG 2.1):
+     --acao        #1a7f37 com texto #fff ......... 5.08:1  (AA texto normal)
+     --acao-clara  #56d364 sobre #0d1117 .......... 9.82:1  (AAA)
+   =========================================================================== */
+:root {
+  color-scheme: light dark;
+
+  /* Ação / marca (era o azul #0078D4 / #1f6feb / #58a6ff) */
+  --acao:        #1a7f37;   /* preenchimento de botão primário (texto branco)   */
+  --acao-hover:  #238636;   /* estado hover do preenchimento                    */
+  --acao-clara:  #56d364;   /* texto, link, foco e borda sobre fundo escuro     */
+  --acao-tenue:  #56d3641f; /* fundo tênue: nav ativa, aba ativa, alvo de drop  */
+  --acao-borda:  #56d36455; /* borda semitransparente                          */
+
+  /* Cores SEMÂNTICAS — deliberadamente NÃO viram verde.
+     O azul continua existindo como "informação"; trocá-lo por verde colidiria
+     com o verde de ação e com o verde de "aprovado". */
+  --info:        #58a6ff;
+  --aviso:       #e3b341;
+  --aviso-borda: #d2992255;
+  --aviso-fundo: #d2992218;
+  --erro:        #f85149;
+  --ok:          #22b573;
+
+  /* Neutros */
+  --fundo:       #0d1117;
+  --fundo-2:     #161b22;
+  --fundo-3:     #010409;
+  --texto:       #e6edf3;
+  --texto-fraco: #8b949e;
+  --borda:       #30363d;
+
+  /* Kanban — largura ÚNICA de coluna, compartilhada por index.html e
+     faturamento.html para que os dois quadros fiquem padronizados entre si. */
+  --kanban-col: 264px;
+}
+
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; background: var(--fundo); color: var(--texto); }
+
+header { padding: 12px 20px; border-bottom: 1px solid var(--borda); display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
 header h1 { font-size: 1rem; margin: 0; }
 nav { display: flex; gap: 4px; flex: 1; }
-nav a { color: #8b949e; text-decoration: none; font-size: .9rem; padding: 5px 12px; border-radius: 6px; }
-nav a:hover { color: #e6edf3; background: #ffffff0d; }
-nav a.active { color: #e6edf3; background: #1f6feb22; }
-header .user { font-size: .82rem; color: #8b949e; }
+nav a { color: var(--texto-fraco); text-decoration: none; font-size: .9rem; padding: 5px 12px; border-radius: 6px; }
+nav a:hover { color: var(--texto); background: #ffffff0d; }
+/* nav ativa: além do fundo verde, ganha sublinhado — a página atual não é
+   comunicada só por cor. */
+nav a.active { color: var(--texto); background: var(--acao-tenue); box-shadow: inset 0 -2px 0 var(--acao-clara); }
+header .user { font-size: .82rem; color: var(--texto-fraco); }
 
-button { font-size: .9rem; padding: 7px 14px; border-radius: 6px; border: 1px solid #0078D4; background: #0078D4; color: #fff; cursor: pointer; }
-button.sec { background: transparent; color: #58a6ff; border-color: #30363d; }
+button { font-size: .9rem; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--acao); background: var(--acao); color: #fff; cursor: pointer; }
+button:hover:not(:disabled) { background: var(--acao-hover); border-color: var(--acao-hover); }
+button.sec { background: transparent; color: var(--acao-clara); border-color: var(--borda); }
+button.sec:hover:not(:disabled) { background: var(--acao-tenue); border-color: var(--acao-borda); }
 button:disabled { opacity: .5; cursor: not-allowed; }
+/* foco visível em qualquer controle — acessibilidade de teclado */
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--acao-clara); outline-offset: 2px;
+}
 
-#status { font-size: .85rem; color: #8b949e; padding: 8px 20px; }
-#status.err { color: #f85149; }
+#status { font-size: .85rem; color: var(--texto-fraco); padding: 8px 20px; }
+#status.err { color: var(--erro); }
+/* 2º canal: erro no status não é só vermelho, ganha prefixo de aviso */
+#status.err::before { content: "⚠ "; }
 
 main { padding: 12px 20px 40px; }
 
 /* grid de cards */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 14px; cursor: pointer; }
-.card:hover { border-color: #58a6ff; }
+.card { background: var(--fundo-2); border: 1px solid var(--borda); border-radius: 10px; padding: 14px; cursor: pointer; }
+.card:hover { border-color: var(--acao-clara); }
 .card .t { font-weight: 600; font-size: .98rem; }
-.card .s { color: #8b949e; font-size: .84rem; margin: 3px 0; }
-.badge { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: .74rem; border: 1px solid #30363d; color: #8b949e; margin-top: 6px; }
+.card .s { color: var(--texto-fraco); font-size: .84rem; margin: 3px 0; }
+.badge { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: .74rem; border: 1px solid var(--borda); color: var(--texto-fraco); margin-top: 6px; }
 
 /* tabela */
 table { width: 100%; border-collapse: collapse; font-size: .88rem; }
 th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #21262d; }
-th { color: #8b949e; font-weight: 600; font-size: .8rem; position: sticky; top: 0; background: #0d1117; }
+th { color: var(--texto-fraco); font-weight: 600; font-size: .8rem; position: sticky; top: 0; background: var(--fundo); }
 tbody tr { cursor: pointer; }
-tbody tr:hover { background: #161b22; }
-td.num { color: #3fb950; font-weight: 600; white-space: nowrap; }
+tbody tr:hover { background: var(--fundo-2); }
+/* td.num era VERDE (#3fb950) em toda célula numérica. Neutralizado de
+   propósito: com o verde virando cor de AÇÃO, um número verde ao lado de um
+   botão verde deixa de significar qualquer coisa. Valor continua destacado
+   por peso e alinhamento, não por cor. */
+td.num { color: var(--texto); font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
-.empty { color: #8b949e; font-size: .9rem; padding: 20px 0; }
+.empty { color: var(--texto-fraco); font-size: .9rem; padding: 20px 0; }
+
+/* ===========================================================================
+   ESTADOS DE TELA (EG.renderEstado) — carregando · vazio · erro · ok
+   Antes cada tela copiava estas 3 regras no seu <style> local. Agora moram
+   aqui, uma vez só, e todas as telas herdam o MESMO visual e o MESMO texto.
+   Cada estado tem 2º canal: ícone + cor (nunca cor sozinha).
+   =========================================================================== */
+.eg-estado { font-size: .9rem; }
+.eg-estado-carregando { color: var(--texto-fraco); }
+.eg-estado-vazio { color: var(--texto-fraco); }
+.eg-estado-erro { color: var(--erro); font-weight: 600; }
+.eg-estado-retry { margin-left: 8px; font-size: .82rem; padding: 4px 12px; background: transparent; color: var(--acao-clara); border: 1px solid var(--borda); }
+.eg-estado-retry:hover { background: var(--acao-tenue); border-color: var(--acao-borda); }
+/* contêiner padrão dos estados nas telas com <main> */
+.estado { margin: 8px 0; font-size: .9rem; color: var(--texto-fraco); }
+.estado[hidden] { display: none !important; }
 
 /* drawer de detalhe */
 .overlay { position: fixed; inset: 0; background: #000a; opacity: 0; pointer-events: none; transition: opacity .15s; z-index: 10; }
 .overlay.open { opacity: 1; pointer-events: auto; }
-.drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 440px; max-width: 92vw; background: #0d1117; border-left: 1px solid #30363d; transform: translateX(100%); transition: transform .18s ease; z-index: 11; display: flex; flex-direction: column; }
+.drawer { position: fixed; top: 0; right: 0; height: 100vh; width: 440px; max-width: 92vw; background: var(--fundo); border-left: 1px solid var(--borda); transform: translateX(100%); transition: transform .18s ease; z-index: 11; display: flex; flex-direction: column; }
 .drawer.open { transform: translateX(0); }
-.drawer-head { padding: 16px 18px; border-bottom: 1px solid #30363d; display: flex; align-items: flex-start; gap: 10px; }
+.drawer-head { padding: 16px 18px; border-bottom: 1px solid var(--borda); display: flex; align-items: flex-start; gap: 10px; }
 .drawer-head .t { flex: 1; font-size: 1.1rem; font-weight: 600; }
-.drawer-head .x { background: transparent; border: 1px solid #30363d; color: #8b949e; padding: 4px 10px; }
+.drawer-head .x { background: transparent; border: 1px solid var(--borda); color: var(--texto-fraco); padding: 4px 10px; }
 .drawer-body { padding: 6px 18px 24px; overflow-y: auto; }
 .drawer-body dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; margin: 14px 0; }
-.drawer-body dt { color: #8b949e; font-size: .82rem; }
+.drawer-body dt { color: var(--texto-fraco); font-size: .82rem; }
 .drawer-body dd { margin: 0; font-size: .88rem; word-break: break-word; }
-.drawer-body pre { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 300px; font-size: .78rem; }
-.raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; display: inline-block; margin-top: 10px; }
+.drawer-body pre { background: var(--fundo-3); border: 1px solid var(--borda); border-radius: 8px; padding: 12px; overflow: auto; max-height: 300px; font-size: .78rem; }
+
+/* ===========================================================================
+   AVISOS — severidade com 2º CANAL (ícone), não só cor.
+   Os três blocos tinham layout idêntico e diferiam apenas na cor de fundo;
+   quem não distingue azul de âmbar não distinguia informação de alerta.
+   =========================================================================== */
+.aviso-base { margin: 8px 0; padding: 10px 14px; border-radius: 8px; font-size: .85rem; }
+.aviso-base::before { font-weight: 700; margin-right: 6px; }
 
 /* aviso de divergência de rótulos de Choice (EG.renderAvisoChoices) */
-.choice-warn { margin: 8px 20px; padding: 10px 14px; border-radius: 8px; border: 1px solid #d2992255; background: #d2992218; color: #e3b341; font-size: .85rem; }
+.choice-warn { margin: 8px 20px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--aviso-borda); background: var(--aviso-fundo); color: var(--aviso); font-size: .85rem; }
 .choice-warn code { background: #ffffff14; padding: 1px 5px; border-radius: 4px; }
 .choice-warn[hidden] { display: none !important; }
+
+/* ===========================================================================
+   2º CANAL PARA INDICADORES — utilitários compartilhados.
+   Regra da onda: nenhum estado pode ser comunicado SÓ por cor. Estas classes
+   acrescentam glifo/sinal ao lado da cor.
+   =========================================================================== */
+/* valência numérica: verde/vermelho ganham sinal explícito ▲ / ▼ */
+.sin-pos::before { content: "▲ "; }
+.sin-neg::before { content: "▼ "; }
+/* faixa de saúde (ex.: margem): glifo antes do número */
+.fx-bom::before  { content: "● "; }
+.fx-medio::before{ content: "◐ "; }
+.fx-ruim::before { content: "○ "; }
+.fx-sem::before  { content: "– "; }
+/* selo textual genérico, para quando só existir cor */
+.selo2 { font-size: .72rem; letter-spacing: .02em; opacity: .95; }
+
+@media print {
+  .eg-estado-retry { display: none !important; }
+}

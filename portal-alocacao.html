@@ -53,7 +53,7 @@
     .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
     .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
     .tab:hover { color: #e6edf3; }
-    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+    .tab.active { background: var(--acao-tenue); border-color: var(--acao-borda); color: #e6edf3; }
     .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
     .hint { color: #8b949e; font-size: .8rem; }
     .hint.right { margin-left: auto; }
@@ -65,7 +65,7 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
       padding: 6px 10px; font-size: .86rem; font-family: inherit;
     }
-    select:focus, input:focus, textarea:focus { outline: 0; border-color: #1f6feb; }
+    select:focus, input:focus, textarea:focus { outline: 0; border-color: var(--acao-clara); }
     textarea { resize: vertical; min-height: 70px; }
 
     /* formulário de nova proposta (gestor) */
@@ -117,6 +117,12 @@
     .confirma { border: 1px solid #2ea04355; background: #23863618; border-radius: 8px; padding: 10px 12px; }
     .confirma label { display: flex; gap: 8px; align-items: flex-start; font-size: .85rem; line-height: 1.45; cursor: pointer; }
     .confirma input[type=checkbox] { margin-top: 3px; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .aviso::before { content: "ℹ️  "; }
+    .aviso.warn::before { content: "⚠️  "; }
   </style>
 </head>
 <body>
@@ -196,13 +202,15 @@
         <span class="hint right" id="gContador"></span>
       </div>
 
+      <!-- estado da seção (carregando / vazio / erro) — componente compartilhado
+           EG.renderEstado (graph.js). Conteúdo e visibilidade são SÓ dele. -->
+      <div class="estado" id="gEmpty" hidden></div>
       <table id="gTbl" hidden>
         <thead><tr>
           <th>OS</th><th>Parceiro</th><th>Enviada em</th><th>Prazo</th><th>Expira em</th><th>Valor</th><th>Status</th>
         </tr></thead>
         <tbody id="gTbody"></tbody>
       </table>
-      <div class="empty" id="gEmpty" hidden></div>
     </section>
 
     <!-- ================ 2. MINHAS PROPOSTAS (PARCEIRO) ================ -->
@@ -237,13 +245,14 @@
       <div class="pend" id="parPend"></div>
 
       <div class="secao" id="parSecTodas" hidden>Todas as minhas propostas</div>
+      <!-- estado da seção — mesmo componente compartilhado -->
+      <div class="estado" id="pEmpty" hidden></div>
       <table id="pTbl" hidden>
         <thead><tr>
           <th>OS</th><th>Cliente</th><th>Enviada em</th><th>Expira em</th><th>Valor</th><th>Status</th>
         </tr></thead>
         <tbody id="pTbody"></tbody>
       </table>
-      <div class="empty" id="pEmpty" hidden></div>
     </section>
 
     <!-- ================= 3. MINHA AGENDA (PARCEIRO) ================= -->
@@ -252,13 +261,14 @@
         OS das propostas que você <strong>aceitou</strong>, ordenadas pela data prevista.
         Somente leitura — alterações de status da OS acontecem no fluxo normal do ERP.
       </div>
+      <!-- estado da seção — mesmo componente compartilhado -->
+      <div class="estado" id="aEmpty" hidden></div>
       <table id="aTbl" hidden>
         <thead><tr>
           <th>Data prevista</th><th>OS</th><th>Cliente</th><th>Categoria / Tipo</th><th>Status da OS</th><th></th>
         </tr></thead>
         <tbody id="aTbody"></tbody>
       </table>
-      <div class="empty" id="aEmpty" hidden></div>
     </section>
   </main>
 
@@ -437,9 +447,14 @@
     }
 
     /* ============================== carga ============================== */
-    $("btnLoad").onclick = async () => {
+    // função nomeada (e não handler anônimo) para poder ser reusada como
+    // onRetry do estado de erro das seções — ver EG.renderEstado abaixo.
+    async function carregarAlocacoes() {
       try {
         setStatus("Carregando alocações...");
+        EG.renderEstado($("gEmpty"), "carregando", { mensagem: "Carregando propostas de alocação…" });
+        EG.renderEstado($("pEmpty"), "carregando", { mensagem: "Carregando suas propostas…" });
+        EG.renderEstado($("aEmpty"), "carregando", { mensagem: "Carregando sua agenda…" });
 
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
         EG.validarChoices(LISTA_ALOC, "Status_Alocacao", STATUS_ALOC)
@@ -466,8 +481,17 @@
         mostrarSec(secAtual);
         setStatus("OK — " + alocacoes.length + " proposta(s), " + ordens.length + " OS, " +
                   tecnicos.length + " técnico(s), " + clientes.length + " cliente(s).");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        // SÓ o erro de CARGA vira estado "erro" de tela. Os setStatus(...,"err")
+        // de aceite/recusa/cancelamento são REGRA DE NEGÓCIO e continuam
+        // exclusivamente na barra global / na mensagem do drawer.
+        EG.renderEstado($("gEmpty"), "erro", { mensagem: "Falha ao carregar propostas de alocação: " + e.message, onRetry: carregarAlocacoes });
+        EG.renderEstado($("pEmpty"), "erro", { mensagem: "Falha ao carregar suas propostas: " + e.message, onRetry: carregarAlocacoes });
+        EG.renderEstado($("aEmpty"), "erro", { mensagem: "Falha ao carregar sua agenda: " + e.message, onRetry: carregarAlocacoes });
+      }
+    }
+    $("btnLoad").onclick = carregarAlocacoes;
 
     // separado da carga para poder ser exercitado com dados falsos (window.ALOC.setDados)
     function setDados(al, os, te, cl) {
@@ -612,13 +636,16 @@
       $("gContador").textContent = lista.length + " de " + alocacoes.length + " proposta(s)";
 
       if (!lista.length) {
-        $("gTbody").innerHTML = ""; $("gTbl").hidden = true; $("gEmpty").hidden = false;
-        $("gEmpty").textContent = alocacoes.length
-          ? "Nenhuma proposta corresponde ao filtro."
-          : "Nenhuma proposta de alocação ainda. Use o formulário acima para propor uma OS a um parceiro.";
+        $("gTbody").innerHTML = ""; $("gTbl").hidden = true;
+        // preserva as DUAS mensagens: vazio por filtro x vazio de verdade
+        EG.renderEstado($("gEmpty"), "vazio", {
+          mensagem: alocacoes.length
+            ? "Nenhuma proposta corresponde ao filtro."
+            : "Nenhuma proposta de alocação ainda. Use o formulário acima para propor uma OS a um parceiro."
+        });
         return;
       }
-      $("gEmpty").hidden = true; $("gTbl").hidden = false;
+      EG.renderEstado($("gEmpty"), "ok"); $("gTbl").hidden = false;
       $("gTbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const st = statusEfetivo(f);
@@ -706,11 +733,12 @@
       $("parSecTodas").hidden = minhas.length === 0;
       if (!minhas.length) {
         $("pTbody").innerHTML = ""; $("pTbl").hidden = true;
-        $("pEmpty").hidden = semVinculo;   // sem vínculo, o aviso amarelo já explica
-        $("pEmpty").textContent = "Nenhuma proposta enviada para você até agora.";
+        // sem vínculo, o aviso amarelo (#parSemVinculo) já explica — o estado
+        // da seção some ("ok" esconde o contêiner). Mesma condição de antes.
+        EG.renderEstado($("pEmpty"), semVinculo ? "ok" : "vazio", { mensagem: "Nenhuma proposta enviada para você até agora." });
         return;
       }
-      $("pEmpty").hidden = true; $("pTbl").hidden = false;
+      EG.renderEstado($("pEmpty"), "ok"); $("pTbl").hidden = false;
       $("pTbody").innerHTML = minhas.map(o => {
         const f = o.fields || {};
         const st = statusEfetivo(f);
@@ -745,13 +773,16 @@
       });
 
       if (!ord.length) {
-        $("aTbody").innerHTML = ""; $("aTbl").hidden = true; $("aEmpty").hidden = false;
-        $("aEmpty").textContent = meusTecIds.length
-          ? "Nenhuma prestação de serviço aceita ainda — sua agenda é montada pelos seus aceites."
-          : "Seu login não está vinculado a um cadastro MEI — fale com o gestor (veja a aba Minhas propostas).";
+        $("aTbody").innerHTML = ""; $("aTbl").hidden = true;
+        // preserva as DUAS mensagens: sem aceites x login sem vínculo MEI
+        EG.renderEstado($("aEmpty"), "vazio", {
+          mensagem: meusTecIds.length
+            ? "Nenhuma prestação de serviço aceita ainda — sua agenda é montada pelos seus aceites."
+            : "Seu login não está vinculado a um cadastro MEI — fale com o gestor (veja a aba Minhas propostas)."
+        });
         return;
       }
-      $("aEmpty").hidden = true; $("aTbl").hidden = false;
+      EG.renderEstado($("aEmpty"), "ok"); $("aTbl").hidden = false;
       $("aTbody").innerHTML = ord.map(o => {
         const f = o.fields || {};
         const os = osF(f.OSLookupId);
@@ -1057,12 +1088,9 @@
           (badge ? "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" : "") +
         "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpoHtml +
-          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
-          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
         "</div>";
       $("dc").onclick = fechar;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 

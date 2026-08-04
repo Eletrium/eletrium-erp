@@ -29,7 +29,7 @@
     .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
     .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
     .tab:hover { color: #e6edf3; }
-    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+    .tab.active { background: var(--acao-tenue); border-color: var(--acao-borda); color: #e6edf3; }
 
     .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
     .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
@@ -47,20 +47,26 @@
 
     /* árvore da EAP: indentação por nível */
     td .eap-ind { color: #30363d; }
-    td .eap-cod { color: #58a6ff; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .84rem; }
+    td .eap-cod { color: var(--acao-clara); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .84rem; }
 
     .neg { color: #F85149; }
     .pos { color: #3fb950; }
     .warn { color: #D29922; }
 
     .bar { display: inline-block; width: 90px; height: 8px; background: #21262d; border-radius: 4px; vertical-align: middle; margin-right: 6px; overflow: hidden; }
-    .bar i { display: block; height: 100%; background: #1f6feb; }
+    .bar i { display: block; height: 100%; background: var(--acao-clara); }
     .bar i.cheio { background: #22B573; }
     .bar i.estouro { background: #F0883E; }
 
     .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
     .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .aviso-ro::before { content: "ℹ️  "; }
+    .diverge::before { content: "⚠️  "; }
   </style>
 </head>
 <body>
@@ -483,7 +489,10 @@
       $("kReceita").textContent = brl(receita);
       const saldo = receita - custo;
       $("kSaldo").textContent = brl(saldo);
-      $("kSaldo").className = "v " + (saldo < 0 ? "neg" : "pos");
+      // 2º CANAL (acessibilidade): "R$ 1.234,00" verde e vermelho eram graficamente
+      // idênticos. sin-pos/sin-neg (app.css) prefixam ▲/▼ ao valor. Mesmo teste de
+      // sinal, mesma cor, mesmo número — só a leitura deixa de depender da cor.
+      $("kSaldo").className = "v " + (saldo < 0 ? "neg sin-neg" : "pos sin-pos");
     }
 
     /* ==================================================================
@@ -594,6 +603,11 @@
         // desvios só quando os DOIS lados existem — senão a coluna mentiria com 0
         const dQtd = (ehNum(f.Qtd_Prevista) && ehNum(f.Qtd_Aplicada)) ? num(f.Qtd_Aplicada) - num(f.Qtd_Prevista) : null;
         const dCusto = (ehNum(f.Custo_Previsto) && ehNum(f.Custo_Real)) ? num(f.Custo_Real) - num(f.Custo_Previsto) : null;
+        // 2º CANAL (acessibilidade): aqui NÃO entra sin-pos/sin-neg de propósito. O
+        // desvio já é impresso COM sinal explícito ("+" abaixo, "−" vindo de fmtN/brl),
+        // e a polaridade é INVERTIDA (aplicar acima do previsto = desvio ruim = "neg"),
+        // então o ▲/▼ das utilitárias contradiria o sinal ("▼ +3,00"). O sinal impresso
+        // já é o segundo canal — um só indicador, sem ambiguidade.
         const clsQ = dQtd == null ? "dim" : (dQtd > 0 ? "neg" : (dQtd < 0 ? "pos" : "dim"));
         const clsC = dCusto == null ? "dim" : (dCusto > 0 ? "neg" : (dCusto < 0 ? "pos" : "dim"));
         return "<tr data-tipo='mat' data-id='" + esc(o.id) + "'>" +
@@ -706,17 +720,19 @@
         const g = porComp[k];
         const saldo = g.receita - g.custo;
         acum += saldo; tC += g.custo; tR += g.receita;
+        // 2º CANAL (acessibilidade): saldo e saldo acumulado só mudavam de COR.
+        // sin-pos/sin-neg (app.css) prefixam ▲/▼. Mesmo teste (< 0), mesmo valor.
         return "<tr>" +
           "<td>" + esc(k) + "</td>" +
           "<td class='n'>" + esc(brl(g.custo)) + "</td>" +
           "<td class='n'>" + esc(brl(g.receita)) + "</td>" +
-          "<td class='n " + (saldo < 0 ? "neg" : "pos") + "'>" + esc(brl(saldo)) + "</td>" +
-          "<td class='n " + (acum < 0 ? "neg" : "pos") + "'>" + esc(brl(acum)) + "</td>" +
+          "<td class='n " + (saldo < 0 ? "neg sin-neg" : "pos sin-pos") + "'>" + esc(brl(saldo)) + "</td>" +
+          "<td class='n " + (acum < 0 ? "neg sin-neg" : "pos sin-pos") + "'>" + esc(brl(acum)) + "</td>" +
           "</tr>";
       }).join("") +
       "<tr class='tot-row'><td>Totais</td>" +
       "<td class='n'>" + esc(brl(tC)) + "</td><td class='n'>" + esc(brl(tR)) + "</td>" +
-      "<td class='n " + (tR - tC < 0 ? "neg" : "pos") + "'>" + esc(brl(tR - tC)) + "</td><td></td></tr>";
+      "<td class='n " + (tR - tC < 0 ? "neg sin-neg" : "pos sin-pos") + "'>" + esc(brl(tR - tC)) + "</td><td></td></tr>";
 
       // lançamentos crus (drawer por item)
       const ord = lista.slice().sort((a, b) =>
@@ -790,12 +806,9 @@
           (badge ? "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" : "") +
         "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpoHtml +
-          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
-          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
         "</div>";
       $("dc").onclick = fechar;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 

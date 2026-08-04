@@ -30,7 +30,7 @@
     .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
     .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
     .tab:hover { color: #e6edf3; }
-    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+    .tab.active { background: var(--acao-tenue); border-color: var(--acao-borda); color: #e6edf3; }
 
     .secao { margin: 22px 0 10px; font-size: .95rem; font-weight: 600; }
     .secao span { color: #8b949e; font-weight: 400; font-size: .82rem; }
@@ -39,7 +39,7 @@
     td .badge { white-space: nowrap; margin-top: 0; }
     td.n { text-align: right; white-space: nowrap; }
     td.dim { color: #8b949e; }
-    a.lnk { color: #58a6ff; font-size: .8rem; text-decoration: none; white-space: nowrap; }
+    a.lnk { color: var(--acao-clara); font-size: .8rem; text-decoration: none; white-space: nowrap; }
     a.lnk:hover { text-decoration: underline; }
 
     .ro { display: inline-block; border: 1px solid #30363d; border-radius: 6px; padding: 1px 8px; font-size: .72rem; color: #8b949e; }
@@ -63,10 +63,19 @@
     .acao { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
     .acao[hidden] { display: none; }
     .acao input { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; font-size: .88rem; font-family: inherit; }
-    .acao input:focus { outline: 0; border-color: #1f6feb; }
+    .acao input:focus { outline: 0; border-color: var(--acao-clara); }
     .acao-btns { display: flex; gap: 8px; }
     .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .acao-msg.err { color: #F85149; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .aviso-ro::before { content: "ℹ️  "; }
+    .diverge::before { content: "⚠️  "; }
+    /* mensagem do bloco de decisão: só a cor separava "gravando/ok" (cinza) de
+       "falhou" (vermelho). Glifo antes do texto; o textContent não muda. */
+    .acao-msg.err::before { content: "✕ "; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -112,9 +121,12 @@
       <div class="kpis">
         <div class="kpi"><div class="k">Fechamentos</div><div class="v" id="fK_qtd">0</div><div class="sub" id="fK_qtdSub">no filtro</div></div>
         <div class="kpi"><div class="k">Valor total</div><div class="v" id="fK_total" style="color:#3fb950">R$ 0,00</div><div class="sub">soma de Valor_Total_Pagar</div></div>
-        <div class="kpi"><div class="k">Em aberto (não pago)</div><div class="v" id="fK_aberto" style="color:#F0883E">R$ 0,00</div><div class="sub">tudo que não está “Pago”</div></div>
-        <div class="kpi"><div class="k">Aguardando fechamento</div><div class="v" id="fK_agu" style="color:#D29922">0</div></div>
-        <div class="kpi"><div class="k">Pagos</div><div class="v" id="fK_pago" style="color:#22B573">0</div></div>
+        <!-- 2º canal (daltonismo): glifo de faixa do app.css (● bom / ◐ atenção / ○ ruim)
+             onde a cor carrega valência. "Valor total" fica sem glifo: é soma neutra,
+             o verde ali é acento monetário, não juízo de bom/ruim. -->
+        <div class="kpi"><div class="k">Em aberto (não pago)</div><div class="v fx-medio" id="fK_aberto" style="color:#F0883E">R$ 0,00</div><div class="sub">tudo que não está “Pago”</div></div>
+        <div class="kpi"><div class="k">Aguardando fechamento</div><div class="v fx-medio" id="fK_agu" style="color:#D29922">0</div></div>
+        <div class="kpi"><div class="k">Pagos</div><div class="v fx-bom" id="fK_pago" style="color:#22B573">0</div></div>
       </div>
 
       <div class="toolbar">
@@ -128,6 +140,8 @@
         <span class="hint right" id="fContador"></span>
       </div>
 
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="fEmpty" hidden></div>
       <table id="fTbl" hidden>
         <thead><tr>
           <th>Técnico</th><th>Período</th><th>Dias</th><th>Meia / Compl.</th>
@@ -135,7 +149,6 @@
         </tr></thead>
         <tbody id="fTbody"></tbody>
       </table>
-      <div class="empty" id="fEmpty" hidden></div>
     </section>
 
     <!-- ============================ 2. DIÁRIAS ============================ -->
@@ -161,6 +174,8 @@
         <span class="hint right" id="dContador"></span>
       </div>
 
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="dEmpty" hidden></div>
       <table id="dTbl" hidden>
         <thead><tr>
           <th>Data</th><th>Técnico</th><th>Status do dia</th><th>Classificação</th>
@@ -168,7 +183,6 @@
         </tr></thead>
         <tbody id="dTbody"></tbody>
       </table>
-      <div class="empty" id="dEmpty" hidden></div>
     </section>
 
     <!-- ============================ 3. VEÍCULOS =========================== -->
@@ -181,10 +195,11 @@
       </div>
 
       <div class="kpis">
-        <div class="kpi"><div class="k">Pendentes de aprovação</div><div class="v" id="vK_pend" style="color:#F0883E">0</div></div>
-        <div class="kpi"><div class="k">Aprovados</div><div class="v" id="vK_apr" style="color:#22B573">0</div></div>
-        <div class="kpi"><div class="k">Rejeitados</div><div class="v" id="vK_rej" style="color:#F85149">0</div></div>
-        <div class="kpi"><div class="k">Com alteração pendente</div><div class="v" id="vK_alt" style="color:#D29922">0</div></div>
+        <!-- 2º canal (daltonismo): mesma escala ● / ◐ / ○ da aba de fechamento mensal -->
+        <div class="kpi"><div class="k">Pendentes de aprovação</div><div class="v fx-medio" id="vK_pend" style="color:#F0883E">0</div></div>
+        <div class="kpi"><div class="k">Aprovados</div><div class="v fx-bom" id="vK_apr" style="color:#22B573">0</div></div>
+        <div class="kpi"><div class="k">Rejeitados</div><div class="v fx-ruim" id="vK_rej" style="color:#F85149">0</div></div>
+        <div class="kpi"><div class="k">Com alteração pendente</div><div class="v fx-medio" id="vK_alt" style="color:#D29922">0</div></div>
         <div class="kpi"><div class="k">Ativos e elegíveis a reembolso</div><div class="v" id="vK_eleg">0</div></div>
       </div>
 
@@ -201,6 +216,8 @@
       <div class="pend" id="vPend"></div>
 
       <div class="secao">Todos os veículos</div>
+      <!-- estado da seção (carregando / vazio / erro) — controlado SÓ por EG.renderEstado -->
+      <div class="estado" id="vEmpty" hidden></div>
       <table id="vTbl" hidden>
         <thead><tr>
           <th>Placa</th><th>Modelo</th><th>Técnico</th><th>Tipo</th><th>R$ / km</th>
@@ -208,7 +225,6 @@
         </tr></thead>
         <tbody id="vTbody"></tbody>
       </table>
-      <div class="empty" id="vEmpty" hidden></div>
     </section>
   </main>
 
@@ -349,9 +365,15 @@
     }
 
     /* ============================== carga ============================== */
-    $("btnLoad").onclick = async () => {
+    // nomeada para poder ser o onRetry do estado de erro de cada seção
+    $("btnLoad").onclick = () => { carregar(); };
+    async function carregar() {
       try {
         setStatus("Carregando fechamentos técnicos...");
+        // estado por SEÇÃO (a barra #status continua sendo o estado global)
+        EG.renderEstado($("fEmpty"), "carregando", { mensagem: "Carregando fechamentos mensais…" });
+        EG.renderEstado($("dEmpty"), "carregando", { mensagem: "Carregando diárias…" });
+        EG.renderEstado($("vEmpty"), "carregando", { mensagem: "Carregando veículos…" });
 
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
         // Mes entra aqui porque a ORDENAÇÃO por período depende do rótulo bater.
@@ -378,8 +400,13 @@
         mostrarSec(secAtual);
         setStatus("OK — " + fechamentos.length + " fechamento(s), " + diarias.length + " diária(s), " +
                   veiculos.length + " veículo(s), " + tecnicos.length + " técnico(s).");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("fEmpty"), "erro", { mensagem: "Falha ao carregar fechamentos mensais: " + e.message, onRetry: carregar });
+        EG.renderEstado($("dEmpty"), "erro", { mensagem: "Falha ao carregar diárias: " + e.message, onRetry: carregar });
+        EG.renderEstado($("vEmpty"), "erro", { mensagem: "Falha ao carregar veículos: " + e.message, onRetry: carregar });
+      }
+    }
 
     // separado da carga para poder ser exercitado com dados falsos (window.FEC.setDados)
     function setDados(fe, di, ve, te) {
@@ -513,13 +540,15 @@
       $("fContador").textContent = lista.length + " de " + fechamentos.length + " fechamento(s)";
 
       if (!lista.length) {
-        $("fTbody").innerHTML = ""; $("fTbl").hidden = true; $("fEmpty").hidden = false;
-        $("fEmpty").textContent = fechamentos.length
-          ? "Nenhum fechamento corresponde aos filtros."
-          : "Nenhum fechamento mensal registrado. A lista Fechamento_Mensal_Tecnico está vazia — ela nunca teve interface e passa a ser alimentada pelo processo de fechamento.";
+        $("fTbody").innerHTML = ""; $("fTbl").hidden = true;
+        EG.renderEstado($("fEmpty"), "vazio", {
+          mensagem: fechamentos.length
+            ? "Nenhum fechamento corresponde aos filtros."
+            : "Nenhum fechamento mensal registrado. A lista Fechamento_Mensal_Tecnico está vazia — ela nunca teve interface e passa a ser alimentada pelo processo de fechamento."
+        });
         return;
       }
-      $("fEmpty").hidden = true; $("fTbl").hidden = false;
+      EG.renderEstado($("fEmpty"), "ok", {}); $("fTbl").hidden = false;
       $("fTbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const c = cor(COR_PAGAMENTO, f.Status_Pagamento);
@@ -603,13 +632,15 @@
       $("dContador").textContent = lista.length + " de " + diarias.length + " diária(s)";
 
       if (!lista.length) {
-        $("dTbody").innerHTML = ""; $("dTbl").hidden = true; $("dEmpty").hidden = false;
-        $("dEmpty").textContent = diarias.length
-          ? "Nenhuma diária corresponde aos filtros (técnico / período / status)."
-          : "Nenhuma diária registrada em Diaria_Tecnico.";
+        $("dTbody").innerHTML = ""; $("dTbl").hidden = true;
+        EG.renderEstado($("dEmpty"), "vazio", {
+          mensagem: diarias.length
+            ? "Nenhuma diária corresponde aos filtros (técnico / período / status)."
+            : "Nenhuma diária registrada em Diaria_Tecnico."
+        });
         return;
       }
-      $("dEmpty").hidden = true; $("dTbl").hidden = false;
+      EG.renderEstado($("dEmpty"), "ok", {}); $("dTbl").hidden = false;
       $("dTbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const c = cor(COR_DIA, f.Status_Dia);
@@ -680,13 +711,15 @@
       }).join("");
 
       if (!lista.length) {
-        $("vTbody").innerHTML = ""; $("vTbl").hidden = true; $("vEmpty").hidden = false;
-        $("vEmpty").textContent = veiculos.length
-          ? "Nenhum veículo corresponde aos filtros."
-          : "Nenhum veículo cadastrado em Veiculos_Tecnicos.";
+        $("vTbody").innerHTML = ""; $("vTbl").hidden = true;
+        EG.renderEstado($("vEmpty"), "vazio", {
+          mensagem: veiculos.length
+            ? "Nenhum veículo corresponde aos filtros."
+            : "Nenhum veículo cadastrado em Veiculos_Tecnicos."
+        });
         return;
       }
-      $("vEmpty").hidden = true; $("vTbl").hidden = false;
+      EG.renderEstado($("vEmpty"), "ok", {}); $("vTbl").hidden = false;
       // pendentes primeiro na tabela também
       const ord = lista.slice().sort((a, b) => {
         const pa = (a.fields || {}).Status_Aprovacao === "Pendente" ? 0 : 1;
@@ -1025,12 +1058,9 @@
           (badge ? "<div style='margin-top:6px'><span class='badge' style='border-color:" + corBadge + ";color:" + corBadge + "'>" + esc(badge) + "</span></div>" : "") +
         "</div><button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpoHtml +
-          "<div><span class='raw-toggle' id='rt'>ver campos crus (Graph)</span></div>" +
-          "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(fields, null, 2)) + "</pre>" +
         "</div>";
       $("dc").onclick = fechar;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function fechar() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }
 

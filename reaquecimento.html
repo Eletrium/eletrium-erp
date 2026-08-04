@@ -12,12 +12,12 @@
     .intro { font-size: .84rem; color: #8b949e; padding: 0 20px 4px; }
     .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 4px 0 14px; }
     .kpi { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px 12px; cursor: pointer; }
-    .kpi:hover { border-color: #58a6ff; }
+    .kpi:hover { border-color: var(--acao-clara); }
     .kpi .n { font-size: 1.5rem; font-weight: 700; }
     .kpi .l { font-size: .76rem; color: #8b949e; margin-top: 2px; }
     .kpi.hot { border-color: var(--kc, #30363d); background: color-mix(in srgb, var(--kc, #161b22) 12%, #161b22); }
     .kpi.hot .n { color: var(--kc, #e6edf3); }
-    .kpi.sel { outline: 2px solid #58a6ff; outline-offset: -1px; }
+    .kpi.sel { outline: 2px solid var(--acao-clara); outline-offset: -1px; }
     .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
     .toolbar label { font-size: .84rem; color: #8b949e; }
     .toolbar select { font-size: .88rem; padding: 6px 10px; border-radius: 6px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; }
@@ -27,8 +27,7 @@
     .empty b { color: #e6edf3; }
     /* container dos estados de carga (EG.renderEstado) — só aparece em carregando/erro/vazio */
     #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
-    #estado .eg-estado-erro { color: #f85149; }
-    #estado .eg-estado-retry { margin-left: 6px; }
+    /* estados de tela: regras .eg-estado-* agora vivem SO no app.css */
   </style>
 </head>
 <body>

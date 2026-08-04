@@ -32,7 +32,10 @@
     .fase-barra .trilho { flex: 0 0 160px; height: 8px; border-radius: 4px; background: #21262d; overflow: hidden; }
     .fase-barra .trilho > div { height: 100%; background: #22B573; }
     pre.manifesto { background: #010409; border: 1px solid #30363d; border-radius: 8px; padding: 12px; overflow: auto; max-height: 300px; font-size: .78rem; }
-    .raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; display: inline-block; margin-top: 8px; }
+    /* não conformidades: detalhe legível no lugar do antigo JSON cru */
+    .nc-rot { color: #8b949e; font-size: .8rem; }
+    .nc-vazio { color: #8b949e; font-size: .8rem; }
+    .raw-toggle { font-size: .8rem; color: var(--acao-clara); cursor: pointer; display: inline-block; margin-top: 8px; }
 
     /* ---- impressão: fundo claro, sem nav/botões/toolbar ---- */
     @media print {
@@ -51,6 +54,11 @@
       a { color: #111; text-decoration: none; }
     }
     .print-cab { display: none; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .aviso-ro::before { content: "🔒  "; }
   </style>
 </head>
 <body>
@@ -483,9 +491,21 @@
       }
       const linhas = porOS(rNC.itens, "OSLookupId", o.id);
       if (!linhas.length) return htmlSemItens("Nenhuma não conformidade registrada para esta OS.");
-      return `<table><thead><tr><th>Título</th><th>Campos (Graph)</th></tr></thead><tbody>` +
+      // Antes esta coluna se chamava "Campos (Graph)" e imprimia
+      // JSON.stringify(fields) cru — inclusive na versão IMPRESSA que vai ao
+      // cliente. O dado (a não conformidade) é legítimo e auditável; o que era
+      // técnico é o FORMATO. Agora sai como "rótulo: valor" legível, sem os
+      // campos de sistema do SharePoint.
+      const OCULTOS = /^(@odata|OData__|ContentType|Attachments|Edit|LinkTitle|ItemChildCount|FolderChildCount|_UIVersionString|AppAuthor|AppEditor|ComplianceAssetId|GUID|id|Title)/i;
+      const detalhe = (fields) => {
+        const pares = Object.keys(fields || {})
+          .filter(k => !OCULTOS.test(k) && fields[k] !== null && fields[k] !== "" && typeof fields[k] !== "object")
+          .map(k => `<div><span class="nc-rot">${esc(k.replace(/_/g, " "))}:</span> ${esc(String(fields[k]))}</div>`);
+        return pares.length ? pares.join("") : '<span class="nc-vazio">— sem detalhes preenchidos</span>';
+      };
+      return `<table><thead><tr><th>Título</th><th>Detalhes</th></tr></thead><tbody>` +
         linhas.map(r => `<tr><td>${esc((r.fields || {}).Title ?? ("item #" + r.id))}</td>
-          <td><pre class="manifesto" style="max-height:120px">${esc(JSON.stringify(r.fields || {}, null, 2))}</pre></td></tr>`).join("") + "</tbody></table>";
+          <td>${detalhe(r.fields)}</td></tr>`).join("") + "</tbody></table>";
     }
 
     /* --- 5. medição --- */

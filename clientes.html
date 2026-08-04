@@ -54,7 +54,7 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
       border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
     }
-    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .f textarea { min-height: 70px; resize: vertical; }
     .f .err { color: #F85149; font-size: .76rem; }
     .f .hint { color: #8b949e; font-size: .74rem; line-height: 1.4; }
@@ -66,8 +66,7 @@
     .drawer-head .acs { display: flex; gap: 8px; align-items: center; }
     /* container dos estados de carga (EG.renderEstado) — só aparece em carregando/erro/vazio */
     #estado { margin-bottom: 12px; font-size: .86rem; color: #8b949e; }
-    #estado .eg-estado-erro { color: #F85149; }
-    #estado .eg-estado-retry { margin-left: 6px; }
+    /* estados de tela: regras .eg-estado-* agora vivem SO no app.css */
   </style>
 </head>
 <body>
@@ -387,12 +386,10 @@
         <div class="drawer-head"><div class="t">${esc(f.Title ?? "(sem nome)")}</div>
           <div class="acs"><button id="de">Editar ✏️</button><button class="x" id="dc">Fechar ✕</button></div></div>
         <div class="drawer-body"><dl>${rows}</dl>
-          <span class="raw-toggle" id="rt">ver campos crus (Graph)</span>
-          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
       $("dc").onclick = closeDrawer;
       $("de").onclick = () => abrirForm(i);
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
     function closeDrawer() { $("drawer").classList.remove("open"); $("overlay").classList.remove("open"); }

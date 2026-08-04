@@ -148,7 +148,7 @@
     .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 16px; border-bottom: 1px solid #21262d; padding-bottom: 10px; }
     .tab { background: transparent; border: 1px solid #30363d; color: #8b949e; font-size: .88rem; padding: 7px 14px; }
     .tab:hover { color: #e6edf3; }
-    .tab.active { background: #1f6feb22; border-color: #1f6feb55; color: #e6edf3; }
+    .tab.active { background: var(--acao-tenue); border-color: var(--acao-borda); color: #e6edf3; }
 
     /* ===== aba Execução ===== */
     .fase { background: #161b22; border: 1px solid #30363d; border-radius: 10px; margin-bottom: 16px; overflow: hidden; }
@@ -157,7 +157,7 @@
     .fase-head .cadeado { font-size: 1rem; }
     .fase-head .prog-txt { color: #8b949e; font-size: .8rem; margin-left: auto; white-space: nowrap; }
     .prog { flex: 0 0 160px; height: 8px; background: #0d1117; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
-    .prog > div { height: 100%; background: #1f6feb; transition: width .2s; }
+    .prog > div { height: 100%; background: var(--acao-clara); transition: width .2s; }
     .fase.completa .prog > div { background: #22B573; }
     .fase-body { padding: 12px 16px; }
     /* fase bloqueada: cadeado + cinza — nada clicável até liberar */
@@ -177,7 +177,7 @@
     .ctl input[type=number] { width: 130px; }
     .ctl .un { color: #8b949e; font-size: .84rem; }
     .btn-sn { min-width: 70px; }
-    .btn-sn.sel { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+    .btn-sn.sel { background: var(--acao); border-color: var(--acao); color: #fff; }
     .foto-linha { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
     .foto-linha input { flex: 1 1 260px; }
 
@@ -224,7 +224,7 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
       border-radius: 6px; padding: 8px 10px; font-size: .9rem; font-family: inherit;
     }
-    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: #1f6feb; }
+    .f input:focus, .f select:focus, .f textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .f textarea { min-height: 70px; resize: vertical; }
     .f .err { color: #F85149; font-size: .76rem; }
     .f .hint { color: #8b949e; font-size: .74rem; line-height: 1.4; }
@@ -237,6 +237,12 @@
     .form-acoes { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
     .form-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .form-msg.err { color: #F85149; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .publinfo::before { content: "ℹ️  "; }
+    .diverge::before { content: "⚠️  "; }
   </style>
 </head>
 <body>
@@ -282,7 +288,9 @@
         <select id="osSel"><option value="">(selecione a OS)</option></select>
         <span class="hint right" id="execContador"></span>
       </div>
-      <div id="execArea"><div class="empty">Selecione uma OS para iniciar o checklist.</div></div>
+      <!-- estado da SEÇÃO Execução (carregando/vazio/erro) — só EG.renderEstado escreve aqui -->
+      <div class="estado" id="execEstado" hidden></div>
+      <div id="execArea"></div>
     </section>
 
     <!-- ======================= 2. EDITOR (GESTOR) ======================= -->
@@ -297,6 +305,8 @@
         <span class="hint right" id="editContador"></span>
       </div>
       <div id="editAviso"></div>
+      <!-- estado da SEÇÃO Editor (carregando/vazio/erro) — só EG.renderEstado escreve aqui -->
+      <div class="estado" id="eEmpty" hidden></div>
       <table id="eTbl" hidden>
         <thead><tr>
           <th>Ordem</th><th>Fase</th><th>Disciplina</th><th>Texto</th><th>Tipo</th>
@@ -304,7 +314,6 @@
         </tr></thead>
         <tbody id="eTbody"></tbody>
       </table>
-      <div class="empty" id="eEmpty" hidden></div>
     </section>
   </main>
 
@@ -431,9 +440,20 @@
     }
 
     /* ============================== carga ============================== */
-    $("btnLoad").onclick = async () => {
+    /* função de carga da tela — nomeada para poder ser o onRetry do estado "erro" */
+    async function carregarChecklist() {
       try {
         setStatus("Carregando checklist...");
+        // estado de SEÇÃO: uma por aba (ids distintos). A barra global #status
+        // continua funcionando exatamente como antes — isto é ADICIONAL.
+        // As abas passam a aparecer já durante a carga, senão o "carregando"
+        // ficaria escondido junto com as seções.
+        carregado = true;
+        $("tabs").hidden = false;
+        mostrarSec(secAtual);
+        $("execArea").innerHTML = ""; $("eTbody").innerHTML = ""; $("eTbl").hidden = true;
+        EG.renderEstado($("execEstado"), "carregando", { mensagem: "Carregando checklist…" });
+        EG.renderEstado($("eEmpty"), "carregando", { mensagem: "Carregando perguntas…" });
         carregarChoices(); // em paralelo — editor usa fallback até chegar
         const [pe, re, di, os, cl, ve] = await Promise.all([
           soft(EG.listItems("Perguntas_Checklist"), "Perguntas_Checklist"),
@@ -454,8 +474,13 @@
         setStatus("OK — " + perguntas.length + " pergunta(s), " + respostas.length + " resposta(s), " +
                   disciplinas.length + " disciplina(s), " + oss.length + " OS · procedimento " +
                   (vc == null ? "SEM versão cadastrada" : "na v" + vc) + ".");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        EG.renderEstado($("execEstado"), "erro", { mensagem: "Falha ao carregar checklist: " + e.message, onRetry: carregarChecklist });
+        EG.renderEstado($("eEmpty"), "erro", { mensagem: "Falha ao carregar perguntas: " + e.message, onRetry: carregarChecklist });
+      }
+    }
+    $("btnLoad").onclick = carregarChecklist;
 
     // separado da carga para poder ser exercitado com dados falsos (window.CHK.setDados)
     function setDados(pe, re, di, os, cl, ve) {
@@ -790,7 +815,8 @@
     function renderExec() {
       const area = $("execArea");
       if (!osSelId || !mapOS[osSelId]) {
-        area.innerHTML = "<div class='empty'>Selecione uma OS para iniciar o checklist.</div>";
+        area.innerHTML = "";
+        EG.renderEstado($("execEstado"), "vazio", { mensagem: "Selecione uma OS para iniciar o checklist." });
         $("execContador").textContent = "";
         return;
       }
@@ -798,12 +824,17 @@
       const bannerV = htmlBannerVersao(ve);
       const pergs = perguntasAtivas(ve.v);
       if (!pergs.length) {
-        area.innerHTML = bannerV + "<div class='empty'>Nenhuma pergunta ativa" +
-          (ve.v == null ? " em Perguntas_Checklist" : " na v" + ve.v + " do procedimento") +
-          ". Cadastre na aba Editor (gestor).</div>";
+        // o banner de versão continua no corpo: é informação, não estado de carga
+        area.innerHTML = bannerV;
+        EG.renderEstado($("execEstado"), "vazio", {
+          mensagem: "Nenhuma pergunta ativa" +
+            (ve.v == null ? " em Perguntas_Checklist" : " na v" + ve.v + " do procedimento") +
+            ". Cadastre na aba Editor (gestor)."
+        });
         $("execContador").textContent = "";
         return;
       }
+      EG.renderEstado($("execEstado"), "ok");
       const ult = ultimaPorPergunta();
 
       let bloqueio = false;      // vira true quando uma fase deixa obrigatória pendente (cascata)
@@ -885,16 +916,25 @@
     }
 
     // troca de OS: relê OS_Respostas do servidor (outra pessoa/PWA pode ter gravado)
-    $("osSel").addEventListener("change", async () => {
-      osSelId = $("osSel").value;
+    async function recarregarRespostas() {
       corrigindo = {};
       if (!osSelId) { renderExec(); return; }
       try {
         setStatus("Carregando respostas da OS...");
+        $("execArea").innerHTML = "";
+        EG.renderEstado($("execEstado"), "carregando", { mensagem: "Carregando respostas da OS…" });
         respostas = await soft(EG.listItems("OS_Respostas"), "OS_Respostas");
         setStatus("OK — " + respostasDaOS().length + " resposta(s) desta OS.");
-      } catch (e) { setStatus("Falha ao recarregar respostas: " + e.message, "err"); }
+      } catch (e) {
+        setStatus("Falha ao recarregar respostas: " + e.message, "err");
+        EG.renderEstado($("execEstado"), "erro", { mensagem: "Falha ao carregar respostas da OS: " + e.message, onRetry: recarregarRespostas });
+        return;
+      }
       renderExec();
+    }
+    $("osSel").addEventListener("change", () => {
+      osSelId = $("osSel").value;
+      recarregarRespostas();
     });
 
     // checagem EM TEMPO REAL do parâmetro técnico (evento input, antes de gravar)
@@ -1203,13 +1243,17 @@
       });
       $("editContador").textContent = lista.length + " de " + perguntas.length + " pergunta(s)";
       if (!lista.length) {
-        $("eTbody").innerHTML = ""; $("eTbl").hidden = true; $("eEmpty").hidden = false;
-        $("eEmpty").textContent = perguntas.length
-          ? "Nenhuma pergunta corresponde aos filtros."
-          : "Nenhuma pergunta cadastrada em Perguntas_Checklist. Use “Nova pergunta”.";
+        $("eTbody").innerHTML = ""; $("eTbl").hidden = true;
+        // "vazio por filtro" x "vazio de verdade" — as DUAS mensagens preservadas
+        EG.renderEstado($("eEmpty"), "vazio", {
+          mensagem: perguntas.length
+            ? "Nenhuma pergunta corresponde aos filtros."
+            : "Nenhuma pergunta cadastrada em Perguntas_Checklist. Use “Nova pergunta”."
+        });
         return;
       }
-      $("eEmpty").hidden = true; $("eTbl").hidden = false;
+      EG.renderEstado($("eEmpty"), "ok");
+      $("eTbl").hidden = false;
       const simNao = (v) => v === true ? "Sim" : (v === false ? "Não" : "—");
       $("eTbody").innerHTML = lista.map(p => {
         const f = p.fields || {};
@@ -1636,6 +1680,7 @@
        cache: a revisão mexe em DUAS linhas (nova + antiga) e o eco local não
        é confiável — se algum campo for recusado, a tela mostra o REAL. */
     async function recarregarPerguntas() {
+      EG.renderEstado($("eEmpty"), "carregando", { mensagem: "Carregando perguntas…" });
       perguntas = await soft(EG.listItems("Perguntas_Checklist"), "Perguntas_Checklist");
       mapPerg = {}; perguntas.forEach(p => { mapPerg[p.id] = p; });
       renderEdit();

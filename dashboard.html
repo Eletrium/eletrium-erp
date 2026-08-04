@@ -30,6 +30,11 @@
     .bars .bwrap { width: 100%; display: flex; gap: 2px; align-items: flex-end; flex: 1; min-height: 0; }
     .bars .b { flex: 1; border-radius: 3px 3px 0 0; min-height: 2px; }
     .bars .b.rec { background: #0078D4; } .bars .b.cus { background: #7D8590; }
+    /* 2º CANAL (acessibilidade): receita e custo se distinguiam SÓ pela cor da barra.
+       A barra de custo (e o ponto de custo na legenda) ganha textura listrada — o
+       padrão sobrevive a qualquer daltonismo e à impressão em preto e branco.
+       Só pintura: nenhuma altura, valor ou limiar muda. */
+    .bars .b.cus, .dot.pat-cus { background-image: repeating-linear-gradient(45deg, #ffffff33 0 3px, transparent 3px 6px); }
     .bars .lb { color: #8b949e; font-size: .68rem; margin-top: 5px; white-space: nowrap; }
 
     /* listas de barras horizontais (cards 2, 4 e 8) */
@@ -107,28 +112,35 @@
 
     <div class="dgrid" id="dgrid" hidden>
 
+      <!-- cada card tem UM contêiner de estado (carregando/vazio/erro), controlado
+           só por EG.renderEstado, logo acima do corpo que ele governa. -->
       <div class="dcard half2" id="c1">
         <h2>Receita mensal vs custos</h2>
+        <div class="estado" id="c1estado" hidden></div>
         <div id="c1body"></div>
       </div>
 
       <div class="dcard" id="c2">
         <h2>Lucratividade por cliente (top 5)</h2>
+        <div class="estado" id="c2estado" hidden></div>
         <div id="c2body"></div>
       </div>
 
       <div class="dcard" id="c3">
         <h2>Mix de receita</h2>
+        <div class="estado" id="c3estado" hidden></div>
         <div id="c3body"></div>
       </div>
 
       <div class="dcard" id="c4">
         <h2>Eficiência operacional — margem líquida</h2>
+        <div class="estado" id="c4estado" hidden></div>
         <div id="c4body"></div>
       </div>
 
       <div class="dcard" id="c5">
         <h2>MTTR — tempo médio de reparo</h2>
+        <div class="estado" id="c5estado" hidden></div>
         <div id="c5body"></div>
         <div class="nota">
           <strong>MTBF não é calculado.</strong> O tempo médio entre falhas exige um cadastro de ativos
@@ -140,16 +152,19 @@
 
       <div class="dcard wide" id="c6">
         <h2>Histórico de margem (12 meses)</h2>
+        <div class="estado" id="c6estado" hidden></div>
         <div id="c6body"></div>
       </div>
 
       <div class="dcard wide" id="c7">
         <h2>Backlog de OS por tipo</h2>
+        <div class="estado" id="c7estado" hidden></div>
         <div id="c7body"></div>
       </div>
 
       <div class="dcard half2" id="c8">
         <h2>Margem por categoria</h2>
+        <div class="estado" id="c8estado" hidden></div>
         <div id="c8body"></div>
       </div>
 
@@ -207,6 +222,11 @@
     const fmtPct = (v, dec) => (v == null || !Number.isFinite(v)) ? "—" : v.toFixed(dec == null ? 1 : dec).replace(".", ",") + "%";
     const brl = (n) => EG.BRL(num(n));
     const corMargem = (m) => (m == null ? "#7D8590" : (m >= 50 ? "#3FB950" : (m >= 30 ? "#D29922" : "#F85149")));
+    // 2º CANAL (acessibilidade): irmão de corMargem, MESMOS limiares (>=50 / >=30 / <30 / null).
+    // A faixa da margem existia só na cor — "42,0%" era graficamente idêntico nas três faixas.
+    // Devolve a classe utilitária do app.css (● bom / ◐ atenção / ○ ruim / – sem dado) que
+    // prefixa um glifo ao número. Nada de negócio muda: é o mesmo teste de corMargem.
+    const classeMargem = (m) => (m == null ? "fx-sem" : (m >= 50 ? "fx-bom" : (m >= 30 ? "fx-medio" : "fx-ruim")));
     const classeTipo = (t) => T_MANUTENCAO.indexOf(t) >= 0 ? "manutencao" : (T_INSTALACAO.indexOf(t) >= 0 ? "instalacao" : "outros");
 
     /* =========================================================================
@@ -374,7 +394,26 @@
     /* =========================================================================
        RENDER — cada card tem estado vazio próprio. Nada de NaN/Infinity na tela.
        ========================================================================= */
+    // Sobrou só para o SUB-estado do card 1 (as barras de 6 meses), que convive com
+    // conteúdo real no mesmo corpo — um contêiner de estado carrega UMA mensagem, e
+    // as duas mensagens do card 1 são independentes e ambas aprovadas.
     const vazio = (msg) => `<div class="vazio">${esc(msg)}</div>`;
+
+    /* ===== estado de seção (componente compartilhado EG.renderEstado) =====
+       Um contêiner por card (#cNestado, logo acima de #cNbody). O <coisa> de cada
+       card é o rótulo usado nas mensagens de "carregando"/"erro". */
+    const CARDS = [
+      ["c1", "receita mensal vs custos"],
+      ["c2", "lucratividade por cliente"],
+      ["c3", "mix de receita"],
+      ["c4", "eficiência operacional"],
+      ["c5", "MTTR"],
+      ["c6", "histórico de margem"],
+      ["c7", "backlog de OS por tipo"],
+      ["c8", "margem por categoria"]
+    ];
+    const estadoCard = (id, estado, opts) => EG.renderEstado($(id + "estado"), estado, opts);
+    const estadoTodosCards = (estado, opts) => CARDS.forEach(([id, nome]) => estadoCard(id, estado, opts ? opts(nome) : undefined));
 
     function renderC1(m) {
       const d = m.deltaRec;
@@ -384,11 +423,18 @@
         ? `<span class="delta flat">—</span> <span class="sub" style="display:inline">sem receita em ${esc(m.mesAnterior.label)} para comparar</span>`
         : `<span class="delta ${cls}">${sinal}${fmtPct(d)}</span> <span class="sub" style="display:inline">vs ${esc(m.mesAnterior.label)} (${esc(brl(m.mesAnterior.rec))})</span>`;
 
-      const corpo = m.mesAtual.rec > 0 || m.mesAtual.cus > 0
-        ? `<div class="big" style="color:#3FB950">${esc(brl(m.mesAtual.rec))}</div>
+      // estado do card = o número do mês (o que o card responde). O sub-estado das
+      // barras continua no corpo, logo abaixo.
+      let corpo;
+      if (m.mesAtual.rec > 0 || m.mesAtual.cus > 0) {
+        estadoCard("c1", "ok");
+        corpo = `<div class="big" style="color:#3FB950">${esc(brl(m.mesAtual.rec))}</div>
            <div class="sub">Custos do mês: <strong>${esc(brl(m.mesAtual.cus))}</strong> · Resultado: <strong>${esc(brl(m.mesAtual.rec - m.mesAtual.cus))}</strong> · Margem: <strong>${fmtPct(m.mesAtual.margem)}</strong></div>
-           <div style="margin-top:6px">${deltaTxt}</div>`
-        : vazio("Sem receita nem custo concluídos em " + m.mesAtual.label + ".");
+           <div style="margin-top:6px">${deltaTxt}</div>`;
+      } else {
+        estadoCard("c1", "vazio", { mensagem: "Sem receita nem custo concluídos em " + m.mesAtual.label + "." });
+        corpo = "";
+      }
 
       let barras;
       if (m.max6 > 0) {
@@ -401,7 +447,7 @@
               <div class="lb">${esc(p.label)}</div>
             </div>`;
         }).join("")}</div>
-        <div class="bklegend"><span class="li"><span class="dot" style="background:#0078D4"></span>receita</span><span class="li"><span class="dot" style="background:#7D8590"></span>custo</span></div>`;
+        <div class="bklegend"><span class="li"><span class="dot" style="background-color:#0078D4"></span>receita</span><span class="li"><span class="dot pat-cus" style="background-color:#7D8590"></span>custo (listrado)</span></div>`;
       } else {
         barras = vazio("Sem dados nos últimos 6 meses (nenhuma OS com Data de Conclusão no período).");
       }
@@ -409,12 +455,18 @@
     }
 
     function renderC2(m) {
-      if (!m.clientes.length) { $("c2body").innerHTML = vazio("Nenhum cliente com receita lançada — margem não é calculável."); return; }
+      if (!m.clientes.length) {
+        $("c2body").innerHTML = "";
+        estadoCard("c2", "vazio", { mensagem: "Nenhum cliente com receita lançada — margem não é calculável." });
+        return;
+      }
+      estadoCard("c2", "ok");
       $("c2body").innerHTML = `<div class="hlist">${m.clientes.map(c => {
         const cor = corMargem(c.margem);
+        const fx = classeMargem(c.margem);                   // 2º canal: glifo da faixa junto da cor
         const larg = Math.max(0, Math.min(100, c.margem));   // margem negativa não vira barra invertida
         return `<div class="hrow" title="${esc(c.nome + " — receita " + brl(c.rec) + " / custo " + brl(c.cus) + " / " + c.n + " OS")}">
-            <div class="hhead"><span class="nm">${esc(c.nome)}</span><span class="vl" style="color:${cor}">${fmtPct(c.margem)}</span></div>
+            <div class="hhead"><span class="nm">${esc(c.nome)}</span><span class="vl ${fx}" style="color:${cor}">${fmtPct(c.margem)}</span></div>
             <div class="track"><span style="width:${larg}%;background:${cor}"></span></div>
             <div class="sub">${esc(brl(c.rec))} receita · ${esc(brl(c.cus))} custo · ${c.n} OS</div>
           </div>`;
@@ -423,9 +475,11 @@
 
     function renderC3(m) {
       if (!(m.mixTotal > 0)) {
-        $("c3body").innerHTML = vazio("Sem receita para distribuir — nenhuma OS com Valor da OS preenchido.");
+        $("c3body").innerHTML = "";
+        estadoCard("c3", "vazio", { mensagem: "Sem receita para distribuir — nenhuma OS com Valor da OS preenchido." });
         return;
       }
+      estadoCard("c3", "ok");
       let ang = 0;
       const stops = m.fatias.map(f => {
         const de = ang; ang += (f.part / 100) * 360;
@@ -444,15 +498,21 @@
     function renderC4(m) {
       const alvos = m.fatias.filter(f => f.chave !== "outros");
       const comDados = alvos.filter(f => f.rec > 0);
-      if (!comDados.length) { $("c4body").innerHTML = vazio("Sem receita em manutenção ou instalação — margem líquida não é calculável."); return; }
+      if (!comDados.length) {
+        $("c4body").innerHTML = "";
+        estadoCard("c4", "vazio", { mensagem: "Sem receita em manutenção ou instalação — margem líquida não é calculável." });
+        return;
+      }
+      estadoCard("c4", "ok");
       $("c4body").innerHTML = `<div class="hlist">${alvos.map(f => {
         if (!(f.rec > 0)) {
-          return `<div class="hrow"><div class="hhead"><span class="nm">${esc(f.nome)}</span><span class="vl" style="color:#7D8590">—</span></div>
+          return `<div class="hrow"><div class="hhead"><span class="nm">${esc(f.nome)}</span><span class="vl fx-sem" style="color:#7D8590">—</span></div>
             <div class="track"></div><div class="sub">sem receita no período</div></div>`;
         }
         const cor = corMargem(f.margem);
+        const fx = classeMargem(f.margem);                   // 2º canal: glifo da faixa junto da cor
         const larg = Math.max(0, Math.min(100, f.margem));
-        return `<div class="hrow"><div class="hhead"><span class="nm">${esc(f.nome)}</span><span class="vl" style="color:${cor}">${fmtPct(f.margem)}</span></div>
+        return `<div class="hrow"><div class="hhead"><span class="nm">${esc(f.nome)}</span><span class="vl ${fx}" style="color:${cor}">${fmtPct(f.margem)}</span></div>
           <div class="track"><span style="width:${larg}%;background:${cor}"></span></div>
           <div class="sub">${esc(brl(f.rec))} receita − ${esc(brl(f.cus))} custo = <strong>${esc(brl(f.rec - f.cus))}</strong> · ${f.n} OS</div></div>`;
       }).join("")}</div>`;
@@ -463,10 +523,13 @@
       let corpo;
       if (t.n > 0) {
         const dias = t.horas / 24;
+        estadoCard("c5", "ok");
         corpo = `<div class="big">${esc(t.horas.toFixed(1).replace(".", ","))} h</div>
           <div class="sub">${dias >= 1 ? "≈ " + esc(dias.toFixed(1).replace(".", ",")) + " dias · " : ""}base: ${t.n} OS de manutenção corretiva concluída(s)</div>`;
       } else {
-        corpo = vazio("Sem OS de “Manutenção corretiva” concluída — MTTR não é calculável.");
+        // os avisos abaixo continuam no corpo: eles existem mesmo sem MTTR calculável
+        estadoCard("c5", "vazio", { mensagem: "Sem OS de “Manutenção corretiva” concluída — MTTR não é calculável." });
+        corpo = "";
       }
       const avisos = [];
       if (t.semConclusao > 0) avisos.push(t.semConclusao + " corretiva(s) ainda sem Data de Conclusão (ou sem Data de Abertura) ficaram fora da média.");
@@ -476,7 +539,12 @@
 
     function renderC6(m) {
       const comDados = m.serie12.filter(p => p.rec > 0).length;
-      if (!comDados) { $("c6body").innerHTML = vazio("Sem receita nos últimos 12 meses — não há margem histórica para traçar."); return; }
+      if (!comDados) {
+        $("c6body").innerHTML = "";
+        estadoCard("c6", "vazio", { mensagem: "Sem receita nos últimos 12 meses — não há margem histórica para traçar." });
+        return;
+      }
+      estadoCard("c6", "ok");
       const W = 720, H = 180, padL = 42, padR = 14, padT = 12, padB = 30;
       const vals = m.serie12.map(p => p.valor);
       const yMin = Math.min(0, Math.min.apply(null, vals));
@@ -488,7 +556,12 @@
       const linhas = [0, 50, 100].filter(v => v >= yMin && v <= yMax)
         .map(v => `<line x1="${padL}" y1="${y(v).toFixed(1)}" x2="${W - padR}" y2="${y(v).toFixed(1)}" stroke="#21262d" stroke-width="1" />
                    <text x="4" y="${(y(v) + 3.5).toFixed(1)}" fill="#8b949e" font-size="10">${v}%</text>`).join("");
-      const dots = m.serie12.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.valor).toFixed(1)}" r="3" fill="${p.semReceita ? "#7D8590" : "#0078D4"}"><title>${esc(p.label + " — " + (p.semReceita ? "sem receita" : "margem " + fmtPct(p.margem) + " · " + brl(p.rec) + " receita"))}</title></circle>`).join("");
+      // 2º CANAL (acessibilidade): mês SEM receita era só um ponto de cor diferente.
+      // Agora ele também muda de FORMA — círculo vazado (fill none + contorno) contra
+      // o ponto cheio dos meses com receita. Mesma posição, mesmo valor, mesmo title.
+      const dots = m.serie12.map((p, i) => p.semReceita
+        ? `<circle cx="${x(i).toFixed(1)}" cy="${y(p.valor).toFixed(1)}" r="3.5" fill="none" stroke="#7D8590" stroke-width="1.5"><title>${esc(p.label + " — sem receita")}</title></circle>`
+        : `<circle cx="${x(i).toFixed(1)}" cy="${y(p.valor).toFixed(1)}" r="3" fill="#0078D4"><title>${esc(p.label + " — margem " + fmtPct(p.margem) + " · " + brl(p.rec) + " receita")}</title></circle>`).join("");
       const rotulos = m.serie12.map((p, i) => `<text x="${x(i).toFixed(1)}" y="${H - 8}" fill="#8b949e" font-size="10" text-anchor="middle">${esc(p.label)}</text>`).join("");
       $("c6body").innerHTML = `<svg class="linechart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Margem percentual por mês nos últimos 12 meses">
           ${linhas}
@@ -496,11 +569,16 @@
           ${dots}
           ${rotulos}
         </svg>
-        <div class="nota">Margem = (receita − custo) ÷ receita, por mês de conclusão. Meses sem receita entram como 0% (ponto cinza), não como buraco na linha.</div>`;
+        <div class="nota">Margem = (receita − custo) ÷ receita, por mês de conclusão. Meses sem receita entram como 0% (ponto vazado, sem preenchimento), não como buraco na linha.</div>`;
     }
 
     function renderC7(m) {
-      if (!m.backlog.length || !(m.maxBacklog > 0)) { $("c7body").innerHTML = vazio("Nenhuma OS para distribuir por tipo."); return; }
+      if (!m.backlog.length || !(m.maxBacklog > 0)) {
+        $("c7body").innerHTML = "";
+        estadoCard("c7", "vazio", { mensagem: "Nenhuma OS para distribuir por tipo." });
+        return;
+      }
+      estadoCard("c7", "ok");
       const usados = {};
       const corpo = m.backlog.map(l => {
         const largTotal = (l.total / m.maxBacklog) * 100;       // maxBacklog > 0 garantido acima
@@ -509,9 +587,15 @@
           const w = l.total > 0 ? (s.n / l.total) * 100 : 0;
           return `<span style="width:${w.toFixed(2)}%;background:${s.cor}" title="${esc(s.status + ": " + s.n)}"></span>`;
         }).join("");
+        // 2º CANAL (acessibilidade): os segmentos da barra empilhada só se distinguiam
+        // pela cor (o title= exige mouse e não existe no toque/impressão). A quebra
+        // textual abaixo repete os MESMOS segmentos, na MESMA ordem da esquerda para a
+        // direita — nada é recontado aqui, é o mesmo l.segs já renderizado.
+        const quebra = l.segs.map(s => esc(s.status + " " + s.n)).join(" · ");
         return `<div class="row">
             <div class="hd"><span>${esc(l.tipo)}</span><span class="c">${l.total} OS</span></div>
             <div class="stack" style="width:${largTotal.toFixed(2)}%;min-width:40px">${segs}</div>
+            <div class="sub">${quebra}</div>
           </div>`;
       }).join("");
       const leg = Object.keys(usados).map(s => `<span class="li"><span class="dot" style="background:${usados[s]}"></span>${esc(s)}</span>`).join("");
@@ -523,17 +607,21 @@
       // nenhuma OS foi classificada ainda. Sem OS classificada não há barra a traçar
       // — mostrar isso com clareza é o correto; inventar distribuição seria mentira.
       if (!m.categorias.length) {
-        $("c8body").innerHTML = vazio("Nenhuma OS foi classificada por categoria ainda — o campo Categoria é novo e isso é esperado, não um problema.")
-          + `<div class="nota">${m.semCategoria.n > 0 ? m.semCategoria.n + " OS aguardando classificação. " : ""}As barras aparecem automaticamente conforme o campo Categoria for preenchido nas OS.</div>`;
+        // a nota explicativa continua no corpo — ela é conteúdo, não estado
+        estadoCard("c8", "vazio", { mensagem: "Nenhuma OS foi classificada por categoria ainda — o campo Categoria é novo e isso é esperado, não um problema." });
+        $("c8body").innerHTML =
+          `<div class="nota">${m.semCategoria.n > 0 ? m.semCategoria.n + " OS aguardando classificação. " : ""}As barras aparecem automaticamente conforme o campo Categoria for preenchido nas OS.</div>`;
         return;
       }
-      const linhas = m.categorias.concat(m.semCategoria.n > 0 ? [m.semCategoria] : []);
+      estadoCard("c8", "ok");
+      const linhas =m.categorias.concat(m.semCategoria.n > 0 ? [m.semCategoria] : []);
       $("c8body").innerHTML = `<div class="hlist">${linhas.map(c => {
         const semCat = c.categoria === SEM_CATEGORIA;
         const cor = semCat ? "#7D8590" : corMargem(c.margemPct);
+        const fx = semCat ? "fx-sem" : classeMargem(c.margemPct);   // 2º canal: glifo da faixa junto da cor
         const larg = m.maxMargemCat > 0 ? Math.max(0, Math.min(100, (c.margem / m.maxMargemCat) * 100)) : 0;   // margem negativa não vira barra invertida
         return `<div class="hrow" title="${esc(c.categoria + " — receita " + brl(c.rec) + " / custo " + brl(c.cus) + " / " + c.n + " OS")}">
-            <div class="hhead"><span class="nm">${esc(c.categoria)}</span><span class="vl" style="color:${cor}">${esc(brl(c.margem))}</span></div>
+            <div class="hhead"><span class="nm">${esc(c.categoria)}</span><span class="vl ${fx}" style="color:${cor}">${esc(brl(c.margem))}</span></div>
             <div class="track"><span style="width:${larg.toFixed(2)}%;background:${cor}"></span></div>
             <div class="sub">${esc(brl(c.rec))} receita · ${esc(brl(c.cus))} custo · margem ${fmtPct(c.margemPct)} · ${c.n} OS</div>
           </div>`;
@@ -568,9 +656,15 @@
     $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
     $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
 
-    $("btnLoad").onclick = async () => {
+    /* função de carga da tela — nomeada para poder ser o onRetry do estado "erro" */
+    async function carregar() {
       try {
         setStatus("Carregando ordens de serviço...");
+        // os 8 cards ficavam EM BRANCO durante a carga; agora cada um mostra o
+        // próprio "carregando". A grade precisa estar visível para isso aparecer.
+        $("dgrid").hidden = false;
+        CARDS.forEach(([id]) => { $(id + "body").innerHTML = ""; });
+        estadoTodosCards("carregando", (nome) => ({ mensagem: "Carregando " + nome + "…" }));
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js.
         // Tipo_OS_Completo e Categoria usam apenasSemChoice: os buckets de fallback
         // ("Outros" / "Sem categoria") são intencionais.
@@ -587,15 +681,20 @@
         nomeCliente = {}; cli.forEach(c => { nomeCliente[c.id] = (c.fields && c.fields.Title) || null; });
         renderAll(computeModel(os, nomeCliente, new Date()));
         setStatus("OK — " + os.length + " OS analisada(s). Dashboard somente leitura.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        CARDS.forEach(([id]) => { $(id + "body").innerHTML = ""; });
+        estadoTodosCards("erro", (nome) => ({ mensagem: "Falha ao carregar " + nome + ": " + e.message, onRetry: carregar }));
+      }
+    }
+    $("btnLoad").onclick = carregar;
 
     // exposto para teste da agregação com dados falsos (sem login):
     //   DASH.renderAll(DASH.computeModel(itensFalsos, {"1":"Cliente X"}, new Date()))
     // A agregação de "Margem por categoria" vive em computeModel (campos
     // .categorias/.semCategoria/.maxMargemCat do modelo) — testável via
     //   DASH.computeModel(itensFalsos).categorias
-    window.DASH = { computeModel, renderAll, num, custoOS, margemPct, classeTipo, mIdx, mLabel, corMargem, CATEGORIAS_OS, SEM_CATEGORIA };
+    window.DASH = { computeModel, renderAll, num, custoOS, margemPct, classeTipo, mIdx, mLabel, corMargem, classeMargem, CATEGORIAS_OS, SEM_CATEGORIA };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>

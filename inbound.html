@@ -56,7 +56,7 @@
     .lp-wrap { max-width: 780px; margin: 0 auto; padding: 32px 20px 64px; }
 
     .lp-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 28px; }
-    .lp-brand .mark { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #0078D4, #58a6ff); display: grid; place-items: center; font-size: 1rem; }
+    .lp-brand .mark { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, var(--acao), var(--acao-clara)); display: grid; place-items: center; font-size: 1rem; }
     .lp-brand .name { font-weight: 700; letter-spacing: .02em; }
     .lp-brand .tag { color: #8b949e; font-size: .8rem; border-left: 1px solid #30363d; padding-left: 10px; }
 
@@ -87,7 +87,7 @@
 
     /* foco visível em todos os controles (acessibilidade) */
     input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visible {
-      outline: 2px solid #58a6ff; outline-offset: 2px; border-color: #58a6ff;
+      outline: 2px solid var(--acao-clara); outline-offset: 2px; border-color: var(--acao-clara);
     }
 
     .row { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
@@ -97,14 +97,14 @@
     .radios { display: flex; gap: 10px; flex-wrap: wrap; }
     .radios label { flex: 1 1 180px; display: flex; align-items: flex-start; gap: 9px; cursor: pointer;
       border: 1px solid #30363d; border-radius: 8px; padding: 10px 12px; background: #0d1117; font-size: .88rem; }
-    .radios label:hover { border-color: #58a6ff; }
-    .radios input { margin: 2px 0 0; accent-color: #0078D4; }
-    .radios label.on { border-color: #58a6ff; background: #1f6feb1a; }
+    .radios label:hover { border-color: var(--acao-clara); }
+    .radios input { margin: 2px 0 0; accent-color: var(--acao); }
+    .radios label.on { border-color: var(--acao-clara); background: var(--acao-tenue); }
     .radios .d { display: block; color: #8b949e; font-size: .76rem; margin-top: 2px; }
 
     /* consentimento */
     .consent { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #0d1117; }
-    .consent input { margin: 2px 0 0; accent-color: #0078D4; flex: none; }
+    .consent input { margin: 2px 0 0; accent-color: var(--acao); flex: none; }
     .consent label { font-size: .82rem; color: #8b949e; line-height: 1.5; font-weight: 400; margin: 0; }
 
     /* erro por campo */
@@ -123,9 +123,18 @@
     #formMsg.err  { color: #f85149; border-color: #f8514955; background: #f851491a; }
     #formMsg.warn { color: #e3b341; border-color: #d2992255; background: #d2992218; }
     #formMsg.info { color: #8b949e; border-color: #30363d; background: #ffffff08; }
+    /* 2º canal (daltonismo): as 4 variantes acima são a MESMA caixa e só mudavam
+       de cor. Cada severidade ganha um glifo próprio, escrito em UTF-8 literal
+       (escapes hex \00XX já quebraram este CSS uma vez — não voltar a usá-los).
+       O glifo é gerado por CSS: não entra no textContent nem no aria-live, que
+       continua anunciando exatamente o texto passado a setMensagem(). */
+    #formMsg.ok::before   { content: "✓ "; font-weight: 700; }
+    #formMsg.err::before  { content: "✕ "; font-weight: 700; }
+    #formMsg.warn::before { content: "⚠ "; font-weight: 700; }
+    #formMsg.info::before { content: "ℹ "; font-weight: 700; }
 
     .lp-foot { color: #8b949e; font-size: .78rem; margin-top: 26px; line-height: 1.6; }
-    .lp-foot a { color: #58a6ff; }
+    .lp-foot a { color: var(--acao-clara); }
 
     /* honeypot anti-spam — escondido de gente, visível a bots burros */
     .hp { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }

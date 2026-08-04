@@ -7,8 +7,13 @@
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
   <script src="graph.js"></script>
   <script src="pipeline.js"></script>
+  <!-- app.css entra ANTES do <style> local: as regras locais continuam vencendo
+       (mesma especificidade, origem posterior), mas a PALETA (--acao, …) passa a
+       vir de um lugar só. Antes esta tela duplicava o app.css inteiro inline e
+       era a única das 19 que não o carregava — por isso as variáveis de cor não
+       resolviam aqui. -->
+  <link rel="stylesheet" href="app.css" />
   <style>
-    :root { color-scheme: light dark; }
     * { box-sizing: border-box; }
     body { font-family: "Segoe UI", system-ui, sans-serif; margin: 0; background: #0d1117; color: #e6edf3; }
     header { padding: 14px 20px; border-bottom: 1px solid #30363d; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
@@ -16,10 +21,10 @@
     nav { display: flex; gap: 4px; flex: 1; }
     nav a { color: #8b949e; text-decoration: none; font-size: .9rem; padding: 5px 12px; border-radius: 6px; }
     nav a:hover { color: #e6edf3; background: #ffffff0d; }
-    nav a.active { color: #e6edf3; background: #1f6feb22; }
+    nav a.active { color: #e6edf3; background: var(--acao-tenue); box-shadow: inset 0 -2px 0 var(--acao-clara); }
     header .user { font-size: .82rem; color: #8b949e; }
-    button { font-size: .92rem; padding: 7px 14px; border-radius: 6px; border: 1px solid #0078D4; background: #0078D4; color: #fff; cursor: pointer; }
-    button.sec { background: transparent; color: #58a6ff; border-color: #30363d; }
+    button { font-size: .92rem; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--acao); background: var(--acao); color: #fff; cursor: pointer; }
+    button.sec { background: transparent; color: var(--acao-clara); border-color: #30363d; }
     button:disabled { opacity: .5; cursor: not-allowed; }
     #status { font-size: .85rem; color: #8b949e; padding: 8px 20px; }
     .warn { margin: 8px 20px; padding: 10px 14px; border-radius: 8px; border: 1px solid #d2992255; background: #d2992218; color: #e3b341; font-size: .85rem; }
@@ -28,33 +33,42 @@
 
     /* --- Estados de tela (EG.renderEstado) --- */
     .estado { margin: 8px 20px; font-size: .9rem; color: #8b949e; }
-    .estado .eg-estado-erro { color: #f85149; }
-    .estado .eg-estado-vazio { color: #8b949e; }
-    .estado .eg-estado-retry { margin-left: 8px; font-size: .82rem; padding: 4px 12px; background: transparent; color: #58a6ff; border: 1px solid #30363d; }
+    /* estados de tela: regras .eg-estado-* agora vivem SO no app.css */
 
     /* --- Kanban --- */
     .board { display: flex; gap: 12px; overflow-x: auto; padding: 12px 20px 28px; align-items: flex-start; }
-    .col { flex: 0 0 262px; max-width: 262px; background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 190px); }
-    .col.drop { border-color: #58a6ff; box-shadow: 0 0 0 1px #58a6ff inset; }
-    .col-head { padding: 12px 14px 10px; border-top: 3px solid #6e7681; border-radius: 10px 10px 0 0; }
+    /* largura ÚNICA vinda do app.css (--kanban-col): igual entre as colunas E
+       igual à do Kanban de faturamento.html */
+    .col { flex: 0 0 var(--kanban-col); max-width: var(--kanban-col); background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 190px); }
+    .col.drop { border-color: var(--acao-clara); box-shadow: 0 0 0 2px var(--acao-clara) inset; }
+    /* cabeçalho FIXO: gruda no topo enquanto a coluna rola. Precisa de fundo
+       opaco próprio, senão os cards passam por baixo. */
+    .col-head { padding: 12px 14px 10px; border-top: 3px solid #6e7681; border-radius: 10px 10px 0 0; position: sticky; top: 0; z-index: 3; background: #010409; box-shadow: 0 1px 0 #30363d; }
     .col-title { font-weight: 600; font-size: .9rem; display: flex; align-items: center; gap: 8px; }
-    .col-count { background: #ffffff14; border-radius: 999px; padding: 0 8px; font-size: .75rem; color: #8b949e; }
-    .col-sum { color: #3fb950; font-size: .8rem; margin-top: 3px; }
+    .col-nome { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .col-count { background: #ffffff14; border-radius: 999px; padding: 0 8px; font-size: .75rem; color: #8b949e; flex: 0 0 auto; }
+    /* total da coluna: rótulo em texto + valor. Deixou de ser verde — verde
+       agora é a cor de AÇÃO; dinheiro verde ao lado de botão verde não
+       comunica mais nada. */
+    .col-sum { color: #e6edf3; font-size: .8rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .col-sum .rot { color: #8b949e; font-weight: 400; }
     .col-body { padding: 0 10px 10px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
     .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; cursor: grab; }
-    .card:hover { border-color: #58a6ff; }
+    .card:hover { border-color: var(--acao-clara); }
     .card.dragging { opacity: .5; }
     .card .num { font-weight: 600; font-size: .92rem; }
     .card .cli { color: #8b949e; font-size: .82rem; margin: 3px 0; }
-    .card .val { color: #3fb950; font-weight: 600; font-size: .85rem; margin-top: 5px; }
+    .card .val { color: #e6edf3; font-weight: 600; font-size: .85rem; margin-top: 5px; font-variant-numeric: tabular-nums; }
     /* operação (F5) nos cards */
     .card .meta { font-size: .78rem; margin-top: 5px; color: #8b949e; word-break: break-word; }
+    /* prazo da próxima ação: a urgência era comunicada SÓ por cor (vermelho x
+       laranja x cinza). Agora cada faixa tem glifo + palavra própria. */
     .card .meta.prox.vencida { color: #f85149; font-weight: 600; }
     .card .meta.prox.hoje { color: #f0883e; font-weight: 600; }
     .card .meta.motivo { color: #f85149; }
     .card .selo-sem-acao { display: inline-block; margin-top: 6px; font-size: .72rem; color: #e3b341; border: 1px solid #d2992255; background: #d2992218; border-radius: 999px; padding: 1px 8px; }
     /* gravação otimista do drag & drop */
-    .card.salvando { opacity: .55; border-style: dashed; border-color: #58a6ff; pointer-events: none; }
+    .card.salvando { opacity: .55; border-style: dashed; border-color: var(--acao-clara); pointer-events: none; }
     .card.rollback-erro { border-color: #f85149; animation: pulsoErro 1.5s ease; }
     @keyframes pulsoErro { 0% { box-shadow: 0 0 0 3px #f8514966; } 100% { box-shadow: 0 0 0 0 #f8514900; } }
     .empty { color: #484f58; font-size: .8rem; text-align: center; padding: 14px 0; }
@@ -75,7 +89,6 @@
     .drawer-body dl { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; margin: 14px 0; }
     .drawer-body dt { color: #8b949e; font-size: .82rem; }
     .drawer-body dd { margin: 0; font-size: .88rem; word-break: break-word; }
-    .drawer-body .raw-toggle { font-size: .8rem; color: #58a6ff; cursor: pointer; margin-top: 10px; display: inline-block; }
     /* bloco editável de operação (F5) no drawer */
     .op-block { margin-top: 4px; border: 1px solid #30363d; border-radius: 8px; padding: 12px; background: #010409; }
     .op-block .op-title { font-weight: 600; font-size: .85rem; }
@@ -124,14 +137,12 @@
     <button id="btnLogin">Entrar</button>
     <button id="btnLoad" class="sec" disabled>Carregar</button>
     <button id="btnIndicacao" class="sec" disabled>+ Indicação</button>
-    <button id="btnJson" class="sec" disabled>JSON</button>
     <button id="btnLogout" class="sec" disabled>Sair</button>
   </header>
   <div id="status">Não autenticado.</div>
   <div id="etapaWarn" class="warn hidden"></div>
   <div id="estado" class="estado" hidden></div>
   <div class="board" id="board"></div>
-  <pre id="json" hidden></pre>
 
   <div class="overlay" id="overlay"></div>
   <aside class="drawer" id="drawer" aria-hidden="true"></aside>
@@ -204,7 +215,7 @@
     async function onIn() {
       setStatus("Autenticado como " + EG.getAccount().username);
       $("btnLogin").disabled = true;
-      ["btnLoad", "btnIndicacao", "btnJson", "btnLogout"].forEach(id => $(id).disabled = false);
+      ["btnLoad", "btnIndicacao", "btnLogout"].forEach(id => $(id).disabled = false);
       try { const u = await EG.me(); window.currentUser = u; $("user").textContent = "👤 " + u.nome; }
       catch { $("user").textContent = "👤 " + EG.getAccount().username + " (falha no /me)"; }
     }
@@ -215,7 +226,7 @@
     $("btnLogout").onclick = async () => {
       await EG.logout(); window.currentUser = null;
       setStatus("Não autenticado."); $("user").textContent = ""; $("btnLogin").disabled = false;
-      ["btnLoad", "btnIndicacao", "btnJson", "btnLogout"].forEach(id => $(id).disabled = true);
+      ["btnLoad", "btnIndicacao", "btnLogout"].forEach(id => $(id).disabled = true);
       $("board").innerHTML = ""; $("etapaWarn").className = "warn hidden"; $("etapaWarn").innerHTML = "";
       EG.renderEstado($("estado"), "ok");
       closeDrawer(); fecharModalPerda(false); fecharModalIndicacao();
@@ -265,7 +276,6 @@
       }
     }
 
-    $("btnJson").onclick = () => { const p = $("json"); p.hidden = !p.hidden; p.textContent = JSON.stringify(lastPayload, null, 2); };
 
     function renderEtapaWarn(v) {
       const el = $("etapaWarn");
@@ -305,7 +315,9 @@
         if (f.Proxima_Acao || f.Data_Proxima_Acao) {
           const cls = classeDataAcao(f.Data_Proxima_Acao);
           const data = f.Data_Proxima_Acao ? esc(fmtDate(f.Data_Proxima_Acao)) : "";
-          op += '<div class="meta prox ' + cls + '">➜ ' + esc(f.Proxima_Acao || "(sem descrição)") + (data ? " · " + data : "") + "</div>";
+          // 2º CANAL: glifo + palavra por faixa de urgência, para não depender da cor
+          const marca = cls === "vencida" ? "⚠ vencida · " : (cls === "hoje" ? "⏰ hoje · " : "➜ ");
+          op += '<div class="meta prox ' + cls + '">' + marca + esc(f.Proxima_Acao || "(sem descrição)") + (data ? " · " + data : "") + "</div>";
         } else {
           // card ativo sem próxima ação combinada: selo discreto âmbar
           op += '<div class="selo-sem-acao">sem próxima ação</div>';
@@ -333,10 +345,15 @@
       $("board").innerHTML = colunas.map(col => {
         const sum = col.items.reduce((s, p) => s + ((p.fields && p.fields.ValorTotal) || 0), 0);
         const body = col.items.map(cardHtml).join("") || "<div class='empty'>—</div>";
+        const n = col.items.length;
         return '<div class="col" data-etapa="' + esc(col.etapa) + '">' +
           '<div class="col-head" style="border-top-color:' + esc(col.cor) + '">' +
-            '<div class="col-title" style="color:' + esc(col.cor) + '">' + esc(col.nome) + ' <span class="col-count">' + col.items.length + "</span></div>" +
-            '<div class="col-sum">' + BRL(sum) + "</div>" +
+            '<div class="col-title" style="color:' + esc(col.cor) + '">' +
+              '<span class="col-nome">' + esc(col.nome) + "</span>" +
+              '<span class="col-count" title="' + n + ' proposta(s) nesta etapa">' + n + "</span>" +
+            "</div>" +
+            // total da coluna: contagem POR EXTENSO + soma de valor
+            '<div class="col-sum"><span class="rot">' + n + (n === 1 ? " proposta · " : " propostas · ") + "</span>" + BRL(sum) + "</div>" +
           "</div>" +
           '<div class="col-body">' + body + "</div>" +
         "</div>";
@@ -548,11 +565,8 @@
         '<div class="drawer-body">' +
           "<dl>" + campos + "</dl>" +
           opHtml +
-          '<span class="raw-toggle" id="rawToggle">ver campos crus (Graph)</span>' +
-          '<pre id="rawFields" hidden style="margin:8px 0 0">' + esc(JSON.stringify(f, null, 2)) + "</pre>" +
         "</div>";
       $("drawerClose").onclick = closeDrawer;
-      $("rawToggle").onclick = () => { const r = $("rawFields"); r.hidden = !r.hidden; };
       $("opSalvar").onclick = () => salvarOperacao(p);
       $("drawer").classList.add("open"); $("drawer").setAttribute("aria-hidden", "false");
       $("overlay").classList.add("open");

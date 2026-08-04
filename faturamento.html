@@ -30,18 +30,26 @@
 
     /* --- Kanban (leitura: sem drag-and-drop) --- */
     .board { display: flex; gap: 12px; overflow-x: auto; padding: 2px 0 18px; align-items: flex-start; }
-    .col { flex: 0 0 236px; max-width: 236px; background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 300px); }
+    /* largura ÚNICA vinda do app.css (--kanban-col): igual entre as colunas E
+       igual à do Kanban de propostas (index.html) */
+    .col { flex: 0 0 var(--kanban-col); max-width: var(--kanban-col); background: #010409; border: 1px solid #30363d; border-radius: 10px; display: flex; flex-direction: column; max-height: calc(100vh - 300px); }
     .col.extra { border-style: dashed; }
-    .col-head { padding: 11px 13px 9px; border-top: 3px solid #6e7681; border-radius: 10px 10px 0 0; }
+    /* cabeçalho FIXO: gruda no topo enquanto a página/coluna rola. Fundo opaco
+       próprio para os cards não passarem por baixo. */
+    .col-head { padding: 11px 13px 9px; border-top: 3px solid #6e7681; border-radius: 10px 10px 0 0; position: sticky; top: 0; z-index: 3; background: #010409; box-shadow: 0 1px 0 #30363d; }
     .col-title { font-weight: 600; font-size: .86rem; display: flex; align-items: center; gap: 8px; line-height: 1.25; }
+    .col-nome { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     .col-count { background: #ffffff14; border-radius: 999px; padding: 0 8px; font-size: .74rem; color: #8b949e; flex: 0 0 auto; }
-    .col-sum { color: #3fb950; font-size: .8rem; margin-top: 4px; }
+    /* total da coluna: rótulo em texto + valor. Deixou de ser verde — verde
+       agora é a cor de AÇÃO. */
+    .col-sum { color: #e6edf3; font-size: .8rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
+    .col-sum .rot { color: #8b949e; font-weight: 400; }
     .col-body { padding: 0 9px 9px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
     .kcard { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 11px; cursor: pointer; }
-    .kcard:hover { border-color: #58a6ff; }
+    .kcard:hover { border-color: var(--acao-clara); }
     .kcard .num { font-weight: 600; font-size: .9rem; }
     .kcard .cli { color: #8b949e; font-size: .8rem; margin: 3px 0; }
-    .kcard .val { color: #3fb950; font-weight: 600; font-size: .84rem; margin-top: 4px; }
+    .kcard .val { color: #e6edf3; font-weight: 600; font-size: .84rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
     .kcard .st { color: #f0883e; font-size: .74rem; margin-top: 4px; }
     .col-empty { color: #484f58; font-size: .78rem; text-align: center; padding: 14px 0; }
     /* badge âmbar do "Aceito" legado (pode ter chegado pela web sem reserva de estoque) */
@@ -76,12 +84,23 @@
     .eo .eo-t { font-weight: 600; font-size: .88rem; color: #e6edf3; }
     .eo label { color: #8b949e; font-size: .8rem; display: flex; flex-direction: column; gap: 4px; }
     .eo select, .eo input, .eo textarea { background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px; padding: 7px 10px; font-size: .86rem; font-family: inherit; }
-    .eo select:focus, .eo input:focus, .eo textarea:focus { outline: 0; border-color: #1f6feb; }
+    .eo select:focus, .eo input:focus, .eo textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .eo textarea { min-height: 70px; resize: vertical; }
     .eo .eo-btns { display: flex; gap: 8px; }
     .eo .eo-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .eo .eo-msg.err { color: #F85149; }
     .eo .eo-aviso { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; line-height: 1.45; }
+  
+    /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
+       só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
+       O glifo abaixo dá o segundo canal. Só CSS, nada de comportamento. */
+    .eo .eo-aviso::before { content: "⚠️  "; }
+    /* mensagem de gravação do drawer: só a cor separava "gravando/ok" (cinza)
+       de "falhou" (vermelho). Glifo antes do texto; o textContent não muda. */
+    .eo .eo-msg.err::before { content: "✕ "; font-weight: 700; }
+    /* bloco vermelho de erro/exceção da nota e do orçamento fora do fluxo:
+       era texto vermelho sem nenhum marcador. */
+    .errmsg::before { content: "⚠ "; font-weight: 700; }
   </style>
 </head>
 <body>
@@ -127,8 +146,11 @@
         <div class="kpi"><div class="k">Orçamentos</div><div class="v" id="kOrcTot">—</div><div class="sub" id="kOrcSub">&nbsp;</div></div>
         <div class="kpi"><div class="k">Valor no pipeline</div><div class="v" id="kPipeVal" style="color:#3fb950">—</div><div class="sub">exclui cancelados e fora do fluxo</div></div>
         <div class="kpi"><div class="k">A faturar (aceito)</div><div class="v" id="kAFaturar" style="color:#1ABFBF">—</div><div class="sub" id="kAFaturarSub">&nbsp;</div></div>
-        <div class="kpi"><div class="k">Faturado</div><div class="v" id="kFaturado" style="color:#22B573">—</div><div class="sub" id="kFaturadoSub">&nbsp;</div></div>
-        <div class="kpi"><div class="k">Cancelados</div><div class="v" id="kCancel" style="color:#F85149">—</div><div class="sub" id="kCancelSub">&nbsp;</div></div>
+        <!-- 2º canal (daltonismo): glifo de faixa do app.css onde a cor carrega
+             valência. "Valor no pipeline" (soma) e "A faturar" (etapa neutra,
+             distinguida do "Faturado" pelo próprio rótulo) ficam sem glifo. -->
+        <div class="kpi"><div class="k">Faturado</div><div class="v fx-bom" id="kFaturado" style="color:#22B573">—</div><div class="sub" id="kFaturadoSub">&nbsp;</div></div>
+        <div class="kpi"><div class="k">Cancelados</div><div class="v fx-ruim" id="kCancel" style="color:#F85149">—</div><div class="sub" id="kCancelSub">&nbsp;</div></div>
       </div>
 
       <div class="toolbar">
@@ -141,12 +163,15 @@
         <span class="hint" id="hintKan"></span>
       </div>
 
+      <!-- estado da seção Kanban (carregando / vazio / erro) — componente
+           compartilhado EG.renderEstado (graph.js). Conteúdo e visibilidade
+           são SÓ dele; o texto de instrução pré-carga é escrito no boot. -->
+      <div class="estado" id="emptyKan" hidden></div>
       <div class="board" id="board"></div>
       <div id="boardExtraWrap" hidden>
         <div class="board-sep">Fora das 6 etapas do fluxo — não entram no funil de conversão:</div>
         <div class="board" id="boardExtra"></div>
       </div>
-      <div class="empty" id="emptyKan">Carregue os dados para ver o pipeline de vendas.</div>
     </section>
 
     <!-- ===================== FUNIL ===================== -->
@@ -171,8 +196,9 @@
       <div class="kpis">
         <div class="kpi"><div class="k">Notas importadas</div><div class="v" id="kNfTot">—</div></div>
         <div class="kpi"><div class="k">Valor total importado</div><div class="v" id="kNfVal" style="color:#3fb950">—</div></div>
-        <div class="kpi"><div class="k">Com erro de leitura</div><div class="v" id="kNfErro" style="color:#F85149">—</div></div>
-        <div class="kpi"><div class="k">Com divergência</div><div class="v" id="kNfDiv" style="color:#D29922">—</div></div>
+        <!-- 2º canal (daltonismo): mesma escala ● / ◐ / ○ da aba Kanban -->
+        <div class="kpi"><div class="k">Com erro de leitura</div><div class="v fx-ruim" id="kNfErro" style="color:#F85149">—</div></div>
+        <div class="kpi"><div class="k">Com divergência</div><div class="v fx-medio" id="kNfDiv" style="color:#D29922">—</div></div>
         <div class="kpi"><div class="k">Impostos (ICMS+ST+IPI)</div><div class="v" id="kNfImp">—</div></div>
       </div>
 
@@ -185,13 +211,14 @@
         <span class="hint" id="hintNf"></span>
       </div>
 
+      <!-- estado da seção de notas fiscais — mesmo componente compartilhado -->
+      <div class="estado" id="emptyNf" hidden></div>
       <table id="tblNf" hidden>
         <thead><tr>
           <th>Número / Série</th><th>Fornecedor</th><th>Emissão</th><th>Importação</th><th>Valor total</th><th>Situação</th>
         </tr></thead>
         <tbody id="tbNf"></tbody>
       </table>
-      <div class="empty" id="emptyNf">Carregue os dados para ver as notas fiscais de entrada.</div>
     </section>
   </main>
 
@@ -432,9 +459,13 @@
     // uma lista que falha não derruba a tela inteira
     const soft = (p, nome) => p.catch(e => { console.warn("Falha ao carregar " + nome + ": " + e.message); return []; });
 
-    $("btnLoad").onclick = async () => {
+    // função nomeada (e não handler anônimo) para poder ser reusada como
+    // onRetry do estado de erro das seções — ver EG.renderEstado abaixo.
+    async function carregarFaturamento() {
       try {
         setStatus("Carregando faturamento e pipeline de vendas...");
+        EG.renderEstado($("emptyKan"), "carregando", { mensagem: "Carregando pipeline de vendas…" });
+        EG.renderEstado($("emptyNf"), "carregando", { mensagem: "Carregando notas fiscais de entrada…" });
         // guarda contra rótulo de Choice divergente (falha silenciosa) — ver graph.js
         Promise.all([
           EG.validarChoices("Orcamentos_Venda", "Status_Orcamento", STATUS_CONHECIDOS).then(v => ({ v: v, rotulo: "Status de Orçamento (Orcamentos_Venda)" })),
@@ -451,8 +482,15 @@
         aplicarColunasOrc(colsOrc);
         aplicarDados(orc, nf, cli, forn);
         setStatus("OK — " + orcamentos.length + " orçamento(s) de venda, " + nfs.length + " nota(s) fiscal(is) de entrada.");
-      } catch (e) { setStatus("Falha: " + e.message, "err"); }
-    };
+      } catch (e) {
+        setStatus("Falha: " + e.message, "err");
+        // estado de erro DAS SEÇÕES (a barra global acima continua existindo).
+        // "Erro na Leitura do XML" da tabela de NF é VALOR DE DOMÍNIO, não passa por aqui.
+        EG.renderEstado($("emptyKan"), "erro", { mensagem: "Falha ao carregar pipeline de vendas: " + e.message, onRetry: carregarFaturamento });
+        EG.renderEstado($("emptyNf"), "erro", { mensagem: "Falha ao carregar notas fiscais de entrada: " + e.message, onRetry: carregarFaturamento });
+      }
+    }
+    $("btnLoad").onclick = carregarFaturamento;
 
     // separado do botão para permitir injeção de dados de teste (window.FAT.injetar)
     function aplicarDados(orc, nf, cli, forn) {
@@ -519,10 +557,15 @@
     function colHtml(nome, cor, items, mostraStatus, extra) {
       const sum = somaValor(items);
       const body = items.length ? items.map(o => cardHtml(o, mostraStatus)).join("") : "<div class='col-empty'>vazia</div>";
+      const n = items.length;
       return '<div class="col' + (extra ? " extra" : "") + '">' +
         '<div class="col-head" style="border-top-color:' + cor + '">' +
-          '<div class="col-title" style="color:' + cor + '">' + esc(nome) + ' <span class="col-count">' + items.length + "</span></div>" +
-          '<div class="col-sum">' + esc(EG.BRL(sum)) + "</div>" +
+          '<div class="col-title" style="color:' + cor + '">' +
+            '<span class="col-nome">' + esc(nome) + "</span>" +
+            '<span class="col-count" title="' + n + ' orçamento(s) nesta coluna">' + n + "</span>" +
+          "</div>" +
+          // total da coluna: contagem POR EXTENSO + soma de valor
+          '<div class="col-sum"><span class="rot">' + n + (n === 1 ? " orçamento · " : " orçamentos · ") + "</span>" + esc(EG.BRL(sum)) + "</div>" +
         "</div>" +
         '<div class="col-body">' + body + "</div></div>";
     }
@@ -549,12 +592,11 @@
 
       if (!orcamentos.length) {
         $("board").innerHTML = ""; $("boardExtraWrap").hidden = true;
-        $("emptyKan").hidden = false;
-        $("emptyKan").textContent = "Nenhum orçamento de venda cadastrado em Orcamentos_Venda — o pipeline nasce vazio.";
+        EG.renderEstado($("emptyKan"), "vazio", { mensagem: "Nenhum orçamento de venda cadastrado em Orcamentos_Venda — o pipeline nasce vazio." });
         return;
       }
-      $("emptyKan").hidden = lista.length > 0;
-      if (!lista.length) $("emptyKan").textContent = "Nenhum orçamento atende aos filtros.";
+      // vazio por FILTRO é mensagem diferente do vazio de verdade (acima)
+      EG.renderEstado($("emptyKan"), lista.length ? "ok" : "vazio", { mensagem: "Nenhum orçamento atende aos filtros." });
 
       $("board").innerHTML = ETAPAS.map(e => colHtml(e, etapaCor(e), g.porEtapa[e], false, false)).join("");
 
@@ -655,13 +697,16 @@
       ].filter(Boolean).join(" — ");
 
       if (!lista.length) {
-        $("tblNf").hidden = true; $("emptyNf").hidden = false;
-        $("emptyNf").textContent = nfs.length
-          ? "Nenhuma nota fiscal atende aos filtros."
-          : "Nenhuma nota fiscal de entrada importada em Notas_Fiscais_Entrada.";
+        $("tblNf").hidden = true;
+        // preserva as DUAS mensagens: vazio por filtro x vazio de verdade
+        EG.renderEstado($("emptyNf"), "vazio", {
+          mensagem: nfs.length
+            ? "Nenhuma nota fiscal atende aos filtros."
+            : "Nenhuma nota fiscal de entrada importada em Notas_Fiscais_Entrada."
+        });
         return;
       }
-      $("emptyNf").hidden = true; $("tblNf").hidden = false;
+      EG.renderEstado($("emptyNf"), "ok"); $("tblNf").hidden = false;
       // mais recentes primeiro; sem data de emissão vai para o fim
       const ord = lista.slice().sort((a, b) => {
         const da = Date.parse(((a.fields || {}).Data_Emissao) || "");
@@ -875,11 +920,9 @@
         "<div style='margin-top:6px'>" + pill + "</div></div>" +
         "<button class='x' id='dc'>Fechar ✕</button></div>" +
         "<div class='drawer-body'>" + corpo +
-        "<span class='raw-toggle' id='rt'>ver campos crus (Graph)</span>" +
-        "<pre id='rf' hidden style='margin-top:8px'>" + esc(JSON.stringify(f, null, 2)) + "</pre></div>";
+        "</div>";
       $("dc").onclick = fechar;
-      $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
-      $("drawer").classList.add("open"); $("overlay").classList.add("open");
+            $("drawer").classList.add("open"); $("overlay").classList.add("open");
       $("drawer").setAttribute("aria-hidden", "false");
     }
     function fechar() {
@@ -899,6 +942,11 @@
       // bloqueio do aceite (RESTRIÇÃO TEMPORÁRIA — ver mapa no topo)
       STATUS_ACEITO: STATUS_ACEITO, avisoAceitoLegado: avisoAceitoLegado
     };
+
+    // Estado de INSTRUÇÃO pré-carga das duas seções: mesmo texto de antes,
+    // agora pelo componente compartilhado (era hardcodado no HTML).
+    EG.renderEstado($("emptyKan"), "vazio", { mensagem: "Carregue os dados para ver o pipeline de vendas." });
+    EG.renderEstado($("emptyNf"), "vazio", { mensagem: "Carregue os dados para ver as notas fiscais de entrada." });
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
