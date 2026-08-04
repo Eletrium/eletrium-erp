@@ -655,6 +655,42 @@
       }
     });
 
+    /* ------------------------------------------------------------------
+       DEDUPE NO DESTINO (04/08/2026 — ordem do dono). FUNÇÕES PURAS.
+
+       POR QUE existe, já que o 1F filtra `Sincronizado <> TRUE` na origem:
+       aquela é uma OTIMIZAÇÃO (evita reenviar), não uma GARANTIA. Ela só
+       funciona se o passo que MARCA a origem executar — e foi exatamente
+       isso que falhou no incidente 1E-B (marca falha → watch reenvia a cada
+       ciclo → duplicatas). A garantia tem de viver no DESTINO: chave única
+       server-side, que nenhum retry, corrida ou escritor novo contorna.
+       Mesmo padrão do `Chave_Idempotencia_Origem` da Promoção.
+       NÃO REMOVER por parecer redundante com o filtro da origem: os dois
+       resolvem problemas diferentes, um economiza chamada, o outro impede
+       dano. Ver docs/VARREDURA-BLUEPRINTS-0408.md (seção 1F).
+
+       Formato: <OSLookupId>|<Pergunta_ID>|<Timestamp>|<Tecnico>, 255 chars.
+       O 4º componente existe porque a chave identifica UM EVENTO: dois
+       técnicos respondendo a mesma pergunta da mesma OS no mesmo carimbo
+       são eventos legítimos distintos e não podem colapsar. Re-resposta
+       legítima ("Corrigir") tem Timestamp novo → chave nova → passa.
+       ------------------------------------------------------------------ */
+    function montarChaveResposta(c) {
+      const cc = c || {};
+      const partes = [
+        cc.OSLookupId == null ? "" : String(cc.OSLookupId),
+        cc.Pergunta_ID == null ? "" : String(cc.Pergunta_ID),
+        cc.Timestamp == null ? "" : String(cc.Timestamp),
+        cc.Tecnico == null ? "" : String(cc.Tecnico)
+      ];
+      return partes.join("|").slice(0, 255);
+    }
+    function ehColisaoChave(e) {
+      const m = String((e && e.message) || "").toLowerCase();
+      return m.indexOf("duplicate") > -1 || m.indexOf("duplicad") > -1 ||
+             m.indexOf("valores duplicados") > -1 || m.indexOf("unique") > -1;
+    }
+
     /* gravação por pergunta: SEMPRE createItem (append). Pergunta já
        respondida não vira PATCH — "Corrigir" cria linha nova e a leitura
        pega a mais recente por Pergunta_ID (trilha de auditoria preservada,
@@ -691,6 +727,7 @@
         if (!fotoUrl) { falha("Foto obrigatória: cole a URL da foto (http/https)."); if (el) el.focus(); return; }
       }
 
+      // (funções puras de dedupe declaradas abaixo, em escopo de módulo)
       // payload: só chaves com valor (padrão nova-proposta); os campos de
       // parâmetro só entram quando a pergunta É de parâmetro técnico —
       // Alerta_Parametro=false é informação afirmativa nesse caso.
@@ -704,6 +741,10 @@
         Tecnico: (usuarioNome || "(usuário não identificado)") + (usuarioEmail ? " (" + usuarioEmail + ")" : ""),
         Timestamp: new Date().toISOString()
       };
+      // DEDUPE NO DESTINO — chave única server-side por EVENTO de resposta.
+      // Ver montarChaveResposta: o retry do MESMO evento gera a MESMA chave e
+      // o SharePoint recusa; re-resposta legítima tem Timestamp novo e passa.
+      campos.Chave_Resposta = montarChaveResposta(campos);
       if (fotoUrl) campos.Foto_URL = fotoUrl;
       if (ehParam) {
         campos.Valor_Medido = valorMedido;
@@ -728,7 +769,25 @@
         // Pré-Execução, sincroniza Estado_Seguranca na OS (PATCH mínimo).
         await sincronizarEstadoSeguranca();
       } catch (e) {
-        falha("Falha ao gravar: " + e.message);
+        // Colisão da chave única = este evento JÁ está registrado (retry de
+        // rede/duplo clique, ou o 1F já trouxe a mesma linha do PWA). Não é
+        // falha: reconcilia relendo do servidor e segue. Detector heurístico
+        // (mesmo padrão do documentos-os.html): se a mensagem do Graph mudar,
+        // cai na mensagem genérica — seguro (nada foi gravado duas vezes,
+        // quem garante é a unicidade no servidor, não este if).
+        if (ehColisaoChave(e)) {
+          try {
+            respostas = await soft(EG.listItems("OS_Respostas"), "OS_Respostas");
+            corrigindo[pid] = false;
+            renderExecKeep();
+            setStatus("Resposta P" + pid + " já estava registrada (evento idêntico) — nada foi duplicado.");
+            await sincronizarEstadoSeguranca();
+          } catch (e2) {
+            falha("Resposta já registrada, mas a releitura falhou: " + e2.message);
+          }
+        } else {
+          falha("Falha ao gravar: " + e.message);
+        }
       } finally {
         gravandoResp = false;
       }
@@ -1057,7 +1116,33 @@
       tituloDe, paraGraph, urlSeguro, sincronizarEstadoSeguranca,
       setOS: (id) => { osSelId = String(id); },
       forcarCarregado: (v) => { carregado = v !== false; },
-      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
+      setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; },
+      // dedupe no destino (04/08) — funções puras + asserções
+      montarChaveResposta, ehColisaoChave,
+      assertDedupe() {
+        const falhas = [];
+        const ok = (c, r) => { if (!c) falhas.push(r); };
+        const base = { OSLookupId: 5, Pergunta_ID: "12", Timestamp: "2026-08-04T13:00:00.000Z", Tecnico: "Geovane (g@ex.com)" };
+        const k1 = montarChaveResposta(base);
+        ok(k1 === "5|12|2026-08-04T13:00:00.000Z|Geovane (g@ex.com)", "chave: formato de 4 partes separadas por |");
+        // determinismo: o MESMO evento (retry) gera a MESMA chave
+        ok(montarChaveResposta({ ...base }) === k1, "chave: mesmo evento deveria gerar chave idêntica (retry bloqueado no servidor)");
+        // re-resposta legítima ("Corrigir") tem Timestamp novo → chave nova
+        ok(montarChaveResposta({ ...base, Timestamp: "2026-08-04T13:00:05.000Z" }) !== k1,
+          "chave: re-resposta com Timestamp novo deveria gerar chave DIFERENTE (não colapsar evento legítimo)");
+        // dois técnicos, mesmo carimbo: eventos distintos não colapsam
+        ok(montarChaveResposta({ ...base, Tecnico: "Outro" }) !== k1,
+          "chave: técnico diferente no mesmo carimbo deveria gerar chave diferente");
+        ok(montarChaveResposta({}).length <= 255 && montarChaveResposta(null) === "|||",
+          "chave: ausência de dados não deveria quebrar (nem estourar 255)");
+        ok(ehColisaoChave({ message: "valores duplicados foram encontrados" }) === true &&
+           ehColisaoChave({ message: "Duplicate value not allowed" }) === true &&
+           ehColisaoChave({ message: "timeout na rede" }) === false,
+          "colisão: detector deveria reconhecer duplicidade e ignorar erro comum");
+        const r = { ok: falhas.length === 0, total: 6, falhas };
+        console.log("CHK.assertDedupe:", JSON.stringify(r));
+        return r;
+      }
     };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
