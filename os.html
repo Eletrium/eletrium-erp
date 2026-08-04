@@ -220,7 +220,12 @@
          Origem_OS (lookup — OS concluída que a retificação corrige, C6),
          Motivo_Retorno (obrigatório na retificação, C6),
          Snapshot_Manifesto, Snapshot_SHA256, Snapshot_Confirmado_Em
-           (snapshot verificável do fechamento, B7 — gravados só por concluirOS),
+           (snapshot verificável do fechamento, B7 — gravados só por concluirOS,
+           em DUAS FASES: manifesto+SHA na fase 1 e Snapshot_Confirmado_Em só
+           na fase 2, depois de a releitura conferir. Snapshot_Confirmado_Em
+           É o estado da confirmação — null = NÃO confirmada; por isso NÃO
+           existe campo "Snapshot_Status": seriam duas verdades para o mesmo
+           fato. A reabertura o zera; só as duas fases voltam a preenchê-lo),
          Local_AtendimentoLookupId (lookup p/ Clientes_Locais — só o editor
            da OS grava; Parte 2 da Onda 2),
          Estado_Operacional (B4 — ver o mapa dos 4 estados logo abaixo).
@@ -229,8 +234,8 @@
          Trilha_Reaberturas (Note, APPEND-ONLY — nunca sobrescrever, só
            acrescentar linha) ........ ESTA TELA (reabrirOS);
          Medicao_Situacao_Lote (Choice "Sem lote"|"Em lote") — DOIS escritores
-           com valores disjuntos: ESTA TELA grava SÓ "Sem lote" (junto do
-           PATCH de concluirOS — afirmação positiva que discrimina o legado:
+           com valores disjuntos: ESTA TELA grava SÓ "Sem lote" (na FASE 2 de
+           concluirOS — afirmação positiva que discrimina o legado:
            ausência de itens é ambígua em OS antigas; "Sem lote" não).
            medicao.html grava SÓ "Em lote" no fechar-lote, mas esse valor é
            CACHE: a decisão de reabertura NÃO lê "Em lote" — a FONTE CANÔNICA
@@ -246,7 +251,7 @@
        em cada escrita; os demais são leitura em badge no drawer):
          Estado_Operacional ............. ESTA TELA — "Em Andamento" quando o
            1º check-in de equipe é salvo (se o estado atual for vazio/
-           Pendente); "Concluído" junto do PATCH de concluirOS.
+           Pendente); "Concluído" na FASE 2 de concluirOS.
          Estado_Seguranca ............... checklist.html (a segurança nasce do
            checklist: fase Pré-Execução) — aqui é SÓ LEITURA, mas
            "Liberado" é PRÉ-REQUISITO do Concluir OS.
@@ -1277,6 +1282,114 @@
       } finally { fcOcupado = false; }
     }
 
+    /* ==================================================================
+       B7 — SNAPSHOT VERIFICÁVEL DO FECHAMENTO, EM DUAS FASES
+       (trava que TRAVA — substitui a gravação única que concluía e só
+       depois "avisava" da divergência)
+
+       ORDEM DAS ESCRITAS (regra do repo, mesma do C2/C6 e do ledger da
+       oferta): PROVA PRIMEIRO, PONTEIRO DEPOIS.
+         FASE 1 ...... PATCH só de Snapshot_Manifesto + Snapshot_SHA256.
+                       NÃO toca Status/DataConclusao/Estado_Operacional/
+                       Medicao_Situacao_Lote/Snapshot_Confirmado_Em.
+         VERIFICAÇÃO . releitura DO SERVIDOR e SHA-256 RECOMPUTADO sobre o
+                       manifesto RELIDO (nunca sobre o local).
+         FASE 2 ...... só se conferir: Status="Concluída" + DataConclusao +
+                       Estado_Operacional + Medicao_Situacao_Lote +
+                       Snapshot_Confirmado_Em.
+       Se a FASE 2 não roda, os campos de snapshot já gravados NÃO são lixo:
+       são EVIDÊNCIA da tentativa (o operador/gestor consegue comparar o que
+       o servidor guardou com o que a tela mandou). A OS simplesmente
+       CONTINUA NÃO CONCLUÍDA e o operador repete — a próxima tentativa
+       regenera manifesto/hash por cima (não há guarda "já tem snapshot").
+       Vale igual na RECONCLUSÃO após reabertura: a reabertura limpa
+       Snapshot_Confirmado_Em e só as duas fases voltam a preenchê-lo.
+       ================================================================== */
+    /* ===== B7-NUCLEO-INICIO =====
+       Sentinelas: o harness do TESTE DE ACEITE recorta EXATAMENTE este bloco do
+       arquivo e o executa contra um SharePoint falso — o teste roda o código
+       real, não uma cópia. NÃO renomeie/remova os sentinelas. ===== */
+    // FASE 1 — payload MÍNIMO da prova. A ausência de Status aqui é o que
+    // impede a OS de ficar concluída antes da verificação.
+    const payloadSnapshotFase1 = (manifesto, sha) => ({
+      Snapshot_Manifesto: manifesto,
+      Snapshot_SHA256: sha
+    });
+    // FASE 2 — payload do PONTEIRO (a conclusão de fato). Só é montado depois
+    // de a verificação passar.
+    // Status/DataConclusao pertencem ao cenário 1A (exceção controlada — ver o
+    // comentário de conflito de dono de campo no topo desta Frente B).
+    // Estado_Operacional="Concluído": DONO é ESTA tela (B4).
+    // Medicao_Situacao_Lote="Sem lote": afirmação positiva que discrimina o
+    // legado (a OS acabou de concluir e ainda não está em lote nenhum);
+    // medicao.html grava só "Em lote", e como CACHE.
+    // Snapshot_Confirmado_Em É o estado da confirmação (null = não confirmado):
+    // por isso NÃO existe campo Snapshot_Status — seriam duas verdades para o
+    // mesmo fato.
+    const payloadConclusaoFase2 = (agora) => ({
+      Status: "Concluída",
+      DataConclusao: agora,
+      Estado_Operacional: "Concluído",
+      Medicao_Situacao_Lote: "Sem lote",
+      Snapshot_Confirmado_Em: agora
+    });
+    // VERIFICAÇÃO (função PURA e síncrona — o hash já vem calculado de fora,
+    // porque crypto.subtle é assíncrono e não deve contaminar as asserções).
+    // Três recusas possíveis, todas com motivo legível:
+    //   (a) manifesto/SHA não voltaram gravados na releitura;
+    //   (b) o SHA recomputado sobre o manifesto RELIDO não bate com o SHA
+    //       RELIDO — truncamento/normalização silenciosa no manifesto;
+    //   (c) o SHA relido não bate com o calculado na gravação — o servidor
+    //       guardou outra coisa (ou o próprio campo de hash foi mexido).
+    function conferirSnapshot(e) {
+      const man = e && e.manifesto, shaRelido = e && e.shaRelido;
+      const shaLocal = e && e.shaLocal, rec = e && e.shaRecomputado;
+      if (!temTexto(man)) return { ok: false, motivo: "Snapshot_Manifesto não voltou gravado na releitura do servidor" };
+      if (!temTexto(shaRelido)) return { ok: false, motivo: "Snapshot_SHA256 não voltou gravado na releitura do servidor" };
+      if (!temTexto(rec)) return { ok: false, motivo: "não foi possível recomputar o SHA-256 do manifesto relido" };
+      if (String(rec) !== String(shaRelido)) {
+        return { ok: false, motivo: "o SHA-256 recomputado sobre o manifesto relido (" + String(rec).slice(0, 8) +
+          ") NÃO bate com o Snapshot_SHA256 relido (" + String(shaRelido).slice(0, 8) + ")" };
+      }
+      if (String(shaRelido) !== String(shaLocal)) {
+        return { ok: false, motivo: "o Snapshot_SHA256 relido (" + String(shaRelido).slice(0, 8) +
+          ") NÃO bate com o hash calculado na gravação (" + String(shaLocal).slice(0, 8) + ")" };
+      }
+      return { ok: true, motivo: "" };
+    }
+    // NÚCLEO das duas fases. TODAS as dependências entram por parâmetro
+    // (patch/reler/hash) — sem DOM, sem global: é este núcleo que o teste de
+    // aceite exercita contra um servidor falso, e é o MESMO que concluirOS usa.
+    // Devolve { concluida, verificacao, novo, fase }.
+    async function executarConclusaoDuasFases(dep) {
+      await dep.patch(payloadSnapshotFase1(dep.manifesto, dep.sha));           // FASE 1: prova
+      const novo1 = await dep.reler();                                          // releitura do SERVIDOR
+      const nf = (novo1 || {}).fields || {};
+      let rec = null;
+      // hash que falha é DIVERGÊNCIA (fail-closed), nunca "passou porque deu erro"
+      try { rec = await dep.hash(String(nf.Snapshot_Manifesto ?? "")); } catch (eH) { rec = null; }
+      const ver = conferirSnapshot({
+        manifesto: nf.Snapshot_Manifesto, shaRelido: nf.Snapshot_SHA256, shaLocal: dep.sha, shaRecomputado: rec
+      });
+      // DIVERGÊNCIA ⇒ a FASE 2 NÃO RODA e a OS PERMANECE NÃO CONCLUÍDA.
+      if (!ver.ok) return { concluida: false, verificacao: ver, novo: novo1, fase: 1 };
+      await dep.patch(payloadConclusaoFase2(dep.agora));                        // FASE 2: ponteiro
+      const novo2 = await dep.reler();
+      return { concluida: true, verificacao: ver, novo: novo2, fase: 2 };
+    }
+    /* ===== B7-NUCLEO-FIM ===== */
+
+    // Ponto de injeção do TESTE DE ACEITE (homologação): quando
+    // window.OSR.__forcarHash é uma função, ela decide o hash recomputado na
+    // verificação — é assim que se prova, sem corromper dado no SharePoint, que
+    // divergência deixa a OS NÃO CONCLUÍDA. Em produção o hook não existe e
+    // isto é o sha256Hex puro. O hook NÃO afeta o hash GRAVADO na fase 1 (esse
+    // é sempre o real): ele só mente na verificação, que é o que se quer testar.
+    async function hashVerificacao(txt) {
+      const hook = window.OSR && window.OSR.__forcarHash;
+      return typeof hook === "function" ? String(await hook(txt)) : await sha256Hex(txt);
+    }
+
     async function concluirOS(o) {
       if (fcOcupado) return;
       const msg = $("fcMsg");
@@ -1290,16 +1403,27 @@
         msg.className = "ed-msg err"; msg.textContent = "Não é possível concluir. Falta: " + faltas.join("; ") + ".";
         return;
       }
+      // B2/B7 — OFFLINE: DECISÃO DECLARADA — a conclusão é RECUSADA offline, NÃO
+      // é enfileirada no outbox. Motivo: a confirmação do snapshot exige releitura
+      // DO SERVIDOR; uma conclusão enfileirada seria transmitida sem verificação
+      // possível e reabriria por outra porta exatamente o buraco que estas duas
+      // fases fecham. Os outros fluxos offline desta tela (creates com
+      // Operation_ID — C2/C6) continuam intactos: aqueles são idempotentes e não
+      // dependem de conferir nada relido.
+      if (navigator.onLine === false) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Sem conexão: a conclusão de OS NÃO pode ser enfileirada offline porque exige " +
+          "reler o item no servidor para confirmar o snapshot. A OS permanece NÃO CONCLUÍDA — " +
+          "reconecte e clique em “Concluir OS” de novo.";
+        return;
+      }
+      let resultado = null;
       try {
         fcOcupado = true;
         $("fcConcluir").disabled = true;
-        msg.className = "ed-msg"; msg.textContent = "Concluindo OS...";
-        // B7 — SNAPSHOT VERIFICÁVEL DO FECHAMENTO: os campos que fecham a OS
-        // são congelados num manifesto JSON canônico (chaves ordenadas) +
-        // SHA-256, gravados JUNTO com a conclusão. Depois da releitura,
-        // recomputamos o hash sobre o manifesto RELIDO e comparamos com o SHA
-        // relido — detecta truncamento/normalização silenciosa no caminho de
-        // gravação. O PDF do snapshot (render imutável p/ o cliente) é
+        msg.className = "ed-msg"; msg.textContent = "Gravando snapshot (fase 1 de 2)...";
+        // manifesto JSON canônico (chaves ordenadas) dos campos que fecham a OS
+        // + SHA-256. O PDF do snapshot (render imutável p/ o cliente) é
         // integração futura.
         const agora = new Date().toISOString();
         const manifesto = manifestoCanonico({
@@ -1317,52 +1441,45 @@
           timestamp: agora
         });
         const sha = await sha256Hex(manifesto);
-        // PATCH explícito (padrão decidirVeiculo) — ver o comentário de conflito
-        // de dono de campo no topo desta Frente B: Status e DataConclusao são do
-        // 1A; esta escrita só existe porque o 1A está pausado.
-        await EG.patchItemFields("OrdensDeServico", o.id, {
-          Status: "Concluída",
-          DataConclusao: agora,
-          // B4 — DONO: Estado_Operacional é DESTA tela (1º check-in + aqui).
-          // "Concluído" vai junto do mesmo PATCH da conclusão — nunca sozinho.
-          Estado_Operacional: "Concluído",
-          // Reabertura — DONO: a OS acabou de concluir e ainda não está em
-          // lote nenhum; ESTA escrita é a afirmação positiva "Sem lote" que
-          // discrimina o legado (a decisão de reabertura exige itens VAZIOS
-          // em OS_Medicoes_Itens — fonte canônica — E esta afirmação).
-          // "Em lote" é gravado SÓ por medicao.html no fechar-lote, como
-          // CACHE (a decisão não o lê). OSs legadas (campo vazio, sem itens)
-          // seguem restritivas até marcação explícita.
-          // NOTA reconclusão: este fluxo roda por inteiro de novo após uma
-          // reabertura — manifesto/SHA-256/Snapshot_Confirmado_Em são sempre
-          // REGERADOS (não há guarda "já tem snapshot, pula") e re-verificados
-          // na releitura abaixo.
-          Medicao_Situacao_Lote: "Sem lote",
-          Snapshot_Manifesto: manifesto,
-          Snapshot_SHA256: sha,
-          Snapshot_Confirmado_Em: agora
+        let nPatch = 0;
+        resultado = await executarConclusaoDuasFases({
+          manifesto, sha, agora,
+          // B3 — If-Match/ETag em CADA fase (412 tratado no catch geral).
+          // travarChoices (fail-closed) segue valendo: divergência de rótulo de
+          // Status/Estado_Operacional bloqueia a FASE 2 antes de ir à rede.
+          patch: (campos) => {
+            nPatch++;
+            msg.textContent = nPatch === 1 ? "Gravando snapshot (fase 1 de 2)..." : "Snapshot conferido — concluindo (fase 2 de 2)...";
+            return EG.patchItemFields("OrdensDeServico", o.id, campos);
+          },
+          reler: async () => { const n = await relerOS(o.id); if (nPatch === 1) msg.textContent = "Verificando o snapshot relido do servidor..."; return n; },
+          hash: hashVerificacao
         });
-        const novo = await relerOS(o.id);
-        openDrawer(novo);
-        // B7 — verificação pós-releitura: hash RECOMPUTADO sobre o manifesto
-        // relido vs. SHA-256 relido. Divergência NÃO desfaz a conclusão — só
-        // pede verificação humana.
-        const nf = (novo || {}).fields || {};
-        let snapshotOk = false;
-        try {
-          snapshotOk = temTexto(nf.Snapshot_Manifesto) && temTexto(nf.Snapshot_SHA256) &&
-            (await sha256Hex(String(nf.Snapshot_Manifesto))) === String(nf.Snapshot_SHA256);
-        } catch (eHash) { console.warn("B7: falha ao recomputar o hash do snapshot relido:", eHash.message); }
-        if (snapshotOk) {
+        openDrawer(resultado.novo);
+        const nf = (resultado.novo || {}).fields || {};
+        if (resultado.concluida) {
+          msg.className = "ed-msg"; msg.textContent = "";
           setStatus("OS " + (nf.Title || o.id) + " concluída — SNAPSHOT_CONFIRMADO (sha256 " +
                     String(nf.Snapshot_SHA256).slice(0, 8) + ").");
         } else {
-          setStatus("OS " + (nf.Title || o.id) + " concluída, MAS o snapshot relido NÃO confere com o " +
-                    "SHA-256 gravado — verifique Snapshot_Manifesto/Snapshot_SHA256 no item " +
-                    "(a conclusão NÃO foi desfeita).", "err");
+          // A OS NÃO foi concluída: a fase 2 não rodou.
+          const aviso = "OS " + (nf.Title || o.id) + " NÃO FOI CONCLUÍDA: a verificação do snapshot falhou — " +
+            resultado.verificacao.motivo + ". Status continua “" + (nf.Status ?? "—") + "” e " +
+            "Snapshot_Confirmado_Em continua vazio. Os campos de snapshot gravados ficam como EVIDÊNCIA da " +
+            "tentativa; confira Snapshot_Manifesto/Snapshot_SHA256 no item e tente concluir de novo.";
+          msg.className = "ed-msg err"; msg.textContent = aviso;
+          setStatus(aviso, "err");
+          if ($("fcConcluir")) $("fcConcluir").disabled = false;
         }
       } catch (e) {
-        msg.className = "ed-msg err"; msg.textContent = "Falha ao concluir: " + e.message;
+        // Falha de rede/412 no meio: se ela veio antes da fase 2, a OS NÃO ficou
+        // concluída (é o resultado seguro). Se veio DEPOIS da fase 2, só a
+        // releitura final se perdeu — nunca afirmamos o contrário do que sabemos.
+        const passouFase2 = !!(resultado && resultado.concluida);
+        msg.className = "ed-msg err";
+        msg.textContent = passouFase2
+          ? ("Conclusão gravada, mas a releitura final falhou: " + e.message + " — recarregue a OS para confirmar.")
+          : ("Falha ao concluir — a OS NÃO foi concluída: " + e.message);
         if ($("fcConcluir")) $("fcConcluir").disabled = false;
       } finally { fcOcupado = false; }
     }
@@ -1588,7 +1705,15 @@
     // trilha e do payload do PATCH. Não toca rede nem DOM.
     window.OSR = {
       decidirReabertura, linhaTrilhaReabertura, payloadReabertura,
-      assert() {
+      // B7 — duas fases da conclusão (puras/injetáveis; ver B7-NUCLEO no arquivo).
+      // __forcarHash NÃO é definido aqui de propósito: é o ponto de injeção do
+      // teste de aceite, ligado à mão em homologação e ausente em produção.
+      payloadSnapshotFase1, payloadConclusaoFase2, conferirSnapshot,
+      executarConclusaoDuasFases, manifestoCanonico, sha256Hex, hashVerificacao,
+      // ASSÍNCRONA desde o B7 (o núcleo das duas fases é awaitado aqui dentro):
+      // no console use `await OSR.assert()`. O console.log final continua saindo
+      // sozinho e o objeto devolvido tem a MESMA forma de antes {ok,total,falhas}.
+      async assert() {
         const falhas = [];
         const ok = (cond, rotulo) => { if (!cond) falhas.push(rotulo); };
         // decisão — caso 1: sem item + afirmação "Sem lote" habilita (LIVRE)
@@ -1637,7 +1762,84 @@
         // lista esperada do travarChoices (senão o fail-closed bloquearia o PATCH)
         ok(p1.Estado_Operacional === "Em Revisão" && ESTADOS_OPERACIONAL.indexOf(p1.Estado_Operacional) > -1,
           "payload: Estado_Operacional deveria ser 'Em Revisão' E constar da lista travada (fail-closed)");
-        const r = { ok: falhas.length === 0, total: 12, falhas };
+
+        /* ---- B7: duas fases da conclusão (13 a 24) ---- */
+        // 13 — FASE 1 grava SÓ a prova: 2 campos, e NENHUM campo de conclusão.
+        const F1 = payloadSnapshotFase1("{\"a\":1}", "deadbeef");
+        const PROIBIDOS_F1 = ["Status", "DataConclusao", "Estado_Operacional", "Medicao_Situacao_Lote", "Snapshot_Confirmado_Em"];
+        ok(Object.keys(F1).length === 2 && F1.Snapshot_Manifesto === "{\"a\":1}" && F1.Snapshot_SHA256 === "deadbeef" &&
+           PROIBIDOS_F1.every(k => !(k in F1)),
+          "fase 1: payload deveria ter SÓ Snapshot_Manifesto+Snapshot_SHA256 (nada de Status/DataConclusao/Estado_Operacional/Medicao_Situacao_Lote/Snapshot_Confirmado_Em)");
+        // 14 — FASE 2 é o ponteiro completo (5 campos), com Snapshot_Confirmado_Em preenchido
+        const AG = "2026-08-04T15:00:00.000Z";
+        const F2 = payloadConclusaoFase2(AG);
+        ok(Object.keys(F2).length === 5 && F2.Status === "Concluída" && F2.DataConclusao === AG &&
+           F2.Estado_Operacional === "Concluído" && F2.Medicao_Situacao_Lote === "Sem lote" && F2.Snapshot_Confirmado_Em === AG,
+          "fase 2: payload deveria ter os 5 campos da conclusão (Status/DataConclusao/Estado_Operacional/Medicao_Situacao_Lote/Snapshot_Confirmado_Em)");
+        // 15 — rótulos da fase 2 EXISTEM nas listas travadas (senão o fail-closed do travarChoices barra o PATCH)
+        ok(STATUS_OS.indexOf(F2.Status) > -1 && ESTADOS_OPERACIONAL.indexOf(F2.Estado_Operacional) > -1,
+          "fase 2: 'Concluída'/'Concluído' deveriam constar das listas travadas (fail-closed)");
+        // 16 — FASE 2 não regrava o snapshot (a prova é imutável depois de conferida)
+        ok(!("Snapshot_Manifesto" in F2) && !("Snapshot_SHA256" in F2),
+          "fase 2: não deveria regravar Snapshot_Manifesto/Snapshot_SHA256");
+        // 17 — verificação: caminho feliz (relido == local, hash recomputado confere)
+        ok(conferirSnapshot({ manifesto: "M", shaRelido: "abc", shaLocal: "abc", shaRecomputado: "abc" }).ok === true,
+          "conferirSnapshot: tudo batendo deveria aprovar");
+        // 18 — verificação: manifesto relido adulterado (hash recomputado != sha relido)
+        const v18 = conferirSnapshot({ manifesto: "M-TRUNCADO", shaRelido: "abc", shaLocal: "abc", shaRecomputado: "zzz" });
+        ok(v18.ok === false && v18.motivo.indexOf("recomputado") > -1,
+          "conferirSnapshot: hash recomputado divergente deveria REPROVAR citando o recomputado");
+        // 19 — verificação: sha relido != sha gravado (servidor guardou outra coisa)
+        const v19 = conferirSnapshot({ manifesto: "M", shaRelido: "abc", shaLocal: "def", shaRecomputado: "abc" });
+        ok(v19.ok === false && v19.motivo.indexOf("calculado na gravação") > -1,
+          "conferirSnapshot: sha relido != sha local deveria REPROVAR citando a gravação");
+        // 20 — verificação: campos ausentes na releitura reprovam (nunca "passa por omissão")
+        ok(conferirSnapshot({ manifesto: "", shaRelido: "abc", shaLocal: "abc", shaRecomputado: "abc" }).ok === false &&
+           conferirSnapshot({ manifesto: "M", shaRelido: "", shaLocal: "abc", shaRecomputado: "abc" }).ok === false &&
+           conferirSnapshot({ manifesto: "M", shaRelido: "abc", shaLocal: "abc", shaRecomputado: null }).ok === false,
+          "conferirSnapshot: manifesto/sha ausentes ou hash não recomputável deveriam REPROVAR (fail-closed)");
+        // --- núcleo das duas fases contra um SharePoint falso (sem rede/DOM) ---
+        // servidor falso: guarda os campos, devolve na releitura; `corromper`
+        // simula o manifesto que volta diferente do que foi mandado.
+        const servidorFalso = (op) => {
+          const item = { Title: "OS-TESTE", Status: "Em Andamento", Snapshot_Confirmado_Em: null };
+          const patches = [];
+          return {
+            item, patches,
+            patch: (c) => { patches.push(c); Object.assign(item, c); if (op && op.corromper) item.Snapshot_Manifesto = "M-ADULTERADO"; return Promise.resolve(); },
+            reler: () => Promise.resolve({ fields: Object.assign({}, item) }),
+            // hash "real" de brincadeira: reversível e determinístico
+            hash: (txt) => Promise.resolve("h(" + txt + ")")
+          };
+        };
+        // 21 — caminho feliz: 2 PATCHes na ordem prova→ponteiro e OS CONCLUÍDA
+        const sOk = servidorFalso();
+        const rOk = await executarConclusaoDuasFases({ patch: sOk.patch, reler: sOk.reler, hash: sOk.hash, manifesto: "M", sha: "h(M)", agora: AG });
+        ok(rOk.concluida === true && sOk.patches.length === 2 &&
+           Object.keys(sOk.patches[0]).length === 2 && sOk.patches[1].Status === "Concluída" &&
+           sOk.item.Status === "Concluída" && sOk.item.Snapshot_Confirmado_Em === AG,
+          "núcleo (feliz): deveria gravar prova e DEPOIS ponteiro — OS 'Concluída' com Snapshot_Confirmado_Em preenchido");
+        // 22 — DIVERGÊNCIA: fase 2 NÃO roda; OS permanece NÃO concluída
+        const sMau = servidorFalso({ corromper: true });
+        const rMau = await executarConclusaoDuasFases({ patch: sMau.patch, reler: sMau.reler, hash: sMau.hash, manifesto: "M", sha: "h(M)", agora: AG });
+        ok(rMau.concluida === false && rMau.fase === 1 && sMau.patches.length === 1 &&
+           sMau.item.Status !== "Concluída" && sMau.item.Snapshot_Confirmado_Em === null,
+          "núcleo (divergência): fase 2 NÃO deveria rodar — Status != 'Concluída' e Snapshot_Confirmado_Em null");
+        // 23 — a divergência tem motivo legível (vai para a mensagem do operador)
+        ok(temTexto(rMau.verificacao.motivo) && rMau.verificacao.ok === false,
+          "núcleo (divergência): deveria devolver motivo legível da recusa");
+        // 24 — hash que EXPLODE também é divergência (fail-closed, nunca conclui)
+        const sBoom = servidorFalso();
+        const rBoom = await executarConclusaoDuasFases({
+          patch: sBoom.patch, reler: sBoom.reler, hash: () => { throw new Error("crypto indisponível"); },
+          manifesto: "M", sha: "h(M)", agora: AG
+        });
+        ok(rBoom.concluida === false && sBoom.patches.length === 1 && sBoom.item.Status !== "Concluída",
+          "núcleo (hash com erro): deveria falhar FECHADO — sem fase 2, OS não concluída");
+        // 25 — manifesto canônico é determinístico (a ordem das chaves não muda o hash)
+        ok(manifestoCanonico({ b: 2, a: 1 }) === manifestoCanonico({ a: 1, b: 2 }),
+          "manifesto: ordem de chaves diferente deveria produzir o MESMO texto canônico");
+        const r = { ok: falhas.length === 0, total: 25, falhas };
         console.log("OSR.assert:", JSON.stringify(r));
         return r;
       }
