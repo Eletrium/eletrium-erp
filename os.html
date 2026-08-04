@@ -1207,10 +1207,88 @@
        (salvarOS) continua proibido de tocá-los; o "Concluir OS" é ação
        explícita à parte, com pré-requisitos verificados aqui.
        ================================================================== */
-    function reqFechamento(f) {
+    /* ------------------------------------------------------------------
+       B8 — MÍNIMO DE EVIDÊNCIA: quem manda é a MATRIZ, com FALL-CLOSED
+
+       Antes: `fotos >= 2` — número hardcoded no meio do pré-requisito.
+       Agora: o mínimo vem do eixo Evidência da matriz de exigências
+       (Servico_Ferramenta_Obrigatoria, Alvo_Codigo="Fotos_Evidencia",
+       Quantidade_Minima), e o 2 só sobrevive como PISO DE SEGURANÇA.
+
+       CONDIÇÃO INEGOCIÁVEL DO DONO — "matriz indisponível não pode
+       afrouxar pré-requisito de fechamento". Os TRÊS casos, explícitos:
+
+        (1) MATRIZ CARREGOU e TEM exigência obrigatória de Fotos_Evidencia
+            para o serviço da OS  →  a MATRIZ GOVERNA. Vale o que estiver
+            em Quantidade_Minima: 3, 5, e também 1. Sim, a matriz PODE
+            afrouxar abaixo de 2 — isso é decisão consciente de cadastro,
+            declarada pelo dono ("pode ser 3, 5, o que estiver em
+            Quantidade_Minima"). O fail-closed protege contra AUSÊNCIA de
+            resposta da matriz, não contra uma resposta deliberada dela.
+            Havendo mais de uma linha obrigatória de Fotos_Evidencia,
+            vale a MAIOR (a mais restritiva) — nunca a média nem a 1ª.
+
+        (2) MATRIZ NÃO CARREGOU (erro de rede/lista; exigenciasCarregadas
+            === false)  →  aplica MIN_FOTOS_HARDCODED (2). JAMAIS liberar
+            por não ter conseguido consultar. Este é o coração do
+            fail-closed: "não sei" trata-se como o piso, nunca como zero.
+
+        (3) MATRIZ CARREGOU mas está SILENCIOSA para este serviço (nenhuma
+            linha obrigatória de Evidência/Fotos_Evidencia — inclusive OS
+            sem Tipo_OS_Completo, serviço sem nenhuma linha, ou só linhas
+            "Recomendada"/Ativo=false)  →  MANTÉM MIN_FOTOS_HARDCODED (2).
+
+            *** DECISÃO DECLARADA (leitura ambígua do enunciado) ***
+            Silêncio da matriz foi lido como CONSERVADOR: silêncio NÃO
+            afrouxa, mantém o piso histórico de 2. A leitura oposta
+            ("silêncio = sem exigência de fotos") é defensável e é UMA
+            LINHA para trocar: no caso (3) abaixo, devolver
+            { min: 0, fonte: "matriz-silenciosa" } em vez de
+            MIN_FOTOS_HARDCODED. Nada mais muda.
+
+       Nota de ordem no arquivo: minExigido/ehObrigatoria/exigenciasDoServico
+       são declarados mais abaixo (seção MATRIZ DE EXIGÊNCIAS). Isto aqui é
+       função declarada (hoisted) e só os referencia em tempo de CHAMADA,
+       que é sempre depois do script inteiro avaliar — sem TDZ.
+       ------------------------------------------------------------------ */
+    const MIN_FOTOS_HARDCODED = 2;   // PISO histórico — fallback, nunca "sem exigência"
+
+    // `estado` é o ponto de injeção do teste (homologação sem login): em
+    // produção NINGUÉM passa o 2º argumento e vale o estado do módulo.
+    // Devolve { min, fonte } — `fonte` é o que a tela e a mensagem de falta
+    // usam para dizer ao operador DE ONDE veio o número.
+    function minFotosFechamento(f, estado) {
+      const st = estado || { linhas: exigencias, carregadas: exigenciasCarregadas };
+      // (2) fail-closed: sem conseguir consultar a matriz, vale o piso.
+      if (!st.carregadas) return { min: MIN_FOTOS_HARDCODED, fonte: "matriz-indisponivel" };
+      const exs = exigenciasDoServico(st.linhas, (f || {}).Tipo_OS_Completo);
+      // só OBRIGATÓRIA bloqueia fechamento — "Recomendada" nunca vira trava
+      // (mesma regra do eixo Função em faltasFuncao). Ativo=false já foi
+      // filtrado por exigenciasDoServico.
+      const linhasFotos = exs.filter(e => e.Eixo === "Evidência" &&
+                                          e.Alvo_Codigo === "Fotos_Evidencia" &&
+                                          ehObrigatoria(e));
+      // (3) matriz silenciosa para este serviço → mantém o piso (conservador)
+      if (!linhasFotos.length) return { min: MIN_FOTOS_HARDCODED, fonte: "matriz-silenciosa" };
+      // (1) a matriz governa — a mais restritiva entre as linhas obrigatórias
+      return { min: linhasFotos.reduce((m, e) => Math.max(m, minExigido(e)), 0), fonte: "matriz" };
+    }
+
+    // texto pt-BR que explica a PROCEDÊNCIA do número exigido — o operador
+    // precisa saber se o 2 é regra do serviço ou consequência de falha.
+    function rotuloFonteMinFotos(fonte) {
+      if (fonte === "matriz") return "exigência da matriz do serviço";
+      if (fonte === "matriz-indisponivel") return "matriz de exigências indisponível — aplicado o mínimo padrão";
+      return "matriz sem exigência de fotos para este serviço — aplicado o mínimo padrão";
+    }
+
+    function reqFechamento(f, estado) {
       const fotos = contarFotos(f.Fotos_Evidencia);
+      const exigFotos = minFotosFechamento(f, estado);
       return {
-        laudo: temTexto(f.Laudo_URL), fotos, fotosOk: fotos >= 2, assinatura: temTexto(f.Assinatura_URL),
+        laudo: temTexto(f.Laudo_URL), fotos,
+        fotosMin: exigFotos.min, fotosFonte: exigFotos.fonte,
+        fotosOk: fotos >= exigFotos.min, assinatura: temTexto(f.Assinatura_URL),
         // B4 — pré-requisito de segurança: só Estado_Seguranca="Liberado"
         // satisfaz; vazio/Pendente/Bloqueado entram na lista de faltas.
         // O DONO do campo é checklist.html (Pré-Execução) — aqui só se LÊ.
@@ -1221,7 +1299,10 @@
     function faltasFechamento(r) {
       const faltas = [];
       if (!r.laudo) faltas.push("laudo (Laudo_URL)");
-      if (!r.fotosOk) faltas.push("fotos de evidência (" + r.fotos + " de 2 mínimas em Fotos_Evidencia)");
+      // B8 — a falta diz QUANTAS faltam e DE ONDE veio o mínimo (matriz ou piso).
+      if (!r.fotosOk) faltas.push("fotos de evidência (" + r.fotos + " de " + r.fotosMin +
+        " mínimas em Fotos_Evidencia — faltam " + (r.fotosMin - r.fotos) + "; " +
+        rotuloFonteMinFotos(r.fotosFonte) + ")");
       if (!r.assinatura) faltas.push("assinatura do cliente (Assinatura_URL)");
       if (!r.segurancaOk) faltas.push("segurança liberada pelo checklist (Estado_Seguranca: " + r.segurancaValor + " — exige “Liberado”)");
       return faltas;
@@ -1236,7 +1317,7 @@
         <div class="grupo">Fechamento</div>
         <ul class="chk">
           ${item(r.laudo, "Laudo anexado (Laudo_URL)")}
-          ${item(r.fotosOk, "Fotos de evidência: " + r.fotos + " (mínimo 2)")}
+          ${item(r.fotosOk, "Fotos de evidência: " + r.fotos + " (mínimo " + r.fotosMin + " — " + rotuloFonteMinFotos(r.fotosFonte) + ")")}
           ${item(r.assinatura, "Assinatura do cliente (Assinatura_URL)")}
           ${item(r.segurancaOk, "Segurança liberada pelo checklist (Estado_Seguranca: " + r.segurancaValor + ")")}
         </ul>
@@ -1723,6 +1804,8 @@
       // MATRIZ DE EXIGÊNCIAS (6 eixos) — funções puras, sem rede nem DOM
       exigenciasDoServico, avaliarFuncao, avaliarEvidencia, listarNaoAvaliaveis,
       eixosDesconhecidos, faltasFuncao, funcoesDaEquipe, renderExigencias,
+      // B8 — mínimo de evidência governado pela matriz (fail-closed nos 3 casos)
+      minFotosFechamento, rotuloFonteMinFotos, reqFechamento, faltasFechamento, MIN_FOTOS_HARDCODED,
       // ASSÍNCRONA desde o B7 (o núcleo das duas fases é awaitado aqui dentro):
       // no console use `await OSR.assert()`. O console.log final continua saindo
       // sozinho e o objeto devolvido tem a MESMA forma de antes {ok,total,falhas}.
@@ -1927,7 +2010,98 @@
            faltasFuncao(avaliarFuncao(exs, funcoesDaEquipe(EQ, 9))).length === 1,
           "equipe: só as linhas da OS corrente deveriam contar no eixo Função");
 
-        const r = { ok: falhas.length === 0, total: 42, falhas };
+        /* ---- B8: MÍNIMO DE EVIDÊNCIA GOVERNADO PELA MATRIZ — casos 43..58 ----
+           Todas as OS de teste JÁ CUMPREM os outros 3 pré-requisitos (laudo,
+           assinatura, segurança liberada) — assim o ÚNICO motivo possível de
+           recusa é a contagem de fotos, e "0 faltas" prova o fechamento livre. */
+        const fotosDe = (n) => { const a = []; for (let i = 1; i <= n; i++) a.push("https://a/" + i + ".jpg"); return a.join("\n"); };
+        const osBase = (n, tipo) => ({
+          Laudo_URL: "https://a/laudo.pdf", Assinatura_URL: "https://a/assin.png",
+          Estado_Seguranca: "Liberado",
+          Tipo_OS_Completo: tipo === undefined ? TIPO : tipo,
+          Fotos_Evidencia: fotosDe(n)
+        });
+        const linhaEvid = (extra) => [{ fields: Object.assign({
+          Tipo_OS_Completo_Valor: TIPO, Eixo: "Evidência", Alvo_Codigo: "Fotos_Evidencia",
+          Exigencia: "Obrigatória" }, extra || {}) }];
+        const matrizEvid = (min) => linhaEvid({ Quantidade_Minima: min });
+        const ST = (linhas, carregadas) => ({ linhas: linhas, carregadas: carregadas !== false });
+        const faltasDe = (n, st, tipo) => faltasFechamento(reqFechamento(osBase(n, tipo), st));
+
+        // 43 — TESTE DE ACEITE, lado que RECUSA: serviço exige 3, OS tem 2.
+        const acc2 = faltasDe(2, ST(matrizEvid(3)));
+        ok(acc2.length === 1 && acc2[0].indexOf("2 de 3") > -1 && acc2[0].indexOf("faltam 1") > -1 &&
+           acc2[0].indexOf("Fotos_Evidencia") > -1,
+          "ACEITE: exigência de 3 evidências com 2 fotos deveria RECUSAR nomeando 2 de 3 e faltam 1");
+        // 44 — TESTE DE ACEITE, lado que ACEITA: as mesmas 3 exigidas, 3 fotos.
+        ok(faltasDe(3, ST(matrizEvid(3))).length === 0,
+          "ACEITE: 3 de 3 evidências deveria liberar o fechamento (nenhuma falta)");
+        // 45 — a matriz governa qualquer número: 5 exigidas recusam 4 e aceitam 5
+        ok(faltasDe(4, ST(matrizEvid(5))).length === 1 && faltasDe(5, ST(matrizEvid(5))).length === 0,
+          "matriz: Quantidade_Minima=5 deveria recusar 4 e aceitar 5");
+        // 46 — FALLBACK fail-closed: matriz NÃO carregou + 1 foto → recusa pelo
+        //      piso hardcoded (2). As linhas estão presentes de propósito: com
+        //      carregadas=false elas NÃO podem ser consultadas.
+        const fb1 = faltasDe(1, ST(matrizEvid(3), false));
+        ok(fb1.length === 1 && fb1[0].indexOf("1 de 2") > -1 && fb1[0].indexOf("indisponível") > -1,
+          "FALLBACK: matriz indisponível + 1 foto deveria recusar pelo mínimo hardcoded de 2, dizendo o motivo");
+        // 47 — matriz indisponível com o piso cumprido: fecha (o piso é 2, não 3)
+        ok(faltasDe(2, ST(matrizEvid(3), false)).length === 0,
+          "FALLBACK: matriz indisponível + 2 fotos deveria fechar (o fallback é o piso, não a matriz)");
+        // 48 — matriz indisponível JAMAIS vira "sem exigência" (0 fotos recusa)
+        ok(faltasDe(0, ST([], false)).length === 1,
+          "FALLBACK: matriz indisponível com 0 fotos NUNCA pode liberar");
+        // 49 — SILÊNCIO (decisão declarada): matriz carregou, serviço sem linha de
+        //      Evidência → mantém o piso de 2 (1 recusa, 2 aceita)
+        const silencio = [{ fields: { Tipo_OS_Completo_Valor: TIPO, Eixo: "Função", Alvo_Codigo: "Eletricista", Exigencia: "Obrigatória" } }];
+        ok(faltasDe(1, ST(silencio)).length === 1 && faltasDe(2, ST(silencio)).length === 0,
+          "SILÊNCIO: matriz sem linha de Evidência deveria MANTER o mínimo hardcoded de 2");
+        // 50 — linha de fotos "Recomendada" não é trava: cai no silêncio (piso 2),
+        //      mesmo pedindo 5 — recomendada nunca bloqueia fechamento
+        const rec5 = linhaEvid({ Exigencia: "Recomendada", Quantidade_Minima: 5 });
+        ok(faltasDe(2, ST(rec5)).length === 0 && faltasDe(1, ST(rec5)).length === 1,
+          "silêncio: Evidência 'Recomendada' não deveria bloquear — vale o piso de 2");
+        // 51 — linha desativada (Ativo=false) não conta: volta ao piso de 2
+        const off5 = linhaEvid({ Quantidade_Minima: 5, Ativo: false });
+        ok(faltasDe(2, ST(off5)).length === 0,
+          "silêncio: linha de Evidência com Ativo=false não deveria elevar o mínimo");
+        // 52 — OS sem Tipo (completo): não há como consultar a matriz → piso de 2
+        ok(faltasDe(1, ST(matrizEvid(3)), "").length === 1 && faltasDe(2, ST(matrizEvid(3)), "").length === 0,
+          "silêncio: OS sem Tipo_OS_Completo deveria cair no mínimo hardcoded de 2");
+        // 53 — a matriz governa TAMBÉM para baixo (decisão declarada do dono):
+        //      Quantidade_Minima=1 aceita 1 foto. O fail-closed protege contra
+        //      AUSÊNCIA de resposta, não contra resposta deliberada da matriz.
+        ok(faltasDe(1, ST(matrizEvid(1))).length === 0,
+          "matriz: Quantidade_Minima=1 deveria governar e aceitar 1 foto");
+        // 54 — duas linhas obrigatórias: vence a MAIS RESTRITIVA (a maior)
+        const duas = matrizEvid(2).concat(matrizEvid(4));
+        ok(faltasDe(3, ST(duas)).length === 1 && faltasDe(4, ST(duas)).length === 0,
+          "matriz: com 2 linhas obrigatórias deveria valer o MAIOR mínimo (4), não o primeiro");
+        // 55 — linha de Evidência sem Quantidade_Minima: mínimo 1 (minExigido)
+        ok(faltasDe(1, ST(linhaEvid())).length === 0 && faltasDe(0, ST(linhaEvid())).length === 1,
+          "matriz: Evidência sem Quantidade_Minima deveria exigir 1");
+        // 56 — exigência de OUTRO serviço não vaza para esta OS (cai no piso)
+        const outro = [{ fields: { Tipo_OS_Completo_Valor: "Manutenção corretiva", Eixo: "Evidência", Alvo_Codigo: "Fotos_Evidencia", Exigencia: "Obrigatória", Quantidade_Minima: 9 } }];
+        ok(faltasDe(2, ST(outro)).length === 0,
+          "matriz: exigência de evidência de outro serviço não deveria valer aqui");
+        // 57 — OS PRESERVADOS: os outros 3 pré-requisitos seguem intactos mesmo
+        //      com as fotos em dia (nenhum deles foi tocado pela mudança)
+        const semLaudo = Object.assign(osBase(3), { Laudo_URL: "" });
+        const semAssin = Object.assign(osBase(3), { Assinatura_URL: "" });
+        const semSeg = Object.assign(osBase(3), { Estado_Seguranca: "Pendente" });
+        const st3 = ST(matrizEvid(3));
+        ok(faltasFechamento(reqFechamento(semLaudo, st3)).join(";").indexOf("Laudo_URL") > -1 &&
+           faltasFechamento(reqFechamento(semAssin, st3)).join(";").indexOf("Assinatura_URL") > -1 &&
+           faltasFechamento(reqFechamento(semSeg, st3)).join(";").indexOf("Estado_Seguranca") > -1,
+          "preservado: laudo, assinatura e segurança deveriam continuar bloqueando com as fotos em dia");
+        // 58 — a PROCEDÊNCIA do mínimo é reportada nos 3 casos (a tela mostra)
+        ok(minFotosFechamento(osBase(0), ST(matrizEvid(3))).fonte === "matriz" &&
+           minFotosFechamento(osBase(0), ST(matrizEvid(3), false)).fonte === "matriz-indisponivel" &&
+           minFotosFechamento(osBase(0), ST(silencio)).fonte === "matriz-silenciosa" &&
+           minFotosFechamento(osBase(0), ST(matrizEvid(3), false)).min === MIN_FOTOS_HARDCODED,
+          "fonte: os 3 casos deveriam ser distinguíveis (matriz / indisponível / silenciosa)");
+
+        const r = { ok: falhas.length === 0, total: 58, falhas };
         console.log("OSR.assert:", JSON.stringify(r));
         return r;
       }
