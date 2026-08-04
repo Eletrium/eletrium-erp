@@ -461,6 +461,92 @@
     // exposto p/ teste da lógica sem login
     window.HAB = { situacao, diasAte, cftInfo, renderKpis, renderCobertura, filtradas: () => filtradas(), set: (q, t, x) => { quals = q; tecnicos = t; exigencias = x; nomeTecnico = {}; t.forEach(i => nomeTecnico[i.id] = (i.fields || {}).Title); } };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — HAB.assertRegras(). Regras protegidas:
+       a situação vem da DATA (não do Status_Validade escrito pelo flow), a
+       faixa de atenção é <= 30 dias com as duas pontas normalizadas à
+       meia-noite, o CFT tem 3 estados com "validade vazia = ok" DELIBERADO, o
+       KPI de CFT conta ausente OU vencido, e o cruzamento de cobertura é
+       igualdade EXATA de rótulo (é isso que o aviso cruzado denuncia).
+       ========================================================================= */
+    window.HAB.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      // Data PURA a N dias de hoje, na MESMA forma que o Graph devolve um campo
+      // "Date only" (…T00:00:00Z) — é essa forma que parseD reconhece; usar
+      // "AAAA-MM-DD" cru cairia como UTC e escorregaria um dia em Brasília.
+      const dPura = (n) => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + n);
+        const p = (x) => String(x).padStart(2, "0");
+        return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T00:00:00Z"; };
+
+      // ---- situação derivada da data de vencimento ----
+      ok(situacao({}) === "sem" && situacao({ Data_Vencimento: "lixo" }) === "sem",
+        "situacao: sem data (ou data ilegível) deve ser 'sem', nunca 'valido'");
+      ok(situacao({ Data_Vencimento: dPura(-1) }) === "vencido",
+        "situacao: vencimento ontem deve ser 'vencido'");
+      ok(situacao({ Data_Vencimento: dPura(0) }) === "atencao",
+        "situacao: vence hoje ainda é 'atencao' (não vencido)");
+      ok(situacao({ Data_Vencimento: dPura(30) }) === "atencao" && situacao({ Data_Vencimento: dPura(31) }) === "valido",
+        "situacao: a faixa de atenção é <= 30 dias (30 dentro, 31 fora)");
+      ok(diasAte(dPura(30)) === 30 && diasAte(dPura(-2)) === -2 && diasAte(null) === null,
+        "diasAte: contagem estável com as duas pontas na meia-noite; nulo devolve null");
+      // a situação NÃO pode vir do campo escrito pelo flow
+      ok(situacao({ Data_Vencimento: dPura(-5), Status_Validade: "Válida" }) === "vencido",
+        "situacao: Status_Validade do flow NÃO pode sobrepor a data real");
+
+      // ---- pilar CFT: 3 estados ----
+      ok(cftInfo({}).s === "ausente" && cftInfo({ Registro_CFT: "   " }).s === "ausente" && cftInfo(null).s === "ausente",
+        "cftInfo: registro vazio/só-espaços/nulo é 'ausente'");
+      ok(cftInfo({ Registro_CFT: " 12345 " }).s === "ok" && cftInfo({ Registro_CFT: " 12345 " }).num === "12345",
+        "cftInfo: registro SEM validade é 'ok' por decisão (legado não vira pendência) e o número sai trimado");
+      ok(cftInfo({ Registro_CFT: "1", Registro_CFT_Validade: dPura(-1) }).s === "vencido" &&
+         cftInfo({ Registro_CFT: "1", Registro_CFT_Validade: dPura(1) }).s === "ok",
+        "cftInfo: validade no passado é 'vencido'; no futuro é 'ok'");
+
+      // ---- KPIs (render real, DOM da própria tela) ----
+      const tec = (id, f) => ({ id: String(id), fields: f });
+      const qual = (id, f) => ({ id: String(id), fields: f });
+      HAB.set(
+        [qual(1, { TecnicoLookupId: 9, Tipo_Qualificacao: "NR-10", Data_Vencimento: dPura(-3) }),
+         qual(2, { TecnicoLookupId: 9, Tipo_Qualificacao: "NR-10", Data_Vencimento: dPura(60) })],
+        [tec(9, { Title: "Téc A", Nivel_Tecnico: "Pleno", Registro_CFT: "1", Registro_CFT_Validade: dPura(10) }),
+         tec(10, { Title: "Téc B", Registro_CFT: "" }),
+         tec(11, { Title: "Téc C", Registro_CFT: "2", Registro_CFT_Validade: dPura(-1) }),
+         tec(12, { Title: "Téc D", Registro_CFT: "3", Bloqueado_OS: "true" })],
+        [{ id: "50", fields: { Nivel_Tecnico: "Pleno", Tipo_Qualificacao: "NR-10", Obrigatoria: true } },
+         { id: "51", fields: { Nivel_Tecnico: "Pleno", Tipo_Qualificacao: "NR-35" } }]
+      );
+      renderKpis();
+      ok($("kCft").textContent === "2",
+        "KPI CFT deve contar ausente OU vencido como pendência (esperado 2, veio " + $("kCft").textContent + ")");
+      ok($("kBloq").textContent === "0",
+        "KPI bloqueados usa === true estrito: a string 'true' NÃO pode contar como bloqueio");
+
+      // ---- cobertura: melhor situação e igualdade exata ----
+      renderCobertura();
+      const html = $("cob").innerHTML;
+      ok(html.indexOf("(vencida)") === -1,
+        "cobertura: entre duas certificações do mesmo tipo vale a MELHOR (a válida), não a vencida");
+      ok(html.indexOf("(não cadastrada)") >= 0,
+        "cobertura: exigência sem qualificação correspondente deve aparecer como faltando, não sumir");
+      ok(html.indexOf("Técnico sem nível definido") >= 0,
+        "cobertura: técnico sem nível deve dizer isso explicitamente (e ainda assim mostrar a linha do CFT)");
+
+      // o cruzamento é por igualdade EXATA — caixa/acento diferente nunca casa
+      HAB.set(
+        [qual(1, { TecnicoLookupId: 9, Tipo_Qualificacao: "nr-10", Data_Vencimento: dPura(90) })],
+        [tec(9, { Title: "Téc A", Nivel_Tecnico: "Pleno", Registro_CFT: "1" })],
+        [{ id: "50", fields: { Nivel_Tecnico: "Pleno", Tipo_Qualificacao: "NR-10" } }]
+      );
+      renderCobertura();
+      ok($("cob").innerHTML.indexOf("(não cadastrada)") >= 0,
+        "cobertura: 'nr-10' NÃO pode casar com 'NR-10' — o cruzamento é igualdade exata (por isso existe o aviso cruzado)");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("HAB.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

@@ -943,6 +943,106 @@
       STATUS_ACEITO: STATUS_ACEITO, avisoAceitoLegado: avisoAceitoLegado
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — FAT.assertRegras(). A regra que esta tela
+       impõe é o BLOQUEIO DA TRANSIÇÃO DE ACEITE: a option fica disabled e NUNCA
+       é removida, e há uma guarda em código que recusa o PATCH mesmo com o DOM
+       manipulado. As duas camadas são exercitadas de verdade aqui — inclusive
+       um teste que manipula o DOM para provar que a segunda camada segura.
+       Também trava: o denominador do funil ignora Cancelado/fora-de-fluxo, e
+       nada desaparece em silêncio.
+       ========================================================================= */
+    window.FAT.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      const orc = (id, status, valor, margem) => ({ id: String(id), fields: {
+        Status_Orcamento: status, Valor_Total_Orcamento: valor,
+        Margem_Contribuicao_Pct: margem } });
+
+      // ---- CAMADA 1: a option do aceite sai DISABLED, sempre ----
+      const semAceite = optsChoice(ETAPAS, "Rascunho", null, STATUS_ACEITO);
+      ok(/<option value='Aceito - Aguardando Faturamento' disabled>/.test(semAceite),
+        "aceite: a option do status de aceite tem de sair DISABLED");
+      ok(semAceite.indexOf("— indisponível aqui") >= 0,
+        "aceite: bloqueio não é sumiço — a option continua visível e explicada");
+      ok(optsChoice(ETAPAS, "Rascunho", null, STATUS_ACEITO).split("<option").length === semAceite.split("<option").length &&
+         semAceite.split("<option").length - 1 === ETAPAS.length,
+        "aceite: nenhuma option é REMOVIDA da lista (todas as " + ETAPAS.length + " etapas continuam lá)");
+      // item JÁ no status de aceite: continua selecionado E continua disabled
+      const jaAceito = optsChoice(ETAPAS, STATUS_ACEITO, null, STATUS_ACEITO);
+      ok(/value='Aceito - Aguardando Faturamento' selected disabled/.test(jaAceito),
+        "aceite: item já nesse status mantém a option selecionada, mas ainda disabled (não dá para re-selecionar de outro status)");
+      ok(avisoAceitoLegado({ Status_Orcamento: STATUS_ACEITO }).length > 0 &&
+         avisoAceitoLegado({ Status_Orcamento: "Rascunho" }) === "",
+        "aceite legado: item já aceito ganha aviso persistente sobre a reserva de estoque não feita");
+      // o bloco de edição real usa mesmo o bloqueio (não só a função solta)
+      aplicarColunasOrc([{ name: "Status_Orcamento", choice: { choices: ETAPAS } }]);
+      ok(blocoEdicaoOrc({ Status_Orcamento: "Rascunho" }).indexOf("disabled") >= 0,
+        "aceite: o bloco de edição realmente passa o status de aceite como bloqueado");
+
+      // ---- CAMADA 2: a guarda em código segura mesmo com o DOM manipulado ----
+      const box = document.createElement("div");
+      box.style.display = "none";
+      box.innerHTML = "<div id='eoMsg'></div><input id='eoStatus'><input id='eoPrior'>" +
+        "<input id='eoData'><textarea id='eoObs'></textarea><button id='eoSalvar'></button>";
+      document.body.appendChild(box);
+      const patchReal = EG.patchItemFields;
+      let chamouPatch = false;
+      EG.patchItemFields = function () { chamouPatch = true; return Promise.resolve({}); };
+      try {
+        // simula exatamente o ataque: alguém removeu o disabled e escolheu o aceite
+        document.getElementById("eoStatus").value = STATUS_ACEITO;
+        document.getElementById("eoPrior").value = "";
+        document.getElementById("eoData").value = "";
+        document.getElementById("eoObs").value = "";
+        gravarOrc({ id: "1", fields: { Status_Orcamento: "Rascunho" } });
+        ok(chamouPatch === false,
+          "DEFEITO GRAVE: a transição para o aceite chegou a chamar o PATCH mesmo com o DOM manipulado");
+        ok(document.getElementById("eoMsg").textContent.indexOf("bloqueada") >= 0,
+          "aceite: a guarda deve explicar o bloqueio e apontar o caminho válido (canvas)");
+      } finally {
+        EG.patchItemFields = patchReal;
+        gravandoOrc = false;
+        box.remove();
+      }
+
+      // ---- funil: o denominador não pode ser contaminado ----
+      const g = agruparEtapas([
+        orc(1, "Rascunho", 100), orc(2, "Faturado", 200),
+        orc(3, "Cancelado", 999999), orc(4, "Status Inventado", 888888), orc(5, "", 777777)
+      ]);
+      ok(g.porEtapa["Rascunho"].length === 1 && g.porEtapa["Faturado"].length === 1 &&
+         g.cancelados.length === 1 && g.fora.length === 1 && g.semStatus.length === 1,
+        "agruparEtapas: cada item cai em EXATAMENTE um balde (nenhum some, nenhum duplica)");
+      const rf = resumoFunil([
+        orc(1, "Rascunho", 100), orc(2, "Faturado", 100),
+        orc(3, "Cancelado", 999999), orc(4, "Status Inventado", 888888)
+      ]);
+      ok(rf.totalQtd === 2 && rf.totalValor === 200,
+        "funil: Cancelado e status fora de fluxo NÃO entram no denominador (senão a conversão mente)");
+      ok(rf.convQtd === 50 && rf.canceladosQtd === 1 && rf.foraQtd === 1,
+        "funil: conversão sobre a base limpa, mas cancelados/fora continuam REPORTADOS à parte");
+      ok(resumoFunil([]).convQtd === null && pct(1, 0) === null,
+        "funil: sem base a conversão é null (nunca 0% nem Infinity)");
+
+      // ---- ausência não é zero ----
+      ok(margemMedia([orc(1, "Rascunho", 10, 40), orc(2, "Rascunho", 10, null)]) === 40,
+        "margemMedia: orçamento SEM margem informada é ignorado, não conta como 0");
+      ok(margemMedia([orc(1, "Rascunho", 10, null)]) === null,
+        "margemMedia: nenhuma margem informada devolve null (exibe '—')");
+
+      // ---- valor atual fora da lista nunca é trocado por acidente ----
+      ok(optsChoice(ETAPAS, "Status Antigo", null, null).indexOf("(valor atual — fora da lista)") >= 0,
+        "optsChoice: valor atual fora da lista do servidor é PRESERVADO como option própria");
+
+      ok(isoParaInputDate("2026-08-04T03:00:00Z") === "2026-08-04" && isoParaInputDate(null) === "",
+        "isoParaInputDate: converte para o input date e devolve '' quando não há data");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("FAT.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     // Estado de INSTRUÇÃO pré-carga das duas seções: mesmo texto de antes,
     // agora pelo componente compartilhado (era hardcodado no HTML).
     EG.renderEstado($("emptyKan"), "vazio", { mensagem: "Carregue os dados para ver o pipeline de vendas." });

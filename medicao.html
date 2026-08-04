@@ -1184,6 +1184,107 @@
       forcarCarregado: (v) => { carregado = v !== false; $("conteudo").hidden = !carregado; habilitarBotoes(); }
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — MED.assertRegras(). Regra central: a
+       separação Aprovado | Em análise | Bloqueado. Ela existe para que falha
+       DOCUMENTAL nunca suprima pagamento de horas trabalhadas (vira pendência)
+       e para que condição INSEGURA nunca seja paga (bloqueia). Também trava a
+       cadeia do valor-hora e o congelamento da OS contra reabertura direta.
+       NÃO coberto aqui (exige login/rede): a gravação do Calculation_JSON e a
+       unicidade da Chave_Lote — declarado no relatório.
+       ========================================================================= */
+    window.MED.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      // técnico com valor-hora contratado, para a cadeia do valor-hora ter fundo
+      MED.setDados([], [{ id: "9", fields: { Title: "Téc A", Valor_Hora_Contratado: 50 } }], [], [], [], [], []);
+      const linha = (extra) => calcularLinha({ id: "1", fields: Object.assign({
+        TecnicoLookupId: "9", Horas_Trabalhadas: 8,
+        De_Acordo_Lider: true, Elegivel_Financeiro: true, EPI_Checklist_OK: true
+      }, extra || {}) }, null);
+
+      // ---- a escada de status ----
+      const aprov = linha();
+      ok(aprov.status === "Aprovado" && aprov.pendencias.length === 0 && aprov.bloqueios.length === 0,
+        "linha completa deveria ser 'Aprovado' (veio " + aprov.status + ")");
+
+      const docFalha = linha({ De_Acordo_Lider: false });
+      ok(docFalha.status === "Em análise" && docFalha.horas === 8 && docFalha.valor === 400,
+        "falha DOCUMENTAL vira 'Em análise' com horas e valor PRESERVADOS — nunca exclusão");
+
+      const inseguro = linha({ EPI_Checklist_OK: false });
+      ok(inseguro.status === "Bloqueado",
+        "EPI reprovado deve BLOQUEAR (condição insegura não se paga)");
+
+      const ambos = linha({ EPI_Checklist_OK: false, De_Acordo_Lider: false });
+      ok(ambos.status === "Bloqueado" && ambos.pendencias.length > 0,
+        "precedência: Bloqueado ganha de Em análise, mas as pendências continuam registradas");
+
+      const epiAusente = linha({ EPI_Checklist_OK: undefined });
+      ok(epiAusente.status === "Aprovado",
+        "só o EPI explicitamente FALSE bloqueia; campo ausente não pode bloquear pagamento");
+
+      const semHoras = linha({ Horas_Trabalhadas: 0 });
+      ok(semHoras.status === null && semHoras.motivosFora.length === 1,
+        "sem horas (> 0) a linha fica FORA do lote (status null) com motivo declarado");
+      ok(linha({ Horas_Trabalhadas: "" }).status === null,
+        "horas em branco também ficam fora do lote (não viram 0 aprovado)");
+
+      // ---- cadeia do valor-hora: snapshot > tarifa vigente > contrato atual ----
+      const tarifa = { id: "77", fields: { Title: "T-2026", Ativa: true, Valor_Hora_Padrao: 70, Vigencia_Inicio: "2026-01-01T00:00:00Z" } };
+      const comSnap = calcularLinha({ id: "2", fields: { TecnicoLookupId: "9", Horas_Trabalhadas: 1,
+        De_Acordo_Lider: true, Elegivel_Financeiro: true, Valor_Hora_Snapshot: 99 } }, tarifa);
+      ok(comSnap.vh === 99 && comSnap.vhFonte === "snapshot",
+        "valor-hora: o SNAPSHOT da linha ganha da tarifa e do contrato (o passado não muda)");
+      const comTarifa = calcularLinha({ id: "3", fields: { TecnicoLookupId: "9", Horas_Trabalhadas: 1,
+        De_Acordo_Lider: true, Elegivel_Financeiro: true } }, tarifa);
+      ok(comTarifa.vh === 70 && comTarifa.vhFonte === "tarifa",
+        "valor-hora: sem snapshot vale a TARIFA vigente da competência");
+      ok(linha().vhFonte === "atual" && linha().vh === 50,
+        "valor-hora: sem snapshot e sem tarifa cai no contrato ATUAL do técnico");
+
+      MED.setDados([], [{ id: "8", fields: { Title: "Téc Sem Valor" } }], [], [], [], [], []);
+      const semVh = calcularLinha({ id: "4", fields: { TecnicoLookupId: "8", Horas_Trabalhadas: 5,
+        De_Acordo_Lider: true, Elegivel_Financeiro: true } }, null);
+      ok(semVh.vh === null && semVh.valor === null && semVh.status === "Em análise",
+        "sem nenhuma fonte de valor-hora a linha vira pendência (não some, nem inventa valor)");
+
+      // ---- tarifa vigente na competência ----
+      MED.setDados([], [], [], [], [
+        { id: "1", fields: { Ativa: true, Valor_Hora_Padrao: 10, Vigencia_Inicio: "2026-01-01T00:00:00Z" } },
+        { id: "2", fields: { Ativa: true, Valor_Hora_Padrao: 20, Vigencia_Inicio: "2026-06-01T00:00:00Z" } },
+        { id: "3", fields: { Ativa: false, Valor_Hora_Padrao: 999, Vigencia_Inicio: "2026-07-01T00:00:00Z" } },
+        { id: "4", fields: { Ativa: true, Valor_Hora_Padrao: 888, Vigencia_Fim: "2026-05-01T00:00:00Z" } }
+      ], [], []);
+      const tv = tarifaVigente("2026-08");
+      ok(tv && tv.id === "2",
+        "tarifaVigente: vale a de início mais RECENTE já vigente (esperado id 2, veio " + (tv && tv.id) + ")");
+      ok(tarifaVigente("2025-12") === null,
+        "tarifaVigente: competência anterior a qualquer início não tem tarifa (null, não a mais antiga)");
+      ok(tarifaVigente("") === null && tarifaVigente(null) === null,
+        "tarifaVigente: sem competência não há tarifa");
+
+      // ---- congelamento da OS contra reabertura direta ----
+      const p = montarPayloadVinculoLote("123");
+      ok(p.Medicao_Situacao_Lote === "Em lote" && p.Medicao_LoteLookupId === 123 && typeof p.Medicao_LoteLookupId === "number",
+        "vínculo do lote: a OS é marcada 'Em lote' e o lookup vai NUMÉRICO (exigência do Graph)");
+
+      // ---- helpers que sustentam o resto ----
+      ok(mKey("2026-08-04T12:00:00Z") === "2026-08" && mKey("lixo") === null && mKey(null) === null,
+        "mKey: competência AAAA-MM; data ilegível devolve null");
+      ok(dataBase({ fields: { Checkin_Hora: "A", De_Acordo_Lider_Em: "B", Created: "C" } }) === "A" &&
+         dataBase({ fields: { De_Acordo_Lider_Em: "B", Created: "C" } }) === "B" &&
+         dataBase({ fields: { Created: "C" } }) === "C" && dataBase({ fields: {} }) === null,
+        "dataBase: precedência Checkin -> De Acordo -> Created; sem nada devolve null");
+      ok(cel(null) === "—" && celBRL("") === "—" && num("abc") === 0,
+        "ausência vira '—' na tela e 0 só nas somas (nunca NaN)");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("MED.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

@@ -696,6 +696,89 @@
     //   DASH.computeModel(itensFalsos).categorias
     window.DASH = { computeModel, renderAll, num, custoOS, margemPct, classeTipo, mIdx, mLabel, corMargem, classeMargem, CATEGORIAS_OS, SEM_CATEGORIA };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — a REGRA que esta tela impõe, sem login e sem
+       rede. Roda com DASH.assertRegras() no console. O que ela protege:
+       a OS "Cancelada" fica FORA de receita/custo/margem/mix/ranking/MTTR, mas
+       NÃO some (entra em .canceladas e no backlog); e nenhum card pode produzir
+       NaN/Infinity quando a receita é zero.
+       ========================================================================= */
+    window.DASH.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      const os = (id, f) => ({ id: String(id), fields: f });
+
+      const REF = new Date(2026, 7, 15);                     // ago/2026
+      const ABERT = "2026-08-08T12:00:00Z", CONC = "2026-08-10T12:00:00Z";
+
+      // 1 OS boa + 1 CANCELADA com números absurdos: se a cancelada vazar para
+      // qualquer conta financeira, os valores explodem e a asserção acusa.
+      const m = computeModel([
+        os(1, { Status: "Concluída", Tipo_OS: "Corretiva", Tipo_OS_Completo: "Manutenção corretiva",
+                Categoria: "Elétrica", ClienteLookupId: 7, ValorOS: 1000,
+                Custo_MO_Realizado: 300, Custo_EPI_OS: 100, Custo_Ferr_OS: 100,
+                DataAbertura: ABERT, DataConclusao: CONC }),
+        os(2, { Status: "Cancelada", Tipo_OS: "Corretiva", Tipo_OS_Completo: "Manutenção corretiva",
+                Categoria: "Elétrica", ClienteLookupId: 7, ValorOS: 999999,
+                Custo_MO_Realizado: 999999, Custo_EPI_OS: 0, Custo_Ferr_OS: 0,
+                DataAbertura: ABERT, DataConclusao: CONC })
+      ], { "7": "Cliente Sete" }, REF);
+
+      ok(m.mesAtual.rec === 1000 && m.mesAtual.cus === 500,
+        "Cancelada NÃO pode entrar na receita/custo do mês (esperado 1000/500, veio " + m.mesAtual.rec + "/" + m.mesAtual.cus + ")");
+      ok(m.clientes.length === 1 && m.clientes[0].rec === 1000,
+        "Cancelada NÃO pode entrar no ranking de clientes");
+      ok(m.mttr.n === 1 && m.mttr.horas === 48,
+        "MTTR deveria contar só a corretiva não-cancelada (48 h), veio n=" + m.mttr.n + " h=" + m.mttr.horas);
+      ok(m.canceladas === 1 && m.total === 2,
+        "Cancelada deve ser CONTADA e exibida (.canceladas/.total), nunca descartada em silêncio");
+      const bl = m.backlog.find(l => l.tipo === "Corretiva");
+      ok(bl && bl.total === 2 && bl.segs.some(s => s.status === "Cancelada"),
+        "backlog é contagem por status: a Cancelada tem de aparecer sob o próprio status");
+
+      // margem: receita zero é "—", nunca Infinity/NaN
+      ok(margemPct(0, 500) === null && margemPct(-1, 5) === null && margemPct(1000, 500) === 50,
+        "margemPct: receita <= 0 deve virar null (nunca Infinity/NaN)");
+      const mZero = computeModel([os(9, { Status: "Aberta", ValorOS: 0, Custo_MO_Realizado: 10, DataConclusao: CONC })], {}, REF);
+      ok(mZero.mesAtual.margem === null && mZero.serie12.every(p => isFinite(p.valor)),
+        "série de 12 meses não pode conter NaN/Infinity quando a receita é 0");
+
+      // custo é a soma dos TRÊS campos e lixo vira 0 (nunca NaN)
+      ok(custoOS({ Custo_MO_Realizado: 1, Custo_EPI_OS: 2, Custo_Ferr_OS: 4 }) === 7 &&
+         custoOS({ Custo_MO_Realizado: "abc", Custo_EPI_OS: null, Custo_Ferr_OS: "" }) === 0,
+        "custoOS: soma MO+EPI+Ferramental e coage valor inválido para 0");
+
+      // OS sem Categoria cai no bucket de fallback e NÃO some da tela
+      const mCat = computeModel([os(3, { Status: "Concluída", ValorOS: 200, Custo_MO_Realizado: 50, DataConclusao: CONC })], {}, REF);
+      ok(mCat.categorias.length === 0 && mCat.semCategoria.n === 1 && mCat.semCategoria.categoria === SEM_CATEGORIA,
+        "OS sem Categoria deve cair em '" + SEM_CATEGORIA + "' (fallback visível), não desaparecer");
+
+      // receita é reconhecida no mês da CONCLUSÃO — sem conclusão não vira receita do mês
+      const mSem = computeModel([os(4, { Status: "Em Andamento", ValorOS: 500, DataAbertura: ABERT })], {}, REF);
+      ok(mSem.mesAtual.rec === 0 && mSem.semConclusao === 1,
+        "receita só é reconhecida no mês de DataConclusao; sem conclusão conta como pendência");
+
+      // MTTR descarta duração negativa em vez de somar tempo impossível
+      const mNeg = computeModel([os(5, { Status: "Concluída", Tipo_OS_Completo: "Manutenção corretiva",
+        ValorOS: 10, DataAbertura: CONC, DataConclusao: ABERT })], {}, REF);
+      ok(mNeg.mttr.n === 0 && mNeg.mttr.ignoradas === 1,
+        "MTTR deve ignorar conclusão anterior à abertura (dado inconsistente), não somar negativo");
+
+      // faixas de margem (cor e classe compartilham os mesmos cortes 50/30)
+      ok(corMargem(null) === "#7D8590" && corMargem(50) === "#3FB950" && corMargem(30) === "#D29922" && corMargem(29.9) === "#F85149" &&
+         classeMargem(null) === "fx-sem" && classeMargem(50) === "fx-bom" && classeMargem(30) === "fx-medio" && classeMargem(0) === "fx-ruim",
+        "faixas de margem: cortes em 50 e 30 devem valer igual para cor e classe");
+
+      ok(classeTipo("Manutenção corretiva") === "manutencao" &&
+         classeTipo("Execução de projeto — programada") === "instalacao" &&
+         classeTipo("Coisa nova qualquer") === "outros",
+        "classeTipo: rótulo desconhecido cai em 'outros' (não quebra o mix)");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("DASH.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

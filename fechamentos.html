@@ -1093,6 +1093,94 @@
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — FEC.assertRegras(). A regra central desta
+       tela é o REEMBOLSO DE KM POR VIAGEM: uma viagem compartilhada paga uma
+       vez, ao condutor. Se este bloco falhar, a empresa está pagando a mesma
+       quilometragem duas vezes. Também trava: "em aberto" = tudo que não é
+       exatamente "Pago", ausência nunca vira 0 na tela, e URL só http/https.
+       ========================================================================= */
+    window.FEC.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      const d = (id, f) => ({ id: String(id), fields: f });
+
+      // ---- KM por viagem: o caso que a regra existe para impedir ----
+      const compartilhada = [
+        d(1, { Viagem_ID: "V-1", Papel_Viagem: "Condutor", KM_Rodado: 120 }),
+        d(2, { Viagem_ID: "V-1", Papel_Viagem: "Passageiro", KM_Rodado: 120 }),
+        d(3, { Viagem_ID: "V-1", Papel_Viagem: "Passageiro", KM_Rodado: 120 })
+      ];
+      ok(kmPorViagem(compartilhada) === 120,
+        "KM: 3 diárias da MESMA viagem devem pagar 120 km uma vez, não 360 (veio " + kmPorViagem(compartilhada) + ")");
+
+      ok(kmPorViagem([
+        d(1, { Viagem_ID: "V-1", Papel_Viagem: "Condutor", KM_Rodado: 120 }),
+        d(2, { Viagem_ID: "V-2", Papel_Viagem: "Condutor", KM_Rodado: 80 })
+      ]) === 200, "KM: viagens DIFERENTES somam normalmente (120 + 80)");
+
+      ok(kmPorViagem([
+        d(1, { Viagem_ID: "V-1", Papel_Viagem: "Passageiro", KM_Rodado: 90 }),
+        d(2, { Viagem_ID: "V-1", Papel_Viagem: "Passageiro", KM_Rodado: 70 })
+      ]) === 90, "KM: grupo sem condutor na lista usa a MAIOR KM do grupo (uma vez só)");
+
+      ok(kmPorViagem([
+        d(1, { Viagem_ID: "V-1", Papel_Viagem: "Condutor", KM_Rodado: 100 }),
+        d(2, { Viagem_ID: "V-1", Papel_Viagem: "Condutor", KM_Rodado: 130 })
+      ]) === 130, "KM: com mais de um condutor apontado vale a maior (divergência é acusada à parte)");
+
+      ok(kmPorViagem([d(1, { KM_Rodado: 50 }), d(2, { KM_Rodado: 40 })]) === 90,
+        "KM: diária LEGADA sem Viagem_ID conta individualmente (não pode ser engolida pela dedupe)");
+
+      ok(viagemId({ Viagem_ID: "  V-1  " }) === "V-1" && viagemId({}) === "" && viagemId(null) === "",
+        "viagemId: normaliza espaços e nunca devolve null/undefined");
+      ok(kmPorViagem([
+        d(1, { Viagem_ID: " V-1 ", Papel_Viagem: "Condutor", KM_Rodado: 60 }),
+        d(2, { Viagem_ID: "V-1", Papel_Viagem: "Passageiro", KM_Rodado: 60 })
+      ]) === 60, "KM: Viagem_ID com espaços é o MESMO grupo (senão a dedupe vaza)");
+
+      // ---- divergências de viagem: acusadas, não corrigidas ----
+      FEC.setDados([], [
+        d(1, { Viagem_ID: "V-9", Papel_Viagem: "Passageiro", KM_Rodado: 10 }),
+        d(2, { Viagem_ID: "V-8", Papel_Viagem: "Condutor", KM_Rodado: 10 }),
+        d(3, { Viagem_ID: "V-8", Papel_Viagem: "Condutor", KM_Rodado: 20 })
+      ], [], []);
+      const g = FEC.getViagemGrupos();
+      ok(g["V-9"] && g["V-9"].semCondutor === true, "viagem sem condutor deve ser marcada (semCondutor)");
+      ok(g["V-8"] && g["V-8"].multiCondutor === true, "viagem com 2 condutores deve ser marcada (multiCondutor)");
+
+      // ---- valores em aberto: direção segura ----
+      const k = kpisFech([
+        { id: "1", fields: { Valor_Total_Pagar: 100, Status_Pagamento: "Pago" } },
+        { id: "2", fields: { Valor_Total_Pagar: 50, Status_Pagamento: "Aguardando Fechamento" } },
+        { id: "3", fields: { Valor_Total_Pagar: 25 } }
+      ]);
+      ok(k.total === 175 && k.aberto === 75 && k.pagos === 1 && k.aguardando === 1,
+        "kpisFech: tudo que NÃO é exatamente 'Pago' (inclusive sem status) conta como em aberto");
+
+      // ---- ausência nunca vira zero na tela ----
+      ok(cel(null) === "—" && cel("") === "—" && cel("abc") === "—" && cel(0) === "0",
+        "cel: vazio/ilegível vira '—'; zero de verdade continua sendo 0");
+      ok(media(100, 0) === null && media(100, 4) === 25,
+        "media: divisor zero devolve null (exibe '—'), nunca NaN/Infinity");
+      ok(num("abc") === 0 && num(null) === 0 && num("7") === 7,
+        "num: lixo vira 0 sem propagar NaN para as somas");
+
+      // ---- link só http/https ----
+      ok(urlSeguro("https://x.com/a") === "https://x.com/a" && urlSeguro("javascript:alert(1)") === null &&
+         urlSeguro("") === null && urlSeguro(null) === null,
+        "urlSeguro: só http/https passa (javascript: tem de virar null)");
+
+      // ---- chave de dia é LOCAL (não pode escorregar de dia no fuso) ----
+      // campo "Date only" chega como …T00:00:00Z; o dia exibido não pode escorregar
+      ok(dKey("2026-08-04T00:00:00Z") === "2026-08-04" && dKey("lixo") === null && dKey(null) === null,
+        "dKey: data-pura não pode escorregar um dia no fuso; data ilegível devolve null");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("FEC.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

@@ -353,18 +353,33 @@
 
     function limparErros() { [...document.querySelectorAll(".err")].forEach(e => e.textContent = ""); }
 
+    /* Campos obrigatórios por TIPO de registro — função PURA (extraída de
+       criar() para poder ser asserida sem rede e sem DOM). Devolve a lista de
+       ids que faltam, na ordem em que aparecem no formulário; vazia = pode
+       criar. Orçamento exige dois campos a mais porque é ele que define a
+       trilha comercial (origem da demanda) e o estado inicial. */
+    function obrigatoriosFaltando(tipoReg, vals) {
+      const v = vals || {};
+      const falta = [];
+      if (!v.titulo) falta.push("titulo");
+      if (!v.cliente) falta.push("cliente");
+      if (tipoReg === "orcamento") {
+        if (!v.origemDemanda) falta.push("origemDemanda");
+        if (!v.statusOrc) falta.push("statusOrc");
+      }
+      return falta;
+    }
+
     async function criar() {
       if (enviando) return;
       limparErros();
       const titulo = txtOu("titulo"), cliente = txtOu("cliente");
-      let falhou = false;
-      if (!titulo) { $("e_titulo").textContent = "obrigatório"; falhou = true; }
-      if (!cliente) { $("e_cliente").textContent = "obrigatório"; falhou = true; }
-      if (tipo === "orcamento") {
-        if (!txtOu("origemDemanda")) { $("e_origemDemanda").textContent = "obrigatório"; falhou = true; }
-        if (!txtOu("statusOrc")) { $("e_statusOrc").textContent = "obrigatório"; falhou = true; }
-      }
-      if (falhou) { setStatus("Preencha os campos obrigatórios.", "err"); return; }
+      const faltando = obrigatoriosFaltando(tipo, {
+        titulo: titulo, cliente: cliente,
+        origemDemanda: txtOu("origemDemanda"), statusOrc: txtOu("statusOrc")
+      });
+      faltando.forEach(n => { const e = $("e_" + n); if (e) e.textContent = "obrigatório"; });
+      if (faltando.length) { setStatus("Preencha os campos obrigatórios.", "err"); return; }
 
       const c = canalAtual();
       const f = {};
@@ -419,6 +434,102 @@
         setStatus("Falha ao criar: " + e.message, "err");
       } finally { enviando = false; $("btnCriar").disabled = false; }
     }
+
+    /* Exposto para exercitar as regras sem login (a tela não tinha global). */
+    window.NPR = { derivarCanalProposta, derivarCanalOrcamento, pnn, obrigatoriosFaltando,
+                   DIRETO_TIPO_SERVICO, DIRETO_ORIGEM_DEMANDA };
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — NPR.assertRegras(). Regras protegidas:
+       (1) o CANAL DE VENDA é DERIVADO, não digitado: fornecimento puro é
+           "Direto"; qualquer coisa que exija diagnóstico técnico é
+           "Consultivo" — e o DEFAULT DE SEGURANÇA (campo ainda não escolhido
+           ou valor ambíguo) é sempre Consultivo, nunca Direto;
+       (2) toda derivação vem acompanhada de MOTIVO (o comercial precisa saber
+           por que caiu naquele canal);
+       (3) os obrigatórios mudam por tipo: Proposta = Título + Cliente;
+           Orçamento = + Origem da demanda + Status;
+       (4) pnn() nunca deixa "" / null / NaN entrarem no corpo da criação.
+       ========================================================================= */
+    window.NPR.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      // ---- (1) canal derivado do TIPO DE SERVIÇO (proposta) ----
+      ok(derivarCanalProposta("Fornecimento de Materiais").canal === "Direto",
+        "fornecimento puro é canal DIRETO (o cliente chega com o escopo fechado)");
+      ok(derivarCanalProposta("Laudo NR-10").canal === "Consultivo",
+        "serviço que exige diagnóstico técnico é canal CONSULTIVO");
+      ok(derivarCanalProposta("").canal === "Consultivo" && derivarCanalProposta(null).canal === "Consultivo" &&
+         derivarCanalProposta(undefined).canal === "Consultivo",
+        "DEFAULT DE SEGURANÇA: sem tipo de serviço o canal é Consultivo, nunca Direto");
+      ok(derivarCanalProposta("Coisa Nova Qualquer").canal === "Consultivo",
+        "serviço desconhecido cai em Consultivo (o Direto é lista fechada, não fallback)");
+
+      // ---- (1) canal derivado da ORIGEM DA DEMANDA (orçamento) ----
+      ["Pedido Avulso de Material", "Venda para Revenda/Atacado", "Marketplace",
+       "Venda Física/Balcão", "Reposicao Interna"].forEach(o => {
+        ok(derivarCanalOrcamento(o).canal === "Direto",
+          "origem '" + o + "' é canal DIRETO (o solicitante já define o que quer)");
+      });
+      ok(derivarCanalOrcamento("CRM - Proposta Comercial").canal === "Consultivo",
+        "orçamento vindo de proposta comercial do CRM HERDA o canal consultivo");
+      ok(derivarCanalOrcamento("").canal === "Consultivo" && derivarCanalOrcamento(null).canal === "Consultivo",
+        "DEFAULT DE SEGURANÇA: sem origem da demanda o canal é Consultivo");
+      ok(derivarCanalOrcamento("Origem Inventada").canal === "Consultivo",
+        "origem ambígua cai em Consultivo (na dúvida, diagnostica-se antes de vender)");
+
+      // ---- (2) toda derivação explica o porquê ----
+      ok(["Fornecimento de Materiais", "", "Laudo NR-10"].every(t => {
+        const c = derivarCanalProposta(t); return typeof c.motivo === "string" && c.motivo.length > 10;
+      }), "toda derivação de canal tem de vir com MOTIVO legível (não é caixa-preta)");
+      ok(["Marketplace", "", "CRM - Proposta Comercial"].every(o => {
+        const c = derivarCanalOrcamento(o); return typeof c.motivo === "string" && c.motivo.length > 10;
+      }), "toda derivação por origem da demanda tem de vir com motivo legível");
+      ok(DIRETO_TIPO_SERVICO.has("Fornecimento de Materiais") && DIRETO_ORIGEM_DEMANDA.has("Marketplace"),
+        "as listas do canal Direto são fechadas e explícitas");
+
+      // ---- (3) obrigatórios por tipo ----
+      ok(obrigatoriosFaltando("proposta", { titulo: "T", cliente: "3" }).length === 0,
+        "proposta: Título + Cliente bastam para criar");
+      ok(obrigatoriosFaltando("proposta", { titulo: "", cliente: "" }).join() === "titulo,cliente",
+        "proposta: os dois obrigatórios são apontados juntos (não um de cada vez)");
+      ok(obrigatoriosFaltando("orcamento", { titulo: "T", cliente: "3" }).join() === "origemDemanda,statusOrc",
+        "orçamento EXIGE origem da demanda e status além de título e cliente");
+      ok(obrigatoriosFaltando("orcamento", { titulo: "T", cliente: "3", origemDemanda: "Marketplace", statusOrc: "Rascunho" }).length === 0,
+        "orçamento completo pode ser criado");
+      ok(obrigatoriosFaltando("proposta", { titulo: "T", cliente: "3", origemDemanda: "", statusOrc: "" }).length === 0,
+        "proposta NÃO pode ser barrada por campos que só existem no orçamento");
+      ok(obrigatoriosFaltando("orcamento", {}).length === 4 && obrigatoriosFaltando("proposta", {}).length === 2,
+        "sem nada preenchido, todos os obrigatórios do tipo são apontados");
+
+      // ---- (4) o corpo da criação nunca leva vazio ----
+      const f = {};
+      pnn(f, "Title", "Proposta X");
+      pnn(f, "Vazio", "");
+      pnn(f, "SoEspaco", "   ");
+      pnn(f, "Nulo", null);
+      pnn(f, "Indef", undefined);
+      pnn(f, "NaoNumero", Number("abc"));
+      pnn(f, "Infinito", Infinity);
+      pnn(f, "Zero", 0);
+      ok(f.Title === "Proposta X",
+        "pnn: valor preenchido entra no corpo");
+      ok(!("Vazio" in f) && !("SoEspaco" in f),
+        "pnn: string vazia e string só de espaços NÃO entram (nada de \"\" no POST)");
+      ok(!("Nulo" in f) && !("Indef" in f),
+        "pnn: null e undefined não entram no corpo");
+      ok(!("NaoNumero" in f) && !("Infinito" in f),
+        "pnn: NaN e Infinity não entram (número inválido nunca chega ao SharePoint)");
+      ok(f.Zero === 0,
+        "pnn: ZERO é valor legítimo e TEM de entrar (0 não é ausência)");
+      ok(Object.values(f).every(v => v !== "" && v != null),
+        "pnn: nenhum \"\" ou nulo pode sobrar no corpo da criação");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("NPR.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>

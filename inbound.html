@@ -388,6 +388,113 @@
 
     // exposto para teste manual no console (window.EletriumInbound.validarCNPJ("...") etc.)
     window.EletriumInbound = { validarCPF: validarCPF, validarCNPJ: validarCNPJ, soDigitos: soDigitos, soAlnum: soAlnum, calcDVCNPJ: calcDVCNPJ };
+    // exposto para a suíte poder TRAVAR a contenção F1 (ver assertRegras)
+    window.EletriumInbound.ENVIO_HABILITADO = ENVIO_HABILITADO;
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — EletriumInbound.assertRegras().
+       Duas regras que esta página impõe:
+       (1) CONTENÇÃO F1 — a página está pública mas NÃO capta: ENVIO_HABILITADO
+           é false, o robots é noindex/nofollow e o botão nasce desabilitado.
+           As três andam JUNTAS (reverter uma sem as outras = lead perdido ou
+           página indexada sem captação). A asserção trava as três e ainda
+           prova, com sentinela no fetch, que um submit com dados VÁLIDOS não
+           envia nada para fora.
+       (2) O documento é validado por DÍGITO VERIFICADOR — inclusive o CNPJ
+           ALFANUMÉRICO (Receita Federal 2026). Os casos usam documentos de
+           validade conhecida e independente desta implementação: o CNPJ
+           clássico 11.222.333/0001-81 e o exemplo oficial da RFB
+           12.ABC.345/01DE-35.
+       ========================================================================= */
+    window.EletriumInbound.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      // ---- (1) contenção: as três travas andam juntas ----
+      ok(ENVIO_HABILITADO === false,
+        "CONTENÇÃO F1: ENVIO_HABILITADO deveria continuar false — se foi religado, o robots e o botão têm de mudar junto");
+      const robots = document.querySelector('meta[name="robots"]');
+      ok(robots && /noindex/i.test(robots.content) && /nofollow/i.test(robots.content),
+        "CONTENÇÃO F1: enquanto o envio está desligado a página tem de ser noindex,nofollow");
+      const btnEnv = document.getElementById("btnEnviar");
+      ok(btnEnv && btnEnv.disabled === true,
+        "CONTENÇÃO F1: o botão de envio tem de nascer DESABILITADO (gate independente do guard do submit)");
+      ok(btnEnv && /indispon/i.test(btnEnv.textContent),
+        "CONTENÇÃO F1: o botão tem de DIZER que está indisponível (contenção explicada, não silenciosa)");
+
+      // sentinela no fetch: submit com dados VÁLIDOS não pode sair da página
+      const form = document.getElementById("formLead");
+      const fetchReal = window.fetch;
+      let saiu = false;
+      window.fetch = function () { saiu = true; return Promise.reject(new Error("envio proibido na contenção F1")); };
+      const antes = {};
+      const setar = (id, v) => { const el = document.getElementById(id); if (!el) return;
+        antes[id] = el.type === "checkbox" ? el.checked : el.value;
+        if (el.type === "checkbox") el.checked = v; else el.value = v; };
+      try {
+        const pj = document.getElementById("tipoPJ");
+        antes.tipoPJ = pj ? pj.checked : null;
+        if (pj) pj.checked = true;
+        setar("documento", "11.222.333/0001-81");
+        setar("razao_social_nome", "Empresa Teste Ltda");
+        setar("contato_nome", "Fulano");
+        setar("email", "fulano@empresa.com.br");
+        setar("telefone", "(11) 98888-7777");
+        setar("necessidade", document.getElementById("necessidade") && document.getElementById("necessidade").options[1]
+          ? document.getElementById("necessidade").options[1].value : "");
+        setar("mensagem", "teste de asserção");
+        setar("consentimento", true);
+        setar("site_web", "");                     // honeypot vazio: submit legítimo
+        if (form) form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+        ok(saiu === false,
+          "DEFEITO GRAVE: um submit com dados VÁLIDOS chegou a chamar fetch — a contenção F1 não está segurando");
+      } finally {
+        window.fetch = fetchReal;
+        Object.keys(antes).forEach(id => {
+          const el = document.getElementById(id); if (!el || antes[id] == null) return;
+          if (el.type === "checkbox") el.checked = antes[id]; else el.value = antes[id];
+        });
+        if (document.getElementById("tipoPJ") && antes.tipoPJ != null) document.getElementById("tipoPJ").checked = antes.tipoPJ;
+      }
+
+      // ---- (2) CPF por dígito verificador ----
+      ok(validarCPF("529.982.247-25") === true && validarCPF("52998224725") === true,
+        "CPF válido conhecido deve passar, com ou sem máscara");
+      ok(validarCPF("529.982.247-24") === false,
+        "CPF com DV trocado deve ser recusado (é para isso que o DV existe)");
+      ok(validarCPF("111.111.111-11") === false && validarCPF("00000000000") === false,
+        "CPF de dígito repetido deve ser recusado (passa no DV, mas não existe)");
+      ok(validarCPF("5299822472") === false && validarCPF("529982247250") === false && validarCPF("") === false,
+        "CPF com menos/mais de 11 dígitos deve ser recusado");
+
+      // ---- (2) CNPJ clássico e ALFANUMÉRICO (RFB 2026) ----
+      ok(validarCNPJ("11.222.333/0001-81") === true && validarCNPJ("11222333000181") === true,
+        "CNPJ numérico clássico continua válido (a regra alfanumérica é retrocompatível)");
+      ok(validarCNPJ("12.ABC.345/01DE-35") === true,
+        "CNPJ ALFANUMÉRICO do exemplo oficial da Receita Federal deve ser aceito");
+      ok(validarCNPJ("12.ABC.345/01DE-34") === false,
+        "CNPJ alfanumérico com DV trocado deve ser recusado");
+      ok(validarCNPJ("11222333000180") === false,
+        "CNPJ numérico com DV trocado deve ser recusado");
+      ok(validarCNPJ("12ABC34501DEA5") === false,
+        "os 2 dígitos verificadores do CNPJ têm de ser NUMÉRICOS (letra no DV é formato inválido)");
+      ok(validarCNPJ("AAAAAAAAAAAAAA") === false && validarCNPJ("11111111111111") === false,
+        "CNPJ de caractere repetido deve ser recusado");
+      ok(validarCNPJ("1122233300018") === false && validarCNPJ("112223330001811") === false,
+        "CNPJ com menos/mais de 14 caracteres deve ser recusado");
+      ok(calcDVCNPJ("112223330001") === "81" && calcDVCNPJ("12ABC34501DE") === "35",
+        "calcDVCNPJ devolve os 2 DVs corretos nos dois formatos");
+
+      // ---- normalizadores: PJ preserva letra, PF só dígito ----
+      ok(soAlnum("12.abc.345/01de-35") === "12ABC34501DE35" && soAlnum(null) === "",
+        "soAlnum: maiúsculas, sem pontuação, preservando letras (CNPJ 2026)");
+      ok(soDigitos("(11) 98888-7777") === "11988887777" && soDigitos(null) === "",
+        "soDigitos: só dígitos, e nulo vira string vazia (nunca 'null')");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("EletriumInbound.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
 
     /* ==================================================================
        MÁSCARAS

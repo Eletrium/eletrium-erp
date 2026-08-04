@@ -951,6 +951,115 @@
       forcarCarregado: (v) => { carregado = v !== false; }
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — PRJ.assertRegras(). A regra que esta tela
+       impõe é ser SOMENTE LEITURA. Isso é provado em duas frentes:
+       (a) ESTÁTICA — varredura do próprio <script> desta página atrás de
+           qualquer chamada de escrita (EG.patchItemFields/createItem/gpost/
+           gpatch, fetch com método de escrita, form submit);
+       (b) DINÂMICA — sentinelas no lugar dos escritores do EG enquanto TODO o
+           render é exercitado com dados falsos: se qualquer caminho de tela
+           tentar gravar, a sentinela registra e a asserção falha.
+       Mais as agregações que a tela impõe (aditivo só conta se APROVADO, e
+       nenhum item da EAP pode sumir da árvore).
+       ========================================================================= */
+    window.PRJ.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      /* ---------- (a) prova ESTÁTICA de somente-leitura ----------
+         Os nomes são montados por concatenação de propósito: assim o texto
+         literal do escritor não existe neste arquivo e a varredura não acusa
+         a si mesma. */
+      const fonte = Array.prototype.slice.call(document.querySelectorAll("script:not([src])"))
+        .map(s => s.textContent).join("\n");
+      ok(fonte.length > 1000, "varredura: não foi possível ler o próprio <script> da página (prova estática inválida)");
+      const escritores = ["patch" + "ItemFields", "create" + "Item", "gpo" + "st", "gpa" + "tch"];
+      escritores.forEach(nome => {
+        ok(!(new RegExp("EG\\s*\\.\\s*" + nome + "\\s*\\(").test(fonte)),
+          "somente-leitura: apareceu uma chamada de escrita EG." + nome + "() nesta tela");
+      });
+      ok(!(new RegExp("method\\s*:\\s*[\"'](POST|PUT|PATCH|DELETE)", "i").test(fonte)),
+        "somente-leitura: apareceu um fetch com método de escrita nesta tela");
+      ok(!(new RegExp("\\bfet" + "ch\\s*\\(").test(fonte)),
+        "somente-leitura: esta tela não pode chamar a API de rede diretamente — todo acesso passa pelo EG, e só de leitura");
+      ok(document.querySelectorAll("form").length === 0,
+        "somente-leitura: esta tela não pode ter <form> (não há nada a submeter)");
+
+      /* ---------- (b) prova DINÂMICA: sentinelas durante o render ---------- */
+      const originais = {};
+      const tentativas = [];
+      escritores.forEach(nome => {
+        originais[nome] = EG[nome];
+        EG[nome] = function () { tentativas.push(nome); return Promise.reject(new Error("escrita proibida nesta tela")); };
+      });
+      try {
+        PRJ.setDados(
+          [{ id: "1", fields: { Title: "Projeto A", Valor_Contrato: 1000, Prazo_Dias: 30 } }],
+          [{ id: "10", fields: { ProjetoLookupId: 1, Codigo_EAP: "1", Title: "Fase 1", Ordem: 1 } },
+           { id: "11", fields: { ProjetoLookupId: 1, Codigo_EAP: "1.1", Title: "Tarefa", Ordem: 1, EAP_PaiLookupId: 10 } },
+           { id: "12", fields: { ProjetoLookupId: 1, Codigo_EAP: "9", Title: "Órfã", Ordem: 2, EAP_PaiLookupId: 999 } }],
+          [{ id: "20", fields: { ProjetoLookupId: 1, TecnicoLookupId: 5, Horas_Previstas: 8 } }],
+          [{ id: "30", fields: { ProjetoLookupId: 1, ProdutoLookupId: 7, Qtd_Prevista: 2 } }],
+          [{ id: "40", fields: { ProjetoLookupId: 1, Title: "Item 1", Qtd_Contratada: 10, Preco_Unitario: 100 } }],
+          [{ id: "50", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 4, Status_Medicao: "Aprovada" } },
+           { id: "51", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 1 } }],
+          [{ id: "60", fields: { ProjetoLookupId: 1, Valor: 500, Tipo: "Custo" } }],
+          [{ id: "70", fields: { ProjetoLookupId: 1, Status_Aditivo: "Aprovado", Valor_Delta: 200, Dias_Delta: 5 } },
+           { id: "71", fields: { ProjetoLookupId: 1, Status_Aditivo: "Em análise", Valor_Delta: 999999, Dias_Delta: 999 } }],
+          [{ id: "5", fields: { Title: "Téc" } }],
+          [{ id: "7", fields: { Title: "Produto", Codigo_Interno: "P-7" } }]
+        );
+        PRJ.forcarCarregado(true);
+        PRJ.montarSeletor();
+        PRJ.setProjeto("1");           // dispara renderTudo() inteiro
+        PRJ.mostrarSec("eap"); PRJ.mostrarSec("ctr"); PRJ.mostrarSec("adt");
+        ok(tentativas.length === 0,
+          "DEFEITO GRAVE: o render desta tela tentou GRAVAR (" + tentativas.join(", ") + ") — ela é somente leitura");
+
+        // ---------- regras de agregação ----------
+        const d = deltasAprovados();
+        ok(d.qtd === 1 && d.valor === 200 && d.dias === 5,
+          "aditivos: só o APROVADO ajusta contrato e prazo (o 'Em análise' não pode vazar)");
+        const m = medidoPorItem();
+        ok(m[40] && m[40].qtd === 5 && m[40].qtdePorStatus["(sem status)"] === 1,
+          "medições: somam por item de contrato e medição sem status vai para um balde próprio (não some)");
+
+        const a = arvoreEap();
+        ok(a.total === 3,
+          "EAP: o total tem de contar todos os itens do projeto");
+        ok(a.linhas.length === a.total,
+          "EAP: nenhum item pode SUMIR da árvore (pai de outro projeto vira raiz visível) — " +
+          a.linhas.length + " de " + a.total + " renderizados");
+        const orfa = a.linhas.find(l => String(l.o.id) === "12");
+        ok(orfa && orfa.nivel === 0,
+          "EAP: item com pai fora do projeto deve aparecer como RAIZ (dado inconsistente é exibido, não escondido)");
+
+        // ciclo não pode travar a aba nem engolir os itens
+        PRJ.setDados([{ id: "1", fields: { Title: "P" } }],
+          [{ id: "80", fields: { ProjetoLookupId: 1, Title: "A", EAP_PaiLookupId: 81 } },
+           { id: "81", fields: { ProjetoLookupId: 1, Title: "B", EAP_PaiLookupId: 80 } }],
+          [], [], [], [], [], [], [], []);
+        PRJ.setProjeto("1");
+        const c = arvoreEap();
+        ok(c.total === 2, "EAP: ciclo não pode travar a aba (o total continua correto)");
+        ok(c.linhas.length === 2,
+          "EAP: ciclo puro (A->B->A) engoliu os itens da árvore: " + c.linhas.length + " de " + c.total + " renderizados");
+      } finally {
+        escritores.forEach(nome => { EG[nome] = originais[nome]; });
+      }
+
+      // ---------- ausência nunca vira zero ----------
+      ok(cel(null) === "—" && cel("") === "—" && celBRL("abc") === "—" && pct(null) === "—",
+        "ausência de dado vira '—' na tela, nunca 0 (zero é afirmação, não lacuna)");
+      ok(num("abc") === 0 && num(Infinity) === 0,
+        "num: valor não-finito vira 0 nas somas, sem propagar NaN/Infinity");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("PRJ.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

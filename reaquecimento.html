@@ -146,6 +146,22 @@
       return (v == null || v === "") ? SEM : v;
     };
 
+    /* ---------- regra de prioridade (funções PURAS, testáveis sem rede) ----------
+       O que ESTA tela impõe é a ORDEM em que os clientes aparecem: primeiro
+       quem está em risco. Os prazos de 90/180 dias NÃO são calculados aqui —
+       quem classifica é o cenário diário do Make; a tela só lê e prioriza. */
+    const ehAtencao = (r) => r === "Risco de Perda" || r === "Inativo";
+    // peso na fila: fora da ORDEM (rótulo novo ou sem status) vai para o fim
+    const peso = (r) => { const p = ORDEM.indexOf(r); return p === -1 ? ORDEM.length : p; };
+    const filtrar = (lista, filtro) => {
+      if (filtro === "__todos") return lista.slice();
+      if (filtro === "__atencao") return lista.filter(i => ehAtencao(relDe(i)));
+      return lista.filter(i => relDe(i) === filtro);
+    };
+    // risco primeiro; dentro do mesmo peso, alfabética pt-BR
+    const ordenar = (lista) => lista.slice().sort((a, b) => (peso(relDe(a)) - peso(relDe(b))) ||
+      String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+
     function render() {
       renderKpis();
       renderTabela();
@@ -183,14 +199,7 @@
           "Use o filtro <b>(sem status)</b> para ver quem aguarda classificação.</div>";
         return;
       }
-      let lista;
-      if (filtro === "__todos") lista = clientes.slice();
-      else if (filtro === "__atencao") lista = clientes.filter(i => { const r = relDe(i); return r === "Risco de Perda" || r === "Inativo"; });
-      else lista = clientes.filter(i => relDe(i) === filtro);
-
-      const peso = (r) => { const p = ORDEM.indexOf(r); return p === -1 ? ORDEM.length : p; };
-      lista.sort((a, b) => (peso(relDe(a)) - peso(relDe(b))) ||
-        String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
+      const lista = ordenar(filtrar(clientes, filtro));
 
       $("count").textContent = lista.length + " cliente(s) no filtro.";
       if (!lista.length) {
@@ -223,6 +232,80 @@
       const k = e.target.closest(".kpi"); if (!k || !carregou) return;
       $("fRel").value = k.dataset.k; render();
     });
+
+    /* Exposto para exercitar a regra sem login (a tela não tinha global). */
+    window.REAQ = { relDe, ehAtencao, peso, filtrar, ordenar, ORDEM, REL, SEM };
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — REAQ.assertRegras(). Regras protegidas:
+       (1) a FILA é por risco: Risco de Perda e Inativo vêm primeiro, e um
+           rótulo novo/desconhecido vai para o FIM sem sumir da lista;
+       (2) "Atenção" (o filtro padrão) é exatamente Risco de Perda + Inativo;
+       (3) Status_Relacionamento vazio NÃO é um status — vira sentinela própria,
+           para distinguir "ainda não classificado" de "classificado como algo".
+       (4) esta tela NÃO calcula os 90/180 dias nem grava nada: quem classifica
+           é o cenário diário do Make. As duas coisas são asseridas.
+       ========================================================================= */
+    window.REAQ.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      const c = (nome, rel) => ({ id: nome, fields: rel === undefined ? { Title: nome } : { Title: nome, Status_Relacionamento: rel } });
+
+      // ---- (3) vazio é sentinela, não status ----
+      ok(relDe(c("A")) === SEM && relDe(c("B", "")) === SEM && relDe(c("C", null)) === SEM,
+        "Status_Relacionamento ausente/vazio/nulo vira a sentinela '(sem status)', não um status inventado");
+      ok(relDe(c("D", "Inativo")) === "Inativo",
+        "cliente classificado mantém o próprio status");
+
+      // ---- (1) ordem da fila ----
+      const lista = [c("Zulu", "Cliente Ativo"), c("Alfa", "Inativo"), c("Bravo", "Risco de Perda"),
+                     c("Charlie", "Rótulo Novo"), c("Delta")];
+      const ord = ordenar(lista).map(i => i.fields.Title);
+      ok(ord[0] === "Bravo" && ord[1] === "Alfa",
+        "fila: Risco de Perda vem antes de Inativo, e ambos antes do resto (veio " + ord.join(" > ") + ")");
+      ok(ord[2] === "Zulu",
+        "fila: Cliente Ativo vem depois dos dois estados de atenção");
+      ok(ord.length === lista.length,
+        "fila: a ordenação não pode PERDER cliente nenhum");
+      ok(ord.indexOf("Charlie") >= 3 && ord.indexOf("Delta") >= 3,
+        "fila: rótulo desconhecido e sem status vão para o FIM — mas continuam na lista");
+      ok(peso("Risco de Perda") === 0 && peso("Rótulo Novo") === ORDEM.length && peso(SEM) === ORDEM.length,
+        "peso: rótulo fora da ORDEM (inclusive a sentinela) recebe o peso do fim");
+      const alfab = ordenar([c("Ômega", "Inativo"), c("Alfa", "Inativo")]).map(i => i.fields.Title);
+      ok(alfab[0] === "Alfa",
+        "fila: dentro do mesmo peso a ordem é alfabética pt-BR");
+      ok(ordenar(lista).map(i => i.fields.Title).join() === ord.join(),
+        "ordenar é determinística e não muda a lista original (ordena uma cópia)");
+
+      // ---- (2) o filtro de atenção ----
+      ok(ehAtencao("Risco de Perda") === true && ehAtencao("Inativo") === true,
+        "atenção = Risco de Perda + Inativo");
+      ok(ehAtencao("Perdido") === false && ehAtencao("Cliente Ativo") === false && ehAtencao(SEM) === false,
+        "atenção NÃO inclui Perdido nem Cliente Ativo (Perdido já é desfecho, não reaquecimento)");
+      ok(filtrar(lista, "__atencao").length === 2,
+        "filtro padrão traz exatamente os 2 clientes em atenção");
+      ok(filtrar(lista, "__todos").length === lista.length,
+        "filtro '(todos)' não pode esconder ninguém");
+      ok(filtrar(lista, SEM).length === 1,
+        "filtro '(sem status)' isola quem o monitor ainda não classificou");
+      ok(filtrar(lista, "Inativo").length === 1,
+        "filtro por status específico traz só aquele status");
+
+      // ---- (4) a tela não classifica e não grava ----
+      const fonte = Array.prototype.slice.call(document.querySelectorAll("script:not([src])"))
+        .map(s => s.textContent).join("\n");
+      ["patch" + "ItemFields", "create" + "Item", "gpo" + "st", "gpa" + "tch"].forEach(nome => {
+        ok(!(new RegExp("EG\\s*\\.\\s*" + nome + "\\s*\\(").test(fonte)),
+          "somente-leitura: apareceu escrita EG." + nome + "() — esta tela só acompanha o monitor");
+      });
+      // padrão montado por concatenação para a varredura não acusar a si mesma
+      ok(!(new RegExp("Data_Ultima" + "_Compra[^\\n]*get" + "Time").test(fonte)),
+        "os prazos de 90/180 dias são do cenário do Make — recalcular aqui criaria duas verdades sobre o mesmo cliente");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("REAQ.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>

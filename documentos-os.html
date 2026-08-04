@@ -941,6 +941,112 @@
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — DOCOS.assertRegras(). Regras protegidas:
+       (1) a fonte de verdade da numeração é o HISTÓRICO, não o ponteiro;
+       (2) a máquina de estados tem guarda EM CÓDIGO (o disabled do DOM é
+           contornável): Obsoleto é terminal, sair de Publicado exige motivo,
+           publicar sem versão no histórico é bloqueado;
+       (3) publicar aponta para o MAX DO HISTÓRICO e despublicar grava null
+           (nunca ""), sempre deixando trilha append-only;
+       (4) ponteiro divergente é DENUNCIADO, nunca corrigido em silêncio;
+       (5) só http/https em URL de arquivo.
+       ========================================================================= */
+    window.DOCOS.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      DOCOS.setUsuario("Geovane", "g@ex.com");
+      const doc = (id, f) => ({ id: String(id), fields: f });
+      const ver = (id, docId, n) => ({ id: String(id), fields: { DocumentoLookupId: docId, Numero_Versao: n } });
+
+      // documento 100 com histórico v1..v3; documento 200 sem histórico nenhum
+      DOCOS.setDados(
+        [doc(100, { Titulo: "Laudo", Versao_Atual: 3, Estado_Documento: "Rascunho" }),
+         doc(200, { Titulo: "Novo", Versao_Atual: 1, Estado_Documento: "Rascunho" })],
+        [ver(1, 100, 1), ver(2, 100, 3), ver(3, 100, 2)],
+        [doc(1, { Title: "OS-100" })]
+      );
+
+      // ---- (1) numeração vem do histórico ----
+      ok(proximaVersao(100) === 4, "próxima versão sai do MAX do histórico (3 -> 4)");
+      ok(proximaVersao(200) === 1, "documento sem histórico começa na v1 (autocorreção de v1 que falhou)");
+      ok(maxVersaoHistorico(100) === 3 && maxVersaoHistorico(200) === null,
+        "maxVersaoHistorico: null quando não há histórico (não pode virar 0)");
+      ok(numerosDoHistorico(100).join(",") === "3,2,1",
+        "histórico é listado do mais novo para o mais antigo");
+
+      // ---- (2) guardas da máquina de estados ----
+      ok(camposTransicao(doc(100, { Estado_Documento: "Obsoleto" }), "Rascunho", "quero voltar").erro,
+        "Obsoleto é TERMINAL — não pode haver saída, nem com motivo");
+      ok(camposTransicao(doc(100, { Estado_Documento: "Rascunho" }), "Rascunho", "").erro,
+        "transição para o MESMO estado deve ser recusada");
+      ok(camposTransicao(doc(100, { Estado_Documento: "Rascunho" }), "", "").erro,
+        "transição sem destino deve ser recusada");
+      const semMotivo = camposTransicao(doc(100, { Estado_Documento: "Publicado", Versao_Publicada: 3 }), "Em Revisão", "");
+      ok(semMotivo.erro && semMotivo.foco === "eMotivo",
+        "sair de Publicado EXIGE motivo e o foco vai para o campo do motivo");
+      ok(camposTransicao(doc(200, { Estado_Documento: "Rascunho" }), "Publicado", "").erro,
+        "publicar sem NENHUMA versão no histórico é bloqueado (não há o que publicar)");
+
+      // ---- (3) o que a transição grava ----
+      const pub = camposTransicao(doc(100, { Estado_Documento: "Aprovado", Versao_Atual: 1 }), "Publicado", "");
+      ok(!pub.erro && pub.campos.Versao_Publicada === 3,
+        "publicar aponta para o MAX DO HISTÓRICO (3), não para o ponteiro Versao_Atual (1)");
+      ok(pub.campos.Estado_Documento === "Publicado" && /publica v3/.test(pub.campos.Observacoes),
+        "publicar deixa trilha de auditoria em Observacoes");
+      ok(pub.campos.Observacoes.indexOf("Geovane") >= 0,
+        "a trilha registra QUEM fez a transição");
+      const desp = camposTransicao(doc(100, { Estado_Documento: "Publicado", Versao_Publicada: 3 }), "Em Revisão", "achado em auditoria");
+      ok(!desp.erro && desp.campos.Versao_Publicada === null,
+        "despublicar limpa o ponteiro com NULL explícito (o repo nunca grava \"\")");
+      ok(desp.campos.Observacoes.indexOf("achado em auditoria") >= 0 && /despublica v3/.test(desp.campos.Observacoes),
+        "despublicar registra o motivo E a versão que deixou de estar publicada");
+      const antes = "linha antiga";
+      const app = camposTransicao(doc(100, { Estado_Documento: "Aprovado", Observacoes: antes }), "Publicado", "");
+      ok(app.campos.Observacoes.indexOf(antes) === 0 && app.campos.Observacoes.indexOf("\n") > 0,
+        "a trilha é APPEND-ONLY: a observação anterior não pode ser sobrescrita");
+
+      // ---- (4) diagnóstico de ponteiros: denuncia, não conserta ----
+      const quebrado = estadoVersoes(doc(100, { Versao_Atual: 1, Versao_Publicada: 1 }));
+      ok(quebrado.ponteiroQuebrado === true && quebrado.maxHistorico === 3,
+        "ponteiro atrás do histórico é marcado como QUEBRADO (erro real)");
+      const emRevisao = estadoVersoes(doc(100, { Versao_Atual: 3, Versao_Publicada: 1 }));
+      ok(emRevisao.revisaoEmAndamento === true && emRevisao.ponteiroQuebrado === false,
+        "publicada < atual é revisão em andamento (NORMAL) — não pode ser confundido com defeito");
+      const fantasma = estadoVersoes(doc(100, { Versao_Atual: 3, Versao_Publicada: 9 }));
+      ok(fantasma.publicadaForaDoHistorico === true,
+        "publicada apontando para versão inexistente no ledger é erro e tem de ser denunciado");
+      ok(estadoVersoes(doc(100, { Versao_Atual: 3 })).nuncaPublicada === true,
+        "documento nunca publicado é distinguido de documento despublicado");
+      // o diagnóstico tem de VIRAR AVISO na tela — cada divergência na sua superfície
+      ok(/divergente/i.test(historicoHtml(doc(100, { Versao_Atual: 1, Versao_Publicada: 1 }))),
+        "ponteiro atrás do histórico tem de ser DENUNCIADO no histórico (visível, sem correção automática)");
+      ok(/NÃO existe no histórico/i.test(avisoPonteiros(doc(100, { Versao_Atual: 3, Versao_Publicada: 9 }))),
+        "publicada fora do histórico tem de virar aviso de ERRO no topo do drawer");
+      ok(/não defeito/i.test(avisoPonteiros(doc(100, { Versao_Atual: 3, Versao_Publicada: 1 }))),
+        "revisão em andamento tem de ser explicada como INFORMAÇÃO, para não ser confundida com defeito");
+
+      // ---- (5) URL e colisão de chave ----
+      ok(urlSeguro("https://x/a.pdf") === "https://x/a.pdf" && urlSeguro("http://x/a.pdf") !== null,
+        "urlSeguro: http e https passam");
+      ok(urlSeguro("javascript:alert(1)") === null && urlSeguro("file:///c:/x") === null &&
+         urlSeguro("") === null && urlSeguro(null) === null,
+        "urlSeguro: qualquer coisa fora de http/https vira null (bloqueia javascript:)");
+      ok(ehColisaoChave({ status: 409, message: "duplicate value" }) === true &&
+         ehColisaoChave({ status: 400, message: "valores duplicados foram encontrados" }) === true,
+        "colisão: 400/409 com 'duplicate/duplicad' é revisão concorrente, não erro genérico");
+      ok(ehColisaoChave({ status: 500, message: "duplicate" }) === false &&
+         ehColisaoChave({ status: 409, message: "timeout" }) === false && !ehColisaoChave(null),
+        "colisão: nem todo 409 nem todo 'duplicate' é colisão de chave (não pode mascarar outra falha)");
+      ok(shaCurto("0123456789abcdef0123") === "0123456789abcdef…" && shaCurto("") === null,
+        "shaCurto: 16 caracteres + reticência; vazio devolve null");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("DOCOS.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

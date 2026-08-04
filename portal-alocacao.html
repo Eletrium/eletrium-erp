@@ -1126,6 +1126,90 @@
       setUsuario: (n, e, oid) => { usuarioNome = n; usuarioEmail = e || ""; usuarioObjectId = oid || ""; }
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — ALOC.assertRegras(). Duas regras centrais:
+       (1) IDENTIDADE é só por TecnicosMEI.Object_ID — e-mail NÃO é fallback,
+           nem silencioso (fallback esconderia cadastro sem Object_ID);
+       (2) o pilar CFT é INFORMATIVO: avisa, nunca bloqueia o aceite.
+       Mais a expiração derivada do relógio (Expira_Em), que é exibida mesmo
+       quando o PATCH de persistência falha.
+       ========================================================================= */
+    window.ALOC.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      const OID = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
+
+      // guarda o estado do usuário/prazo para devolver no fim
+      const prazoAntes = prazoPadraoHoras;
+
+      // ---- identidade: só Object_ID ----
+      ALOC.setUsuario("Fulano", "fulano@ex.com", OID);
+      ALOC.setDados([], [], [
+        { id: "9", fields: { Title: "Vinculado", Object_ID: "  " + OID.toLowerCase() + " ", Email: "outro@ex.com" } },
+        { id: "10", fields: { Title: "Mesmo e-mail, sem chave", Object_ID: "", Email: "fulano@ex.com" } }
+      ], []);
+      ok(ehMinha({ TecnicoLookupId: "9" }) === true,
+        "identidade: Object_ID deve casar mesmo com espaços e caixa diferente (GUID case-insensitive)");
+      ok(ehMinha({ TecnicoLookupId: "10" }) === false,
+        "identidade: e-mail igual ao do login NÃO pode vincular sem Object_ID (fallback silencioso é proibido)");
+      ok(ehMinha({ TecnicoLookupId: null }) === false && ehMinha({}) === false,
+        "identidade: alocação sem técnico nunca é 'minha'");
+      ALOC.setUsuario("Fulano", "fulano@ex.com", "");
+      ALOC.setDados([], [], [{ id: "9", fields: { Object_ID: OID } }], []);
+      ok(ehMinha({ TecnicoLookupId: "9" }) === false,
+        "identidade: login sem Object ID não vincula nada (melhor sem vínculo do que vínculo errado)");
+
+      // ---- CFT informa, não bloqueia ----
+      ok(String(aceitarProposta).indexOf("cftInfo") === -1 && String(aceitarProposta).indexOf("CFT") === -1,
+        "CFT: o caminho de ACEITE não pode consultar o CFT — pendência de CFT é aviso, não bloqueio");
+      ok(String(blocoCft).indexOf("disabled") === -1,
+        "CFT: o bloco do CFT não pode desabilitar botão nenhum (é informativo por decisão)");
+      ok(cftInfo({}).s === "ausente" && cftInfo({ Registro_CFT: "1" }).s === "ok" &&
+         cftInfo({ Registro_CFT: "1", Registro_CFT_Validade: "2000-01-01T00:00:00Z" }).s === "vencido",
+        "cftInfo: 3 estados; registro sem validade continua 'ok' (legado não vira pendência)");
+
+      // ---- expiração derivada do relógio ----
+      const futuro = new Date(Date.now() + 3 * 3600000).toISOString();
+      const passado = new Date(Date.now() - 3600000).toISOString();
+      ok(statusEfetivo({ Status_Alocacao: "Proposta Enviada", Expira_Em: passado }) === "Expirada",
+        "expiração: pendente vencida é EXIBIDA como Expirada mesmo antes/apesar do PATCH");
+      ok(statusEfetivo({ Status_Alocacao: "Proposta Enviada", Expira_Em: futuro }) === "Proposta Enviada",
+        "expiração: pendente dentro do prazo não pode ser marcada como expirada");
+      ok(statusEfetivo({ Status_Alocacao: "Aceita", Expira_Em: passado }) === "Aceita",
+        "expiração: só a PENDENTE expira — uma proposta já aceita não vira Expirada pelo relógio");
+      ok(statusEfetivo({}) === "—",
+        "expiração: sem status a tela mostra '—', não inventa estado");
+      ok(expirou({}) === false && expirou({ Expira_Em: "lixo" }) === false && msRestante({ Expira_Em: "lixo" }) === null,
+        "expiração: sem prazo legível NADA expira (falta de dado não pode cancelar oferta)");
+      ok(countdown({}) === "" && countdown({ Expira_Em: passado }) === "prazo vencido" &&
+         /^expira em \d+h$/.test(countdown({ Expira_Em: futuro })),
+        "countdown: sem prazo é vazio; vencido é explícito; dentro do prazo mostra o restante");
+
+      // ---- prazos aceitos ----
+      ALOC.setPrazoPadrao(PRAZO_PADRAO_HORAS_DEFAULT);
+      ok(prazosPermitidos().join(",") === "24,48",
+        "prazos: o da política (24 default) + a opção longa fixa de 48h");
+      ALOC.setPrazoPadrao(48);
+      ok(prazosPermitidos().join(",") === "48",
+        "prazos: política em 48h não pode duplicar a opção longa");
+      ALOC.setPrazoPadrao(prazoAntes);
+
+      // ---- elegibilidade de OS e de técnico ----
+      ok(osElegivel({ Status: "Em Andamento" }) === true &&
+         osElegivel({ Status: "Concluída" }) === false && osElegivel({ Status: "CONCLUIDA" }) === false &&
+         osElegivel({ Status: "Cancelada" }) === false,
+        "osElegivel: OS concluída/cancelada não pode receber proposta (comparação sem acento e sem caixa)");
+      ok(tecAtivo({ Status: "" }) === true && tecAtivo({}) === true && tecAtivo({ Status: "Ativo" }) === true &&
+         tecAtivo({ Status: "Inativo" }) === false,
+        "tecAtivo: status em branco conta como ATIVO (cadastro antigo não pode sumir da lista)");
+      ok(norm("Concluída") === "concluida" && norm("  ÔNIBUS ") === "onibus",
+        "norm: tira acento, caixa e espaços das pontas");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("ALOC.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

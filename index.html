@@ -378,12 +378,30 @@
       return el;
     }
 
+    /* ---------- regras do movimento (funções PURAS, testáveis sem rede) ----------
+       movimentoNulo: arrastar para a MESMA coluna (ou para a coluna sintética
+       "(sem etapa)") não é movimento — não pode gerar PATCH nem recarimbar o
+       SLA. exigeMotivoPerda: "Perdido" é a única etapa que não se alcança por
+       arrasto direto; sem motivo o pipeline perde a razão da derrota.
+       corpoMovimento: o corpo do PATCH — SEMPRE recarimba Data_Entrada_Etapa
+       (é o relógio do SLA) e NUNCA grava "" (campo vazio é omitido). */
+    const movimentoNulo = (atual, nova) => !nova || nova === atual;
+    const exigeMotivoPerda = (nova) => nova === "Perdido";
+    function corpoMovimento(novaEtapa, camposExtras) {
+      const body = { Etapa_Pipeline: novaEtapa, Data_Entrada_Etapa: new Date().toISOString() };
+      if (camposExtras) Object.keys(camposExtras).forEach(k => {
+        const v = camposExtras[k];
+        if (v != null && v !== "") body[k] = v;
+      });
+      return body;
+    }
+
     async function moveProposta(id, novaEtapa) {
       const p = propMap[id]; if (!p) return;
       const atual = p.fields.Etapa_Pipeline;
-      if (!novaEtapa || novaEtapa === atual) return;
+      if (movimentoNulo(atual, novaEtapa)) return;
       // arrastar para "Perdido" exige motivo: mini-modal antes da gravação
-      if (novaEtapa === "Perdido") { abrirModalPerda(p, atual); return; }
+      if (exigeMotivoPerda(novaEtapa)) { abrirModalPerda(p, atual); return; }
       await gravarMovimento(p, novaEtapa, atual, null);
     }
 
@@ -400,11 +418,7 @@
       marcarCard(id, "salvando", true);
       setStatus("Movendo " + (p.fields.Title || id) + " → " + novaEtapa + "...");
       // 2) PATCH mínimo — nunca grava "": campo vazio é omitido do corpo
-      const body = { Etapa_Pipeline: novaEtapa, Data_Entrada_Etapa: new Date().toISOString() };
-      if (camposExtras) Object.keys(camposExtras).forEach(k => {
-        const v = camposExtras[k];
-        if (v != null && v !== "") body[k] = v;
-      });
+      const body = corpoMovimento(novaEtapa, camposExtras);
       try {
         await EG.patchItemFields("Propostas", id, body); // trava fail-closed ativa p/ Etapa_Pipeline
         await relerProposta(id); // releitura pós-gravação: estado local = servidor
@@ -686,6 +700,91 @@
       } finally {
         btn.disabled = false; btn.textContent = "Registrar indicação";
       }
+    };
+
+    /* Exposto para exercitar as regras sem login (a tela não tinha global). */
+    window.IDX = { classeDataAcao, opDataInput, movimentoNulo, exigeMotivoPerda, corpoMovimento,
+                   ETAPAS_FECHADAS, esc };
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — IDX.assertRegras(). Regras protegidas:
+       (1) "Perdido" NÃO se alcança por arrasto direto — exige motivo (senão o
+           pipeline perde a razão da derrota e o funil vira número cego);
+       (2) arrastar para a mesma coluna (ou para a coluna sintética "(sem
+           etapa)") não é movimento: não pode gerar PATCH nem recarimbar o SLA;
+       (3) todo movimento REAL recarimba Data_Entrada_Etapa (é o relógio do SLA);
+       (4) o corpo do PATCH NUNCA leva "" — campo vazio é omitido;
+       (5) data de próxima ação ao MEIO-DIA UTC, para o dia não escorregar no
+           fuso brasileiro; e as faixas de urgência vencida/hoje/futura.
+       ========================================================================= */
+    window.IDX.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      // ---- (1) e (2) o que é (e o que não é) um movimento ----
+      ok(exigeMotivoPerda("Perdido") === true,
+        "'Perdido' tem de exigir motivo (mini-modal antes de gravar)");
+      ok(exigeMotivoPerda("Ganho") === false && exigeMotivoPerda("Lead Novo") === false,
+        "só 'Perdido' exige motivo — as demais etapas movem por arrasto direto");
+      ok(movimentoNulo("Ganho", "Ganho") === true,
+        "arrastar para a MESMA coluna não é movimento (não pode gerar PATCH)");
+      ok(movimentoNulo("Ganho", "") === true && movimentoNulo("Ganho", null) === true &&
+         movimentoNulo("Ganho", undefined) === true,
+        "soltar na coluna sintética '(sem etapa)' não é movimento — ela não é destino válido");
+      ok(movimentoNulo("Lead Novo", "Qualificado") === false,
+        "mudança real de etapa TEM de ser reconhecida como movimento");
+
+      // ---- (3) e (4) o corpo do PATCH ----
+      const antes = Date.now();
+      const body = corpoMovimento("Qualificado", null);
+      const carimbo = new Date(body.Data_Entrada_Etapa).getTime();
+      ok(body.Etapa_Pipeline === "Qualificado",
+        "o corpo leva a etapa de destino");
+      ok(!isNaN(carimbo) && carimbo >= antes - 1000 && carimbo <= Date.now() + 1000,
+        "todo movimento recarimba Data_Entrada_Etapa com AGORA (é o relógio do SLA do pipeline)");
+      const comExtras = corpoMovimento("Perdido", { Motivo_Perda: "Preço", Concorrente: "", Observacoes: null, Outro: undefined });
+      ok(comExtras.Motivo_Perda === "Preço",
+        "campo extra preenchido entra no corpo");
+      ok(!("Concorrente" in comExtras) && !("Observacoes" in comExtras) && !("Outro" in comExtras),
+        "campo extra vazio/nulo é OMITIDO — o corpo nunca pode gravar \"\" por cima do servidor");
+      ok(Object.values(comExtras).every(v => v !== "" && v != null),
+        "nenhum valor \"\" ou nulo pode sobrar no corpo do PATCH");
+      ok(Object.keys(corpoMovimento("Ganho", {})).length === 2,
+        "sem extras o PATCH é mínimo: só etapa + carimbo do SLA");
+
+      // ---- (5) datas ----
+      ok(opDataInput("2026-08-04T12:00:00Z") === "2026-08-04",
+        "opDataInput: o dia gravado ao meio-dia UTC é exibido como o MESMO dia");
+      ok(opDataInput("2026-08-04T00:00:00Z") === "2026-08-04",
+        "opDataInput: campo DateOnly (00:00Z) também devolve o dia certo");
+      ok(opDataInput("") === "" && opDataInput(null) === "" && opDataInput("lixo") === "",
+        "opDataInput: sem data (ou data ilegível) devolve '' — nunca 'Invalid Date'");
+
+      const dia = (n) => { const d = new Date(); d.setDate(d.getDate() + n);
+        const p = (x) => String(x).padStart(2, "0");
+        return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T12:00:00Z"; };
+      ok(classeDataAcao(dia(-1)) === "vencida",
+        "próxima ação de ontem tem de aparecer como VENCIDA");
+      ok(classeDataAcao(dia(0)) === "hoje",
+        "próxima ação de hoje tem de aparecer como HOJE (não vencida)");
+      ok(classeDataAcao(dia(1)) === "",
+        "próxima ação futura não pode ser marcada como urgente");
+      ok(classeDataAcao("") === "" && classeDataAcao(null) === "" && classeDataAcao("lixo") === "",
+        "sem data não há urgência — e data ilegível não pode virar 'vencida'");
+
+      // ---- etapas fechadas: só elas dispensam próxima ação ----
+      ok(ETAPAS_FECHADAS.length === 2 && ETAPAS_FECHADAS.indexOf("Ganho") >= 0 && ETAPAS_FECHADAS.indexOf("Perdido") >= 0,
+        "as etapas FECHADAS são exatamente Ganho e Perdido (só elas dispensam próxima ação)");
+      ok(ETAPAS_FECHADAS.indexOf("Lead Novo") === -1,
+        "nenhuma etapa ativa pode ser tratada como fechada (senão o 'sem próxima ação' some do card)");
+
+      // ---- escape de HTML nos cards (dado do cliente nunca vira markup) ----
+      ok(esc("<img src=x onerror=alert(1)>").indexOf("<") === -1 && esc(null) === "",
+        "esc: conteúdo vindo do servidor é escapado antes de virar card");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("IDX.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
     };
 
     boot().catch(e => setStatus("Erro ao iniciar (MSAL): " + e.message, "err"));

@@ -642,6 +642,189 @@
       renderDossie
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — RELOS.assertRegras().
+       Esta é a RECONSTRUÇÃO EM ARQUIVO da suíte que a homologação citava como
+       "27+14" e que só existiu no console (perdida). O número real e
+       reproduzível é o que este arquivo devolve em .total.
+
+       Regras protegidas:
+       (1) a tela é SOMENTE LEITURA — provado estática e dinamicamente;
+       (2) tolerância POR SEÇÃO: uma lista indisponível degrada só a própria
+           seção, nunca o dossiê inteiro;
+       (3) resposta VIGENTE por pergunta = maior Timestamp (empate: maior id);
+       (4) o vínculo de diárias é TEXTUAL (Diaria_Tecnico não tem lookup de OS);
+       (5) ausência de dado vira "—", nunca 0.
+       ========================================================================= */
+    window.RELOS.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+
+      /* ---------- (1a) prova ESTÁTICA de somente-leitura ----------
+         Nomes montados por concatenação para a varredura não acusar a si mesma. */
+      const fonte = Array.prototype.slice.call(document.querySelectorAll("script:not([src])"))
+        .map(s => s.textContent).join("\n");
+      ok(fonte.length > 1000, "varredura: não foi possível ler o próprio <script> da página (prova estática inválida)");
+      const escritores = ["patch" + "ItemFields", "create" + "Item", "gpo" + "st", "gpa" + "tch"];
+      escritores.forEach(nome => {
+        ok(!(new RegExp("EG\\s*\\.\\s*" + nome + "\\s*\\(").test(fonte)),
+          "somente-leitura: apareceu uma chamada de escrita EG." + nome + "() nesta tela");
+      });
+      ok(!(new RegExp("method\\s*:\\s*[\"'](POST|PUT|PATCH|DELETE)", "i").test(fonte)),
+        "somente-leitura: apareceu um fetch com método de escrita nesta tela");
+      ok(!(new RegExp("\\bfet" + "ch\\s*\\(").test(fonte)),
+        "somente-leitura: esta tela não pode chamar a API de rede diretamente");
+      ok(document.querySelectorAll("form").length === 0,
+        "somente-leitura: esta tela não pode ter <form>");
+
+      /* ---------- (1b) prova DINÂMICA: sentinelas durante o dossiê inteiro ---------- */
+      const originais = {}; const tentativas = [];
+      escritores.forEach(nome => {
+        originais[nome] = EG[nome];
+        EG[nome] = function () { tentativas.push(nome); return Promise.reject(new Error("escrita proibida nesta tela")); };
+      });
+      const mod = (itens) => ({ ok: true, itens: itens || [] });
+      try {
+        RELOS.setDadosTeste({
+          os: mod([{ id: "1", fields: { Title: "OS-100", Status: "Concluída", ClienteLookupId: 3, ValorOS: 1000 } }]),
+          clientes: mod([{ id: "3", fields: { Title: "Cliente X" } }]),
+          tecnicos: mod([{ id: "5", fields: { Title: "Téc A" } }]),
+          locais: mod([]), equipe: mod([]), aloc: mod([]),
+          respostas: mod([{ id: "90", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T10:00:00Z", Resposta_Dada: "Não", Gerou_NC: true } }]),
+          perguntas: mod([{ id: "7", fields: { Ativo: true, Texto_Pergunta: "Aterramento OK?", Fase_Execucao: "Pré-Execução" } }]),
+          nc: mod([]), medItens: mod([]), medLotes: mod([]),
+          docs: mod([]), docVers: mod([]), diarias: mod([])
+        }, [{ name: "Garantia_Meses", displayName: "Garantia (meses)" }]);
+        renderDossie("1");
+        ok(tentativas.length === 0,
+          "DEFEITO GRAVE: renderizar o dossiê tentou GRAVAR (" + tentativas.join(", ") + ") — a tela é somente leitura");
+        ok(document.getElementById("dossie").innerHTML.length > 0,
+          "o dossiê deveria ter renderizado com os dados falsos (a prova dinâmica só vale se algo foi renderizado)");
+        renderDossie("999");
+        ok(document.getElementById("dossie").innerHTML === "",
+          "OS inexistente deve limpar o dossiê, não renderizar dados de outra OS");
+      } finally {
+        escritores.forEach(nome => { EG[nome] = originais[nome]; });
+      }
+
+      /* ---------- (2) tolerância por seção ---------- */
+      const s1 = resolverSecao({ ok: true, itens: [1, 2] });
+      ok(s1.estado === "ok" && s1.itens.length === 2, "resolverSecao: módulo carregado devolve os itens");
+      const s2 = resolverSecao({ ok: false, erro: "404 lista inexistente" });
+      ok(s2.estado === "indisponivel" && s2.motivo === "404 lista inexistente",
+        "resolverSecao: lista indisponível degrada SÓ a seção, com o motivo à vista");
+      ok(resolverSecao(null).estado === "indisponivel" && resolverSecao(undefined).estado === "indisponivel",
+        "resolverSecao: módulo ausente não pode derrubar o dossiê");
+
+      /* ---------- junções entre listas ---------- */
+      const itens = [{ id: "1", fields: { OSLookupId: 5 } }, { id: "2", fields: { OSLookupId: "5" } }, { id: "3", fields: { OSLookupId: 6 } }];
+      ok(porOS(itens, "OSLookupId", 5).length === 2 && porOS(itens, "OSLookupId", "5").length === 2,
+        "porOS: a junção compara como STRING (lookup numérico e textual têm de casar)");
+      ok(porOS(itens, "OSLookupId", null).length === 0 && porOS(null, "OSLookupId", 5).length === 0,
+        "porOS: sem OS ou sem lista devolve vazio, não tudo");
+
+      /* ---------- fases do checklist ---------- */
+      ok(faseDe({ Fase_Execucao: "Pré-Execução" }) === "Pré-Execução" &&
+         faseDe({ Fase_Execucao: "pre-execucao" }) === "Pré-Execução" &&
+         faseDe({ Fase_Execucao: "POS execucao" }) === "Pós-Execução",
+        "faseDe: reconhece a fase sem depender de acento/caixa");
+      ok(faseDe({}) === "Execução" && faseDe({ Fase_Execucao: "coisa nova" }) === "Execução",
+        "faseDe: fase desconhecida cai em 'Execução' (default), não some do checklist");
+
+      /* ---------- (3) resposta vigente ---------- */
+      const resp = [
+        { id: "1", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T10:00:00Z", Resposta_Dada: "Sim" } },
+        { id: "2", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T12:00:00Z", Resposta_Dada: "Não" } },
+        { id: "3", fields: { OSLookupId: 2, Pergunta_ID: "7", Timestamp: "2026-08-09T12:00:00Z", Resposta_Dada: "Outra OS" } }
+      ];
+      const vig = vigentesPorPergunta(resp, 1);
+      ok(vig["7"] && vig["7"].id === "2",
+        "vigente: vale a resposta de maior Timestamp (a correção substitui a anterior)");
+      const empate = vigentesPorPergunta([
+        { id: "10", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T10:00:00Z" } },
+        { id: "11", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T10:00:00Z" } }
+      ], 1);
+      ok(empate["7"] && empate["7"].id === "11",
+        "vigente: empate de Timestamp é desempatado pelo maior id (determinístico, sem sorteio)");
+      ok(Object.keys(vigentesPorPergunta(resp, 1)).length === 1,
+        "vigente: resposta de OUTRA OS não pode entrar no dossiê desta");
+
+      /* ---------- progresso e NC ---------- */
+      const perg = [
+        { id: "7", fields: { Ativo: true, Texto_Pergunta: "P1", Fase_Execucao: "Pré-Execução" } },
+        { id: "8", fields: { Ativo: true, Texto_Pergunta: "P2", Fase_Execucao: "Execução" } },
+        { id: "9", fields: { Ativo: false, Texto_Pergunta: "P3 aposentada", Fase_Execucao: "Execução" } }
+      ];
+      const pr = progressoChecklist(perg, resp, 1);
+      ok(pr.totalAtivas === 2,
+        "checklist: pergunta INATIVA não entra no denominador do progresso");
+      ok(pr.fases[0].total === 1 && pr.fases[0].respondidas === 1 && pr.fases[1].respondidas === 0,
+        "checklist: o progresso é contado por fase");
+      const prNc = progressoChecklist(perg, [
+        { id: "20", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T10:00:00Z", Gerou_NC: true, Alerta_Parametro: true } }
+      ], 1);
+      ok(prNc.ncs.length === 1 && prNc.ncs[0].pergunta === "P1" && prNc.ncs[0].alertaParametro === true,
+        "NC: a não conformidade sai da resposta VIGENTE, com o texto da pergunta resolvido");
+      ok(progressoChecklist(perg, [
+        { id: "21", fields: { OSLookupId: 1, Pergunta_ID: "7", Timestamp: "2026-08-01T10:00:00Z", Gerou_NC: false } }
+      ], 1).ncs.length === 0, "NC: só Gerou_NC === true vira não conformidade (nem null, nem 'false' texto)");
+
+      /* ---------- documentos: ponteiro x histórico ---------- */
+      const vmap = versoesPorDocumento([
+        { id: "1", fields: { DocumentoLookupId: 100, Numero_Versao: 1, Hash_SHA256: "abcdef0123456789xyz" } },
+        { id: "2", fields: { DocumentoLookupId: 100, Numero_Versao: 3, Hash_SHA256: "ffff" } },
+        { id: "3", fields: { DocumentoLookupId: 100, Numero_Versao: 2 } }
+      ]);
+      ok(vmap["100"].length === 3 && num((vmap["100"][0].fields || {}).Numero_Versao) === 3,
+        "versões: ordenadas da mais nova para a mais antiga");
+      const rd = resumoDocumento({ id: "100", fields: { Titulo: "Laudo", Versao_Atual: 1 } }, vmap);
+      ok(rd.maxHist === 3 && rd.vAtual === 1 && rd.divergente === true,
+        "documento: ponteiro Versao_Atual atrás do histórico é DENUNCIADO (divergente), não corrigido em silêncio");
+      ok(rd.hashAtual === "abcdef0123456789xyz",
+        "documento: o hash exibido é o da versão APONTADA, não o da mais recente");
+      const rdOk = resumoDocumento({ id: "100", fields: { Titulo: "Laudo", Versao_Atual: 3 } }, vmap);
+      ok(rdOk.divergente === false, "documento: ponteiro na ponta do histórico não é divergência");
+      ok(resumoDocumento({ id: "999", fields: {} }, vmap).maxHist === null &&
+         resumoDocumento({ id: "999", fields: {} }, vmap).nVersoes === 0,
+        "documento sem histórico não inventa versão (maxHist null)");
+      ok(shaCurto("abcdef0123456789abcdef") === "abcdef012345…" && shaCurto("") === null && shaCurto(null) === null,
+        "shaCurto: 12 caracteres + reticência; vazio devolve null (não '…')");
+
+      /* ---------- (4) diárias: vínculo TEXTUAL declarado ---------- */
+      const di = [
+        { id: "1", fields: { OS_Lista: "OS-100, OS-200" } },
+        { id: "2", fields: { OS_Lista: "OS-300\nOS-100" } },
+        { id: "3", fields: { OS_Lista: "OS-1000" } },
+        { id: "4", fields: { OS_Lista: "os-100" } }
+      ];
+      ok(diariasDaOS(di, "OS-100").length === 3,
+        "diárias: casa por TOKEN em OS_Lista (vírgula e quebra de linha), sem caixa");
+      ok(!diariasDaOS(di, "OS-100").some(d => d.id === "3"),
+        "diárias: 'OS-1000' NÃO pode casar com 'OS-100' (o match é por token inteiro, não substring)");
+      ok(diariasDaOS(di, "").length === 0 && diariasDaOS(di, null).length === 0,
+        "diárias: OS sem Title não pode arrastar todas as diárias para o dossiê");
+
+      /* ---------- parâmetro de garantia descoberto por coluna ---------- */
+      ok(campoGarantia([{ name: "Garantia_Meses" }]) !== null &&
+         campoGarantia([{ name: "Outro", displayName: "Prazo de garantia" }]) !== null &&
+         campoGarantia([{ name: "Outro" }]) === null,
+        "garantia: a coluna é descoberta por nome interno OU de exibição; sem ela a seção declara ausência");
+
+      /* ---------- (5) ausência nunca vira zero ---------- */
+      ok(celNum(null) === "—" && celNum("") === "—" && celNum("abc") === "—" && celNum(0) === "0",
+        "celNum: vazio/ilegível vira '—'; zero de verdade continua 0");
+      ok(celBRL(null) === "—" && celTx("") === "—" && celTx("   ") === "—",
+        "célula de dinheiro/texto vazia vira '—', nunca 'R$ 0,00' nem string vazia");
+      ok(temTexto("  x ") === true && temTexto("   ") === false && ehNum("3") === true && ehNum("") === false,
+        "temTexto/ehNum: espaço em branco não é conteúdo e string vazia não é número");
+      ok(normalizar(" Não Conformidade ") === "nao conformidade",
+        "normalizar: sem acento, sem caixa, sem espaço nas pontas");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("RELOS.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>

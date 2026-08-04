@@ -506,6 +506,33 @@
       return vals;
     }
 
+    /* Corpo do POST de CRIAÇÃO — função PURA (extraída de salvar() para poder
+       ser asserida sem rede). Só entram chaves COM valor: branco NÃO vira ""
+       (padrão nova-proposta) — gravar "" cria dado falso "preenchido e vazio". */
+    function montarPayloadCriacao(vals) {
+      const payload = {};
+      CAMPOS_DADOS.forEach(c => {
+        const v = vals[c.n];
+        if (v === "") return;
+        payload[c.n] = c.tipo === "date" ? inputParaIso(v) : v;
+      });
+      return payload;
+    }
+
+    /* Corpo do PATCH de EDIÇÃO — função PURA. Dirty tracking: só o que mudou
+       em relação ao snapshot. Campo esvaziado de propósito vai como null
+       (limpa no SharePoint) — exceção CONSCIENTE à regra "não gravar vazio por
+       cima": aqui o vazio é decisão da pessoa, e só campos ALTERADOS entram. */
+    function montarPatchEdicao(vals, snap) {
+      const mudados = {};
+      CAMPOS_DADOS.forEach(c => {
+        const v = vals[c.n];
+        if (v === (snap ? snap[c.n] : "")) return;
+        mudados[c.n] = v === "" ? null : (c.tipo === "date" ? inputParaIso(v) : v);
+      });
+      return mudados;
+    }
+
     async function salvar(item) {
       if (gravando) return;
       const vals = validarForm();
@@ -518,27 +545,12 @@
 
         let id;
         if (!item) {
-          // CRIAÇÃO — só entram chaves COM valor; branco não vira "" (padrão nova-proposta)
-          const payload = {};
-          CAMPOS_DADOS.forEach(c => {
-            const v = vals[c.n];
-            if (v === "") return;
-            payload[c.n] = c.tipo === "date" ? inputParaIso(v) : v;
-          });
+          const payload = montarPayloadCriacao(vals);
           const novo = await EG.createItem("Clientes", payload);
           id = novo && novo.id;
           if (!id) throw new Error("o Graph não devolveu o id do item criado");
         } else {
-          // EDIÇÃO — dirty tracking: PATCH apenas do que mudou vs snapshot.
-          // Campo esvaziado de propósito vai como null (limpa no SharePoint) —
-          // exceção consciente à regra "não gravar vazio por cima": aqui o
-          // vazio é decisão da pessoa, e só campos ALTERADOS entram no PATCH.
-          const mudados = {};
-          CAMPOS_DADOS.forEach(c => {
-            const v = vals[c.n];
-            if (v === (snapshot ? snapshot[c.n] : "")) return;
-            mudados[c.n] = v === "" ? null : (c.tipo === "date" ? inputParaIso(v) : v);
-          });
+          const mudados = montarPatchEdicao(vals, snapshot);
           if (!Object.keys(mudados).length) {
             msg.textContent = "Nada foi alterado.";
             return;
@@ -567,7 +579,107 @@
     /* Exposto para teste manual no console, sem login (mesma ideia do inbound):
        CLI.validarCNPJ("12.ABC.345/01DE-35") etc. */
     window.CLI = { validarCPF, validarCNPJ, calcDVCNPJ, soDigitos, soAlnum,
-                   mascaraCPF, mascaraCNPJ, validarDocumento, isoParaInput, inputParaIso };
+                   mascaraCPF, mascaraCNPJ, validarDocumento, isoParaInput, inputParaIso,
+                   montarPayloadCriacao, montarPatchEdicao, CAMPOS_DADOS };
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — CLI.assertRegras(). Regras protegidas:
+       (1) o POST de CRIAÇÃO nunca leva "" — campo em branco é OMITIDO (gravar
+           "" cria dado falso "preenchido e vazio");
+       (2) o PATCH de EDIÇÃO leva SÓ o que mudou, e o campo esvaziado de
+           propósito vai como null — exceção consciente, testada aqui;
+       (3) o documento é NORMALIZADO com máscara e validado por dígito
+           verificador (CPF e CNPJ, inclusive o alfanumérico da RFB 2026);
+       (4) documento em branco é PERMITIDO (o campo é opcional) e não vai no POST.
+       Documentos de validade conhecida e independente desta implementação:
+       CPF 529.982.247-25, CNPJ clássico 11.222.333/0001-81 e o exemplo oficial
+       da Receita Federal 12.ABC.345/01DE-35.
+       ========================================================================= */
+    window.CLI.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      // "vals" tem o formato que validarForm() devolve: TODAS as chaves, strings
+      const vals = (extra) => { const v = {}; CAMPOS_DADOS.forEach(c => { v[c.n] = ""; });
+        return Object.assign(v, extra || {}); };
+
+      // ---- (1) criação nunca grava "" ----
+      const pay = montarPayloadCriacao(vals({ Title: "Metalúrgica Aurora Ltda" }));
+      ok(Object.keys(pay).length === 1 && pay.Title === "Metalúrgica Aurora Ltda",
+        "criação: só o campo preenchido entra no POST (vieram " + Object.keys(pay).length + " chaves)");
+      ok(Object.values(pay).every(v => v !== ""),
+        "criação: NENHUMA chave pode ir com \"\" no POST");
+      ok(!("CNPJ_CPF" in pay) && !("Email" in pay) && !("Observacoes" in pay),
+        "criação: campo em branco é OMITIDO, não enviado vazio");
+      // a data é gravada ao MEIO-DIA LOCAL: o que importa é a ida e volta não
+      // escorregar de dia (o ISO em si varia com o fuso da máquina)
+      const payData = montarPayloadCriacao(vals({ Title: "X", Data_Ultima_Compra: "2026-08-04" }));
+      ok(isoParaInput(payData.Data_Ultima_Compra) === "2026-08-04",
+        "criação: ida e volta da data (grava -> relê) tem de devolver o MESMO dia, sem escorregar no fuso");
+
+      // ---- (2) edição: só o alterado, e vazio vira null ----
+      // o snapshot real é montado sobre TODOS os campos (abrirForm), com "" no
+      // que está vazio — reproduzir isso é o que torna o teste fiel à tela
+      const snap = vals({ Title: "Antigo", Email: "a@b.com" });
+      const patch = montarPatchEdicao(vals({ Title: "Novo", Email: "a@b.com" }), snap);
+      ok(patch.Title === "Novo" && !("Email" in patch),
+        "edição: só o campo ALTERADO entra no PATCH (campo igual ao snapshot é descartado)");
+      const limpa = montarPatchEdicao(vals({ Title: "Antigo", Email: "" }), snap);
+      ok(limpa.Email === null && !("Title" in limpa),
+        "edição: campo esvaziado DE PROPÓSITO vai como null (limpa de verdade), nunca \"\"");
+      ok(Object.values(montarPatchEdicao(vals({ Title: "Antigo" }), snap)).every(v => v !== ""),
+        "edição: o PATCH nunca pode carregar \"\" em campo nenhum");
+      ok(Object.keys(montarPatchEdicao(vals({ Title: "Antigo", Email: "a@b.com" }), snap)).length === 0,
+        "edição: nada alterado gera PATCH vazio (a tela diz 'Nada foi alterado')");
+
+      // ---- (3) documento: DV + normalização com máscara ----
+      ok(validarCPF("529.982.247-25") === true && validarCPF("529.982.247-24") === false &&
+         validarCPF("111.111.111-11") === false,
+        "CPF: DV confere, DV trocado e dígito repetido são recusados");
+      ok(validarCNPJ("11.222.333/0001-81") === true && validarCNPJ("11222333000180") === false,
+        "CNPJ numérico clássico: DV confere e DV trocado é recusado");
+      ok(validarCNPJ("12.ABC.345/01DE-35") === true && validarCNPJ("12.ABC.345/01DE-34") === false,
+        "CNPJ ALFANUMÉRICO (RFB 2026): exemplo oficial passa e DV trocado é recusado");
+      ok(validarCNPJ("12ABC34501DEA5") === false,
+        "CNPJ: os 2 dígitos verificadores têm de ser numéricos");
+      ok(calcDVCNPJ("112223330001") === "81" && calcDVCNPJ("12ABC34501DE") === "35",
+        "calcDVCNPJ: DVs corretos nos dois formatos");
+
+      const dPF = validarDocumento("52998224725", "Pessoa Física");
+      ok(dPF.ok === true && dPF.valor === "529.982.247-25",
+        "documento: CPF é NORMALIZADO com máscara antes de gravar");
+      const dPJ = validarDocumento("12abc34501de35", "Pessoa Jurídica");
+      ok(dPJ.ok === true && dPJ.valor === "12.ABC.345/01DE-35",
+        "documento: CNPJ alfanumérico é normalizado em maiúsculas e mascarado");
+      ok(validarDocumento("12345678900", "Pessoa Física").ok === false,
+        "documento: CPF inválido é RECUSADO com mensagem (não normalizado à força)");
+      // sem tipo escolhido, o formato decide
+      ok(validarDocumento("52998224725", "").valor === "529.982.247-25" &&
+         validarDocumento("11222333000181", "").valor === "11.222.333/0001-81",
+        "documento: sem tipo de pessoa, 11 dígitos = CPF e 14 caracteres = CNPJ");
+      ok(validarDocumento("123", "").ok === false,
+        "documento: comprimento que não é nem CPF nem CNPJ é recusado, não adivinhado");
+
+      // ---- (4) documento em branco é permitido e não vai no POST ----
+      const vazio = validarDocumento("", "Pessoa Jurídica");
+      ok(vazio.ok === true && vazio.valor === "",
+        "documento: em branco é PERMITIDO (o campo é opcional)");
+      ok(!("CNPJ_CPF" in montarPayloadCriacao(vals({ Title: "X", CNPJ_CPF: vazio.valor }))),
+        "documento em branco não pode virar \"\" no POST — a chave tem de sumir do corpo");
+
+      // ---- máscaras e datas ----
+      ok(mascaraCPF("52998224725") === "529.982.247-25" && mascaraCPF("529") === "529",
+        "mascaraCPF: formata progressivamente, sem travar a digitação");
+      ok(mascaraCNPJ("12abc34501de35") === "12.ABC.345/01DE-35",
+        "mascaraCNPJ: preserva letras nos 12 primeiros e formata");
+      ok(isoParaInput("2026-08-04T00:00:00Z") === "2026-08-04" && isoParaInput(null) === "",
+        "isoParaInput: data-pura não escorrega de dia; sem data devolve ''");
+      ok(inputParaIso("") === null,
+        "inputParaIso: input de data vazio vira null (não string vazia)");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("CLI.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>

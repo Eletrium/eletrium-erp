@@ -860,6 +860,98 @@
       }
     }
 
+    /* Exposto para exercitar as regras sem login (a tela não tinha global). */
+    window.PROP = { dataChave, hojeChave, ehAtiva, ETAPAS_FINAIS, normOrig, paraGraph,
+                    CAMPOS_EDIT, toDateInput, blocoEdicao, shaCurto };
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12) — PROP.assertRegras(). Regras protegidas:
+       (1) Etapa_Pipeline NÃO é editável nesta tela — ela muda pelo Kanban, que
+           recarimba Data_Entrada_Etapa junto; editar aqui DESSINCRONIZARIA o
+           SLA. Esta é a asserção mais importante do arquivo;
+       (2) o dirty tracking compara STRINGS normalizadas, e campo apagado de
+           propósito vira null (nunca "");
+       (3) data gravada ao MEIO-DIA UTC (meia-noite UTC exibiria o dia anterior
+           em Brasília);
+       (4) Motivo_Perda/Concorrente só existem no DOM quando a etapa é Perdido;
+       (5) proposta ATIVA sem próxima ação é cobrada; Ganho/Perdido não.
+       NÃO coberto aqui (exige login/rede e o ledger de ofertas): o veredito de
+       aceite×hash congelado — declarado no relatório.
+       ========================================================================= */
+    window.PROP.assertRegras = function () {
+      const falhas = []; let total = 0;
+      const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
+      const campos = CAMPOS_EDIT.map(c => c.campo);
+
+      // ---- (1) a etapa NÃO se edita aqui ----
+      ok(campos.indexOf("Etapa_Pipeline") === -1,
+        "DEFEITO GRAVE: Etapa_Pipeline virou editável nesta tela — ela muda pelo Kanban, que recarimba o Data_Entrada_Etapa junto (editar aqui dessincroniza o SLA)");
+      ok(campos.indexOf("Data_Entrada_Etapa") === -1,
+        "o relógio do SLA (Data_Entrada_Etapa) não pode ser editado à mão");
+      ok(campos.join() === "Responsavel_Principal,Proxima_Acao,Data_Proxima_Acao,Motivo_Perda,Concorrente",
+        "o conjunto editável desta tela é fechado e conhecido (veio: " + campos.join() + ")");
+      ok(CAMPOS_EDIT.every(c => c.campo && c.el && c.tipo),
+        "todo campo editável declara campo + elemento + tipo (senão o dirty tracking não sabe converter)");
+
+      // ---- (2) dirty tracking e limpeza intencional ----
+      ok(paraGraph("texto", "") === null && paraGraph("data", "") === null && paraGraph("choice", "") === null,
+        "campo APAGADO de propósito vira null (limpa no servidor) — nunca \"\"");
+      ok(paraGraph("texto", "Fulano") === "Fulano" && paraGraph("choice", "Preço") === "Preço",
+        "valor preenchido passa intacto");
+      ok(normOrig("texto", null) === "" && normOrig("texto", undefined) === "" && normOrig("choice", null) === "",
+        "normOrig: valor ausente no servidor vira '' para comparar com o input vazio (senão tudo pareceria alterado)");
+      ok(normOrig("texto", 123) === "123",
+        "normOrig: compara sempre como string (número do servidor não pode parecer alteração)");
+      ok(normOrig("data", "2026-08-04T12:00:00Z") === "2026-08-04",
+        "normOrig: a data do servidor é normalizada para a forma do input date");
+
+      // ---- (3) meio-dia UTC ----
+      ok(paraGraph("data", "2026-08-04") === "2026-08-04T12:00:00Z",
+        "data é gravada ao MEIO-DIA UTC (meia-noite UTC exibiria o dia anterior em Brasília)");
+      ok(toDateInput("2026-08-04T12:00:00Z") === "2026-08-04" && toDateInput("2026-08-04T00:00:00Z") === "2026-08-04",
+        "toDateInput: nem o valor gravado por esta tela nem um DateOnly podem escorregar de dia");
+      ok(toDateInput("") === "" && toDateInput(null) === "" && toDateInput("lixo") === "",
+        "toDateInput: sem data (ou data ilegível) devolve '' — nunca 'Invalid Date'");
+      // ida e volta: gravar e reler tem de dar o MESMO dia
+      ok(toDateInput(paraGraph("data", "2026-08-04")) === "2026-08-04",
+        "ida e volta da data (grava -> relê) tem de devolver exatamente o mesmo dia");
+
+      // ---- (4) campos de perda só quando Perdido ----
+      const bPerdido = blocoEdicao({ Etapa_Pipeline: "Perdido" });
+      const bAtiva = blocoEdicao({ Etapa_Pipeline: "Qualificado" });
+      ok(bPerdido.indexOf("pMotivoPerda") >= 0 && bPerdido.indexOf("pConcorrente") >= 0,
+        "etapa Perdido tem de oferecer Motivo da perda e Concorrente");
+      ok(bAtiva.indexOf("pMotivoPerda") === -1 && bAtiva.indexOf("pConcorrente") === -1,
+        "etapa ativa NÃO pode oferecer motivo de perda (campo sem sentido vira dado sujo)");
+      ok(bAtiva.indexOf("pResponsavel") >= 0 && bAtiva.indexOf("pDataProxima") >= 0,
+        "os campos de operação existem em qualquer etapa");
+
+      // ---- (5) ativa x final ----
+      ok(ETAPAS_FINAIS.join() === "Ganho,Perdido",
+        "as etapas FINAIS são exatamente Ganho e Perdido");
+      ok(ehAtiva({ Etapa_Pipeline: "Qualificado" }) === true && ehAtiva({ Etapa_Pipeline: "Lead Novo" }) === true,
+        "proposta em etapa de trabalho é ATIVA (e por isso é cobrada por próxima ação)");
+      ok(ehAtiva({ Etapa_Pipeline: "Ganho" }) === false && ehAtiva({ Etapa_Pipeline: "Perdido" }) === false,
+        "proposta em desfecho NÃO é cobrada por próxima ação");
+      ok(ehAtiva({}) === true,
+        "proposta SEM etapa conta como ativa (na dúvida, cobra-se — some do funil é pior)");
+
+      // ---- chaves de dia (comparação de urgência) ----
+      ok(dataChave("2026-08-04T00:00:00Z") === "2026-08-04" && dataChave("2026-08-04T12:00:00Z") === "2026-08-04",
+        "dataChave: DateOnly e data ao meio-dia caem no MESMO dia");
+      ok(dataChave("") === "" && dataChave(null) === "" && dataChave("lixo") === "",
+        "dataChave: sem data devolve '' (e '' nunca é menor que hoje por acidente na comparação)");
+      ok(/^\d{4}-\d{2}-\d{2}$/.test(hojeChave()) && dataChave("1999-01-01T12:00:00Z") < hojeChave(),
+        "hojeChave: formato comparável por string, com o passado ficando menor que hoje");
+
+      ok(shaCurto("0123456789abcdef0123").indexOf("…") > 0 && !shaCurto("") && !shaCurto(null),
+        "shaCurto: hash ausente não pode virar um '…' solto na tela (vazio é vazio)");
+
+      const r = { ok: falhas.length === 0, total, falhas };
+      console.log("PROP.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>
