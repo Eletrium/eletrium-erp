@@ -45,6 +45,73 @@
         ficam disabled mas NUNCA são removidas (o modelo completo permanece
         visível).
 
+    ------------------------------------------------------------------------
+    MAPA DE DONO DOS PONTEIROS — versão PUBLICADA ≠ versão MAIS RECENTE
+    (campo Versao_Publicada criado via PnP em 04/08/2026)
+    ------------------------------------------------------------------------
+    O modelo original tinha UM ponteiro só. Quando um documento Publicado
+    ganhava uma revisão em rascunho, Versao_Atual andava para a revisão e o
+    sistema PERDIA qual versão estava de fato publicada — justamente a que
+    vale para cliente e auditoria. Agora são dois ponteiros com donos
+    distintos:
+
+      Versao_Atual      (OS_Documentos, Number)
+        = versão MAIS RECENTE do documento, em QUALQUER estado.
+        DONO: a criação de versão. Anda a cada "Nova revisão", logo depois
+        que a linha nova já existe no ledger (PATCH mínimo).
+        Fonte de verdade da numeração continua sendo o HISTÓRICO (max
+        Numero_Versao); divergência ponteiro x histórico é DENUNCIADA
+        (badge/faixa AMARELA "≠ histórico") e nunca corrigida em silêncio.
+
+      Versao_Publicada  (OS_Documentos, Number)
+        = versão que está publicada AGORA. Vazio = nada publicado agora.
+        DONO: a transição de estado, e SÓ ela. Recebe valor quando o
+        documento ENTRA em "Publicado" — e recebe o MAX DO HISTÓRICO
+        daquele momento, não Versao_Atual: se o ponteiro estiver quebrado,
+        publica-se a versão que realmente existe (o alerta do ponteiro
+        segue aceso à parte). Nenhuma outra escrita da tela toca este
+        campo: criar revisão NÃO republica.
+
+      Estado_Na_Epoca   (OS_Documentos_Versoes, Text)
+        DECISÃO 04/08/2026: MANTIDO como carimbo de NASCIMENTO da versão
+        (estado do documento no instante em que a linha foi criada) e
+        NUNCA reescrito — reescrevê-lo a cada transição violaria o
+        append-only que sustenta o ledger inteiro, e o ganho seria zero
+        agora que Versao_Publicada responde "qual versão está publicada"
+        no lugar certo (no DOCUMENTO, onde o estado vive). O único ajuste
+        foi de LEITURA: a tela rotula o campo como "estado do documento
+        quando esta versão nasceu", para que ninguém leia
+        "Estado_Na_Epoca: Publicado" como "esta é a versão publicada".
+
+    SAIR DE PUBLICADO LIMPA O PONTEIRO (Versao_Publicada = null explícito —
+      "" NUNCA é gravado no repo; esta é limpeza INTENCIONAL). Por quê:
+      o campo responde "o que está publicado AGORA"; manter o número
+      afirmaria a cliente/auditoria que a vN continua publicada quando ela
+      já não está. O HISTÓRICO NÃO É APAGADO: as versões seguem todas no
+      ledger, e a trilha em Observacoes registra publicação e despublicação
+      com o número da versão, a data, o autor e o motivo. Alternativa
+      rejeitada: manter o número como "última publicada" — seria um campo
+      com dois significados dependendo do estado, o mesmo tipo de ambiguidade
+      que este trabalho veio eliminar.
+
+    PUBLICAR EXIGE VERSÃO NO HISTÓRICO: entrar em "Publicado" com histórico
+      vazio é bloqueado — sem versão não existe "versão publicada", e o campo
+      não teria como ser preenchido com honestidade. É guarda, não correção
+      silenciosa.
+
+    REPUBLICAR A REVISÃO: com o documento já em Publicado, o select recusa
+      destino igual ao atual. O caminho para publicar a revisão nova é
+      Publicado → (outro estado, com motivo) → Publicado — a segunda entrada
+      reaponta Versao_Publicada para o max do histórico. A tela diz isso na
+      cara do usuário quando há revisão em andamento.
+
+    DOIS VISUAIS DISTINTOS, DE PROPÓSITO:
+      AMARELO ("≠ histórico" / faixa .diverge) = ERRO: ponteiro quebrado,
+        alguém precisa agir.
+      AZUL (.publinfo / badge "revisão em andamento") = INFORMAÇÃO: publicada
+        v2 · mais recente v3 é estado NORMAL e esperado de um documento em
+        revisão. Nunca usar o visual do erro para isto.
+
     LEGADA: Clientes_Documentos (biblioteca, 12 arquivos, Tipo_Documento em
       texto livre e Numero_Revisao MUTÁVEL no próprio item) foi apenas
       SURVEYADA — não é lida nem tocada por esta tela. O modelo novo substitui
@@ -74,7 +141,12 @@
     a.lnk:hover { text-decoration: underline; }
 
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
+    /* AMARELO = erro (ponteiro quebrado). Ver mapa de dono no cabeçalho. */
     .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    /* AZUL = informação (publicada ≠ mais recente é estado NORMAL de revisão).
+       Visual deliberadamente diferente do .diverge: não é defeito, é notícia. */
+    .publinfo { color: #79c0ff; font-size: .8rem; border: 1px solid #388bfd44; background: #388bfd12; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    .publinfo b { color: #a5d6ff; font-weight: 600; }
 
     /* histórico de versões (append-only) */
     .ver { border: 1px solid #30363d; border-radius: 8px; padding: 9px 12px; margin-top: 8px; }
@@ -82,6 +154,12 @@
     .ver .vs { color: #8b949e; font-size: .78rem; margin-top: 2px; line-height: 1.45; }
     .ver .sha { font-family: ui-monospace, monospace; font-size: .74rem; color: #8b949e; }
     .ver.atual { border-color: #1f6feb55; background: #1f6feb12; }
+    /* publicada ganha faixa lateral própria — some com "atual" na mesma linha
+       quando as duas coincidem (documento publicado sem revisão em andamento) */
+    .ver.publicada { border-left: 3px solid #58a6ff; }
+    .ver .tag { font-size: .72rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; margin-left: 6px; }
+    .ver .tag.t-atual { color: #8b949e; }
+    .ver .tag.t-pub { color: #58a6ff; }
 
     /* blocos de escrita do drawer (estado / nova revisão / novo documento) */
     .acao { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
@@ -141,7 +219,10 @@
 
     <table id="tbl" hidden>
       <thead><tr>
-        <th>OS</th><th>Tipo</th><th>Título</th><th>Estado</th><th>Versão atual</th><th>Responsável</th>
+        <th>OS</th><th>Tipo</th><th>Título</th><th>Estado</th>
+        <th title="Versao_Publicada — versão publicada AGORA (vazio = nada publicado agora)">Publicada</th>
+        <th title="Versao_Atual — versão mais recente do histórico, em qualquer estado">Mais recente</th>
+        <th>Responsável</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
@@ -265,6 +346,81 @@
       const vs = versoesPorDoc[docId] || [];
       return vs.length ? num((vs[0].fields || {}).Numero_Versao) : null;
     };
+    const numerosDoHistorico = (docId) =>
+      (versoesPorDoc[docId] || []).map(v => num((v.fields || {}).Numero_Versao));
+
+    /* ==================================================================
+       PUBLICADA x MAIS RECENTE — leitura pura do par de ponteiros.
+       Sem rede, sem DOM: é o núcleo testável da regra (window.DOCOS).
+       Distingue as DUAS situações que não podem ser confundidas:
+         ponteiroQuebrado      -> ERRO (amarelo): Versao_Atual ≠ max histórico
+         revisaoEmAndamento    -> INFO (azul): publicada < mais recente
+       ================================================================== */
+    function estadoVersoes(o) {
+      const f = (o && o.fields) || {};
+      const id = o && o.id;
+      const atual = f.Versao_Atual == null ? null : num(f.Versao_Atual);
+      const publicada = f.Versao_Publicada == null ? null : num(f.Versao_Publicada);
+      const maxH = maxVersaoHistorico(id);
+      const nums = numerosDoHistorico(id);
+      const estado = f.Estado_Documento || null;
+      return {
+        atual: atual, publicada: publicada, maxHistorico: maxH, estado: estado,
+        publicado: estado === "Publicado",
+        nuncaPublicada: publicada == null,
+        ponteiroQuebrado: maxH != null && atual != null && atual !== maxH,
+        // publicada < mais recente = revisão em andamento sobre um publicado:
+        // NORMAL, informativo. Nunca tratar como defeito.
+        revisaoEmAndamento: publicada != null && atual != null && publicada < atual,
+        // publicada apontando para versão que não existe no ledger: aí sim, erro.
+        publicadaForaDoHistorico: publicada != null && nums.indexOf(publicada) === -1
+      };
+    }
+
+    /* Payload PURO da transição de estado (sem rede, sem DOM) — é aqui que a
+       regra publicada×recente é decidida; mudarEstado só executa o resultado.
+       Devolve { erro, foco } OU { campos, trilha }. */
+    function camposTransicao(o, destino, motivo) {
+      const f = (o && o.fields) || {};
+      const atual = f.Estado_Documento || "Rascunho";
+      const mot = String(motivo || "").trim();
+      const ev = estadoVersoes(o);
+      // guardas em código, além do disabled do DOM — disabled é contornável
+      if (atual === ESTADO_TERMINAL) return { erro: "Obsoleto é terminal — a saída é bloqueada." };
+      if (!destino || destino === atual) return { erro: "Escolha um estado diferente do atual." };
+      if (atual === "Publicado" && !mot)
+        return { erro: "Sair de Publicado exige motivo (fica registrado em Observações).", foco: "eMotivo" };
+      // ENTRAR em Publicado sem versão no histórico: bloqueado. Sem versão não
+      // existe "versão publicada" e o ponteiro não teria como ser preenchido
+      // com honestidade. Guarda explícita, não correção silenciosa.
+      if (destino === "Publicado" && ev.maxHistorico == null)
+        return { erro: "Não há versão no histórico para publicar — crie a v1 em “Nova revisão” antes de publicar." };
+
+      const campos = { Estado_Documento: destino };
+      let trilha = "";
+      if (destino === "Publicado") {
+        // MAX DO HISTÓRICO (fonte de verdade da numeração), não Versao_Atual:
+        // com ponteiro quebrado, publica-se a versão que de fato existe — e o
+        // alerta "≠ histórico" continua aceso por conta própria.
+        campos.Versao_Publicada = ev.maxHistorico;
+        trilha = "publica v" + ev.maxHistorico;
+      } else if (atual === "Publicado") {
+        // limpeza INTENCIONAL: null explícito ("" nunca é gravado no repo).
+        // O histórico NÃO é apagado — só o ponteiro do "publicado agora".
+        campos.Versao_Publicada = null;
+        trilha = ev.publicada != null ? "despublica v" + ev.publicada : "sem versão publicada registrada";
+      }
+      // Publicação/despublicação SEMPRE deixa trilha, mesmo sem motivo: é o
+      // evento de auditoria que preserva o que o ponteiro deixa de dizer.
+      // Nas demais transições, trilha só quando o usuário deu motivo.
+      if (trilha || mot) {
+        campos.Observacoes = (f.Observacoes ? String(f.Observacoes) + "\n" : "") +
+          "[" + new Date().toLocaleString("pt-BR") + "] " + atual + " → " + destino +
+          (trilha ? " (" + trilha + ")" : "") +
+          (mot ? " — " + mot : "") + " (" + autor() + ")";
+      }
+      return { campos: campos, trilha: trilha };
+    }
     function upsertDoc(novo) {
       const idx = documentos.findIndex(i => i.id === novo.id);
       if (idx > -1) documentos[idx] = novo; else documentos.unshift(novo);
@@ -348,18 +504,33 @@
       $("tbody").innerHTML = lista.map(o => {
         const f = o.fields || {};
         const c = cor(f.Estado_Documento);
-        // ponteiro divergente do histórico é DENUNCIADO, nunca corrigido em silêncio
-        const maxH = maxVersaoHistorico(o.id);
-        const vAtual = f.Versao_Atual != null ? "v" + esc(f.Versao_Atual) : "—";
-        const alerta = (maxH != null && f.Versao_Atual != null && num(f.Versao_Atual) !== maxH)
-          ? " <span class='badge' style='border-color:#D29922;color:#D29922' title='ponteiro Versao_Atual difere do histórico (max v" + esc(maxH) + ")'>≠ histórico</span>"
+        const ev = estadoVersoes(o);
+        // AMARELO = erro: ponteiro divergente do histórico é DENUNCIADO, nunca
+        // corrigido em silêncio.
+        const alerta = ev.ponteiroQuebrado
+          ? " <span class='badge' style='border-color:#D29922;color:#D29922' title='ponteiro Versao_Atual difere do histórico (max v" + esc(ev.maxHistorico) + ")'>≠ histórico</span>"
           : "";
+        const alertaPub = ev.publicadaForaDoHistorico
+          ? " <span class='badge' style='border-color:#D29922;color:#D29922' title='Versao_Publicada aponta para uma versão que não existe no histórico deste documento'>fora do histórico</span>"
+          : "";
+        // AZUL = informação: publicada < mais recente é revisão em andamento,
+        // estado NORMAL — visual deliberadamente diferente do alerta amarelo.
+        const infoRev = ev.revisaoEmAndamento
+          ? " <span class='badge' style='border-color:#388bfd66;color:#79c0ff' title='publicada v" + esc(ev.publicada) +
+            " · mais recente v" + esc(ev.atual) + " — há revisão em andamento sobre a versão publicada'>revisão em andamento</span>"
+          : "";
+        // vazio = nada publicado agora (não é dado faltando — é informação)
+        const vPub = ev.publicada != null
+          ? "v" + esc(ev.publicada)
+          : "<span class='dim' title='nenhuma versão publicada agora'>—</span>";
+        const vAtual = ev.atual != null ? "v" + esc(ev.atual) : "—";
         return "<tr data-id='" + esc(o.id) + "'>" +
           "<td>" + esc(osNome(f.OSLookupId)) + "</td>" +
           "<td class='dim'>" + esc(f.Tipo_Documento || "—") + "</td>" +
           "<td>" + esc(f.Titulo || f.Title || "—") + "</td>" +
           "<td><span class='badge' style='border-color:" + c + ";color:" + c + "'>" + esc(f.Estado_Documento || "—") + "</span></td>" +
-          "<td class='n'>" + vAtual + alerta + "</td>" +
+          "<td class='n'>" + vPub + alertaPub + "</td>" +
+          "<td class='n'>" + vAtual + alerta + infoRev + "</td>" +
           "<td class='dim'>" + esc(f.Responsavel || "—") + "</td>" +
           "</tr>";
       }).join("");
@@ -370,6 +541,28 @@
        ================================================================== */
     const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
     const grupo = (t) => "<div class='grupo'>" + esc(t) + "</div>";
+
+    /* Faixas do par de ponteiros. AZUL informa (revisão em andamento é normal);
+       AMARELO denuncia (ponteiro apontando para versão inexistente). */
+    function avisoPonteiros(o) {
+      const ev = estadoVersoes(o);
+      let h = "";
+      if (ev.revisaoEmAndamento) {
+        h += "<div class='publinfo'>ℹ️ <b>Publicada v" + esc(ev.publicada) + " · mais recente v" + esc(ev.atual) +
+          "</b> (revisão em andamento). A v" + esc(ev.publicada) + " é a que vale para cliente e auditoria; a v" + esc(ev.atual) +
+          " ainda não foi publicada. Isto é informação, não defeito." +
+          (ev.publicado
+            ? " Para publicar a v" + esc(ev.atual) + ", faça a transição Publicado → outro estado (com motivo) → Publicado: a nova entrada em Publicado reaponta o ponteiro para o topo do histórico."
+            : " O documento não está em “Publicado” no momento.") +
+          "</div>";
+      }
+      if (ev.publicadaForaDoHistorico)
+        h += "<div class='diverge'>⚠️ Versao_Publicada = v" + esc(ev.publicada) +
+          ", mas essa versão NÃO existe no histórico deste documento. Ponteiro de publicação quebrado — confira o histórico abaixo (nada é corrigido em silêncio).</div>";
+      if (ev.publicado && ev.nuncaPublicada)
+        h += "<div class='diverge'>⚠️ Documento está em “Publicado” mas Versao_Publicada está vazio — publicação registrada antes deste campo existir, ou ponteiro limpo indevidamente. Reaplique a transição para Publicado para reapontar.</div>";
+      return h;
+    }
 
     function historicoHtml(o) {
       const f = o.fields || {};
@@ -385,11 +578,17 @@
       return grupo("Histórico de versões (append-only — versões nunca são editadas ou apagadas)") + aviso +
         vs.map(v => {
           const vf = v.fields || {};
-          const ehAtual = f.Versao_Atual != null && num(vf.Numero_Versao) === num(f.Versao_Atual);
+          const n = num(vf.Numero_Versao);
+          const ehAtual = f.Versao_Atual != null && n === num(f.Versao_Atual);
+          const ehPublicada = f.Versao_Publicada != null && n === num(f.Versao_Publicada);
           const sha = shaCurto(vf.Hash_SHA256);
-          return "<div class='ver" + (ehAtual ? " atual" : "") + "'>" +
-            "<div class='vt'>v" + esc(vf.Numero_Versao ?? "?") + (ehAtual ? " · atual" : "") +
-              (vf.Estado_Na_Epoca ? " <span class='hint'>(estado na época: " + esc(vf.Estado_Na_Epoca) + ")</span>" : "") + "</div>" +
+          return "<div class='ver" + (ehAtual ? " atual" : "") + (ehPublicada ? " publicada" : "") + "'>" +
+            "<div class='vt'>v" + esc(vf.Numero_Versao ?? "?") +
+              (ehPublicada ? " <span class='tag t-pub'>● publicada</span>" : "") +
+              (ehAtual ? " <span class='tag t-atual'>mais recente</span>" : "") +
+              // carimbo de NASCIMENTO da versão — nunca reescrito (append-only).
+              // Rótulo explícito para não ser lido como "esta é a publicada".
+              (vf.Estado_Na_Epoca ? " <span class='hint'>(estado do documento quando esta versão nasceu: " + esc(vf.Estado_Na_Epoca) + ")</span>" : "") + "</div>" +
             "<div class='vs'>" +
               esc(fmtDT(vf.Criada_Em) || "sem data") + " · " + esc(vf.Autor || "autor não registrado") +
               (vf.Motivo_Revisao ? "<br>Motivo: " + esc(vf.Motivo_Revisao) : "") +
@@ -406,9 +605,19 @@
        bloqueada e as demais opções ficam disabled (NUNCA removidas: o modelo
        completo permanece visível). Sair de Publicado exige motivo, que é
        ANEXADO em Observacoes (trilha), junto do autor e da transição. */
-    function blocoEstado(f) {
+    // `doc` é OPCIONAL (assinatura antiga blocoEstado(f) segue válida): serve
+    // para dizer, ANTES do clique, o que a transição fará com Versao_Publicada.
+    function blocoEstado(f, doc) {
       const atual = f.Estado_Documento || "Rascunho";
       const terminal = atual === ESTADO_TERMINAL;
+      const maxH = doc ? maxVersaoHistorico(doc.id) : null;
+      const efeito = terminal ? "" :
+        "<div class='hint'>Efeito no ponteiro: entrar em <b>Publicado</b> aponta <b>Versao_Publicada</b> para o topo do histórico" +
+          (maxH != null ? " (hoje v" + esc(maxH) + ")" : "") +
+          "; sair de Publicado limpa o ponteiro — o histórico de versões permanece intacto e a trilha registra qual versão saiu do ar.</div>" +
+        (doc && maxH == null
+          ? "<div class='diverge'>⚠️ Sem versão no histórico: a transição para “Publicado” será recusada (não haveria versão para o ponteiro apontar). Crie a v1 em “Nova revisão” antes.</div>"
+          : "");
       const opts = (CHOICES.Estado_Documento || []).map(e => {
         const ehAtual = e === atual;
         const desab = terminal && !ehAtual;
@@ -419,6 +628,7 @@
         "<div class='acao'>" +
           "<label for='eDestino'>Novo estado</label>" +
           "<select id='eDestino'" + (terminal ? " disabled" : "") + ">" + opts + "</select>" +
+          efeito +
           "<label for='eMotivo'>Motivo" + (atual === "Publicado" ? " <span class='req'>* (obrigatório para sair de Publicado — vai para Observações)</span>" : " (opcional — vai para Observações)") + "</label>" +
           "<input id='eMotivo' type='text' maxlength='255'" + (terminal ? " disabled" : "") + " placeholder='" +
             (atual === "Publicado" ? "por que este documento sai de Publicado?" : "motivo da transição (opcional)") + "' />" +
@@ -435,26 +645,24 @@
       const destino = $("eDestino").value;
       const motivo = ($("eMotivo") && $("eMotivo").value.trim()) || "";
       const msg = $("eMsg");
-      // guarda em código além do disabled do DOM — disabled é contornável
-      if (atual === ESTADO_TERMINAL) { msg.className = "acao-msg err"; msg.textContent = "Obsoleto é terminal — a saída é bloqueada."; return; }
-      if (!destino || destino === atual) { msg.className = "acao-msg err"; msg.textContent = "Escolha um estado diferente do atual."; return; }
-      if (atual === "Publicado" && !motivo) {
-        msg.className = "acao-msg err"; msg.textContent = "Sair de Publicado exige motivo (fica registrado em Observações).";
-        $("eMotivo").focus(); return;
+      // decisão inteira (guardas + payload) vem da função PURA camposTransicao
+      const r = camposTransicao(o, destino, motivo);
+      if (r.erro) {
+        msg.className = "acao-msg err"; msg.textContent = r.erro;
+        if (r.foco && $(r.foco)) $(r.foco).focus();
+        return;
       }
-      // PATCH MÍNIMO: só Estado_Documento (+ Observacoes quando há motivo).
-      const campos = { Estado_Documento: destino };
-      if (motivo) {
-        campos.Observacoes = (f.Observacoes ? String(f.Observacoes) + "\n" : "") +
-          "[" + new Date().toLocaleString("pt-BR") + "] " + atual + " → " + destino + " — " + motivo + " (" + autor() + ")";
-      }
+      // PATCH MÍNIMO: Estado_Documento (+ Versao_Publicada quando o ponteiro
+      // muda de dono, + Observacoes quando há trilha/motivo). Nada além.
+      const campos = r.campos;
       try {
         gravando = true; $("eAplicar").disabled = true;
         msg.className = "acao-msg"; msg.textContent = "Gravando...";
         await EG.patchItemFields("OS_Documentos", o.id, campos);
         const novo = await relerDoc(o.id);
         upsertDoc(novo); render(); abrirDocDrawer(novo);
-        setStatus("Documento “" + ((novo.fields || {}).Titulo || o.id) + "”: " + atual + " → " + destino + ".");
+        setStatus("Documento “" + ((novo.fields || {}).Titulo || o.id) + "”: " + atual + " → " + destino +
+          (r.trilha ? " (" + r.trilha + ")" : "") + ".");
       } catch (e) {
         msg.className = "acao-msg err";
         msg.textContent = "Falha ao gravar: " + e.message;
@@ -469,11 +677,20 @@
        recarregar. Só DEPOIS da linha existir, Versao_Atual é atualizado por
        PATCH mínimo. Sem upload: Arquivo_URL é texto colado; SHA256 (internal
        name Hash_SHA256) é opcional e servirá à publicação futura com manifesto. */
-    function blocoRevisao(docId) {
+    // `doc` é OPCIONAL (assinatura antiga blocoRevisao(id) segue válida): só
+    // serve para avisar que criar revisão NÃO republica.
+    function blocoRevisao(docId, doc) {
       const n = proximaVersao(docId);
+      const estado = ((doc && doc.fields) || {}).Estado_Documento || null;
+      const avisoPub = estado === "Publicado"
+        ? "<div class='publinfo'>ℹ️ Este documento está <b>Publicado</b>. Criar a v" + esc(n) +
+          " NÃO a torna publicada: o ponteiro <b>Versao_Publicada</b> continua onde está e a v" + esc(n) +
+          " nasce como revisão. Para publicá-la depois, faça Publicado → outro estado (com motivo) → Publicado.</div>"
+        : "";
       return grupo("Nova revisão") +
         "<div class='acao'>" +
           "<div class='hint'>Cria a v" + esc(n) + " como NOVA linha do histórico (nada é editado). Upload de arquivo/PDF é integração futura — cole a URL.</div>" +
+          avisoPub +
           "<label for='rUrl'>URL do arquivo (http/https, texto colado)</label>" +
           "<input id='rUrl' type='text' maxlength='255' placeholder='https://...' />" +
           "<label for='rSha'>SHA256 (opcional — usado pela publicação futura com manifesto)</label>" +
@@ -527,7 +744,9 @@
           }
           throw e;
         }
-        // versão existe no servidor -> agora (e só agora) o ponteiro, por PATCH mínimo
+        // versão existe no servidor -> agora (e só agora) o ponteiro, por PATCH
+        // mínimo. SÓ Versao_Atual: criar revisão NUNCA republica — quem move
+        // Versao_Publicada é a transição de estado, e só ela (ver mapa de dono).
         try {
           await EG.patchItemFields("OS_Documentos", o.id, { Versao_Atual: n });
         } catch (e2) {
@@ -560,17 +779,22 @@
     function abrirDocDrawer(o) {
       const f = o.fields || {};
       const c = cor(f.Estado_Documento);
+      const ev = estadoVersoes(o);
       const corpo =
         "<dl>" +
           linha("OS", osNome(f.OSLookupId)) +
           linha("Tipo", f.Tipo_Documento) +
           linha("Título", f.Titulo || f.Title) +
-          linha("Versão atual", f.Versao_Atual != null ? "v" + f.Versao_Atual : null) +
+          // as DUAS, sempre — inclusive quando não há publicada (o vazio é
+          // informação: nada publicado agora)
+          linha("Versão publicada", ev.publicada != null ? "v" + ev.publicada : "nenhuma (nada publicado agora)") +
+          linha("Versão mais recente", ev.atual != null ? "v" + ev.atual : "—") +
           linha("Responsável", f.Responsavel) +
           linha("Observações", f.Observacoes) +
         "</dl>" +
-        blocoEstado(f) +
-        blocoRevisao(o.id) +
+        avisoPonteiros(o) +
+        blocoEstado(f, o) +
+        blocoRevisao(o.id, o) +
         historicoHtml(o);
       $("drawer").innerHTML =
         "<div class='drawer-head'><div class='t'>" + esc(f.Titulo || f.Title || "(sem título)") +
@@ -705,7 +929,9 @@
        DOCOS.setDados([...], [...], [...]); DOCOS.forcarCarregado(); DOCOS.montarFiltro(); DOCOS.render(); */
     window.DOCOS = {
       setDados, montarFiltro, render, filtrar,
-      proximaVersao, maxVersaoHistorico, indexarVersoes,
+      proximaVersao, maxVersaoHistorico, numerosDoHistorico, indexarVersoes,
+      // núcleo puro da regra publicada × mais recente
+      estadoVersoes, camposTransicao, avisoPonteiros,
       abrirDocDrawer, abrirFormNovo, blocoEstado, blocoRevisao, historicoHtml,
       mudarEstado, criarRevisao, criarDocumento,
       urlSeguro, shaCurto, ehColisaoChave, num,
