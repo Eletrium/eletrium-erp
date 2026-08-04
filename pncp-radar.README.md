@@ -377,11 +377,17 @@ outras frentes — não foi tocado.
 
 ---
 
-## 📋 PROPOSTA de schema da lista SharePoint `Radar_Editais` — **NÃO CRIADA**
+## 📋 Schema da lista SharePoint `Radar_Editais` — **CRIADA (29/07) + ESCRITOR (04/08)**
 
-> **Nada foi criado no SharePoint.** O que segue é uma **proposta para aprovação do
-> dono**. Só depois do "ok" é que alguém cria a lista. O script hoje grava em arquivo
-> justamente porque isso é local e reversível.
+> **Atualização 04/08/2026:** a lista EXISTE desde 29/07 e agora tem escritor:
+> `C:\EletriumERP\ERPEletrium\scripts\publicar-radar-editais.ps1` — upsert idempotente
+> por `Title` (numeroControlePNCP), campos humanos (`StatusTriagem`/`MotivoDescarte`)
+> nunca sobrescritos, classificações congeladas após triagem, ausência marcada
+> (`PresenteUltimaVarredura`/`AusenteDesde`) sem deleção. Cadeia completa:
+> `node pncp-radar.js` → `pwsh publicar-radar-editais.ps1` → lista → Ponte Make 5831333
+> → Fila de Auditoria. O texto abaixo era a proposta original e segue como referência
+> do desenho (campos extras criados em 04/08: `AvaliacaoHumanaPendente`,
+> `PresenteUltimaVarredura`, `AusenteDesde`).
 
 Lista sugerida: **`Radar_Editais`**
 
