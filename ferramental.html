@@ -521,8 +521,13 @@
        1. CATÁLOGO
        ================================================================== */
     function renderCat() {
-      $("cContador").textContent = catalogo.length + " ferramenta(s) no catálogo";
-      const lista = catalogo.slice().sort((a, b) =>
+      // catálogo versionado: a tabela mostra só a revisão VIGENTE de cada
+      // código. As encerradas continuam na lista (é o que preserva o passado).
+      const vigentes = catalogo.filter(o => CAT.ehVigente(o.fields || {}));
+      const fechadas = catalogo.length - vigentes.length;
+      $("cContador").textContent = vigentes.length + " ferramenta(s) no catálogo"
+        + (fechadas ? " · " + fechadas + " revisão(ões) anterior(es) preservada(s)" : "");
+      const lista = vigentes.slice().sort((a, b) =>
         String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"));
       if (!lista.length) {
         $("cTbody").innerHTML = ""; $("cTbl").hidden = true;
@@ -627,6 +632,8 @@
       const usos = patrimonio.filter(p => String((p.fields || {}).CatalogoLookupId) === String(o.id)).length;
       const corpo = "<dl>" +
         linha("Nome / modelo", f.Title) +
+        linha("Código interno", f.Codigo_Interno) +
+        linha("Revisão", "v" + (f.Versao || 1) + (CAT.ehVigente(f) ? " (vigente)" : " (encerrada na v" + f.Versao_Fim + ")")) +
         linha("Categoria", f.Categoria_Ferramenta) +
         linha("Requer calibração", simNao(f.Requer_Calibracao)) +
         linha("Periodicidade (meses)", ehNum(f.Periodicidade_Calibracao_Meses) ? cel(f.Periodicidade_Calibracao_Meses) : null) +
@@ -691,7 +698,9 @@
        (campo esvaziado de propósito vai como null) e RELEITURA do servidor.
        Lookup grava como <Campo>LookupId numérico (regra do Graph).
        ================================================================== */
-    const fonteCatalogo = () => catalogo.slice()
+    // só revisões VIGENTES viram opção de lookup: vincular patrimônio a uma
+    // revisão encerrada criaria um elo que já nasce apontando para o passado.
+    const fonteCatalogo = () => catalogo.filter(c => CAT.ehVigente(c.fields || {})).slice()
       .sort((a, b) => String((a.fields || {}).Title || "").localeCompare(String((b.fields || {}).Title || ""), "pt-BR"))
       .map(c => ({ id: c.id, rotulo: ((c.fields || {}).Title || ("catálogo #" + c.id)) + ((c.fields || {}).Requer_Calibracao === true ? " (requer calibração)" : "") }));
     const fonteTecnicos = () => tecnicos.slice()
@@ -706,6 +715,8 @@
         lista: "Ferramentas_Catalogo", titulo: "ferramenta do catálogo",
         campos: [
           { n: "Title", rotulo: "Nome / modelo", req: true, ph: "ex.: Multímetro Fluke 117" },
+          { n: "Codigo_Interno", rotulo: "Código interno", req: true, ph: "ex.: FER-0042",
+            hint: "obrigatório NO SERVIDOR (Required + mínimo 3 caracteres, sem espaço nas pontas). É a raiz estável do catálogo: as revisões de uma mesma ferramenta compartilham o código" },
           { n: "Categoria_Ferramenta", rotulo: "Categoria", tipo: "choice", choices: "Categoria_Ferramenta" },
           { n: "Requer_Calibracao", rotulo: "Requer calibração", tipo: "bool",
             hint: "com 'Sim', TODO item de patrimônio deste catálogo sem calibração em dia fica bloqueado para alocação e para o início de dia" },
@@ -881,6 +892,31 @@
     }
     const chaveGraph = (c) => c.tipo === "lookup" ? c.n + "LookupId" : c.n;
 
+    /* ---------- catálogo versionado (item 9) ----------
+       Mesmo padrão de Produtos: intervalo com raiz estável (Codigo_Interno),
+       herdado de Perguntas_Checklist. Só a entidade "cat" é versionada —
+       Patrimônio e Vínculos continuam com PATCH direto, porque neles a linha
+       É o fato corrente e não há documento passado apontando para ela. */
+    const CAT = {
+      ehVigente: (f) => !!f && ((f || {}).Versao_Fim == null || f.Versao_Fim === ""),
+      chaveVersao: (cod, v) => (cod == null ? "" : String(cod)) + "|v" + (v == null ? 1 : v),
+      proximaRevisao: (f) => (Number((f || {}).Versao) || 1) + 1,
+      /** recusa do servidor -> frase que diz o que fazer (ver SUP.motivoRecusa) */
+      motivoRecusa: (e) => {
+        const m = String((e && e.message) || "");
+        if (/duplicad/i.test(m) || /duplicate value/i.test(m)) {
+          if (/Chave Vigente|Chave_Vigente/i.test(m))
+            return "o servidor recusou: já existe outra revisão vigente com este código interno — recarregue a tela.";
+          if (/Chave Vers/i.test(m))
+            return "o servidor recusou: esta revisão do código já existe — recarregue a tela.";
+          return "o servidor recusou por valor duplicado: este código interno já está em uso.";
+        }
+        if (/valida(ç|c)(ã|a)o de dados de lista|list data validation/i.test(m))
+          return "o servidor recusou pelas regras da lista: código interno com no mínimo 3 caracteres, sem espaço nas pontas, e versão maior ou igual a 1.";
+        return "";
+      }
+    };
+
     async function salvar(entKey, item) {
       if (gravando) return;
       const ent = ENT[entKey];
@@ -897,9 +933,53 @@
           const payload = {};
           ent.dados.forEach(c => { const v = vals[c.n]; if (v === "") return; payload[chaveGraph(c)] = paraGraph(c, v); });
           if (entKey === "vin") payload.Title = tituloVinculo(vals);
+          if (entKey === "cat") {
+            // nasce na revisão 1 e já vigente. Chave_Vigente é ÚNICA no
+            // servidor: código repetido é recusado lá, não aqui.
+            const cod = String(vals.Codigo_Interno || "").trim();
+            payload.Versao = 1;
+            payload.Chave_Versao = CAT.chaveVersao(cod, 1);
+            payload.Chave_Vigente = cod;
+          }
           const novo = await EG.createItem(ent.lista, payload);
           id = novo && novo.id;
           if (!id) throw new Error("o Graph não devolveu o id do item criado");
+        } else if (entKey === "cat") {
+          // EDIÇÃO DO CATÁLOGO = nova revisão. Não sobrescreve a linha, para
+          // que Patrimônio e Vínculos que apontam para a revisão antiga
+          // continuem significando o que significavam.
+          const f = item.fields || {};
+          if (!CAT.ehVigente(f)) throw new Error("esta é uma revisão encerrada (v" + (f.Versao || 1) + ") — abra a revisão vigente deste código");
+          const rev = CAT.proximaRevisao(f);
+          const codNovo = String(vals.Codigo_Interno || f.Codigo_Interno || "").trim();
+          msg.textContent = "Gravando revisão v" + rev + "...";
+
+          // fechar a atual ANTES de criar a nova: a unicidade de Chave_Vigente
+          // vale também no PATCH, então a ordem inversa seria recusada.
+          await EG.patchItemFields(ent.lista, item.id, {
+            Versao_Fim: Number(f.Versao) || 1, Chave_Vigente: null
+          });
+          const payload = {};
+          ent.dados.forEach(c => { const v = vals[c.n]; if (v === "") return; payload[chaveGraph(c)] = paraGraph(c, v); });
+          payload.Versao = rev;
+          payload.Chave_Versao = CAT.chaveVersao(codNovo, rev);
+          payload.Chave_Vigente = codNovo;
+          let novo;
+          try {
+            novo = await EG.createItem(ent.lista, payload);
+          } catch (eCria) {
+            // sem este rollback o código ficaria sem revisão vigente
+            try {
+              await EG.patchItemFields(ent.lista, item.id, { Versao_Fim: null, Chave_Vigente: f.Codigo_Interno || "" });
+              eCria.revertido = true;
+            } catch (eVolta) { eCria.revertido = false; eCria.erroReversao = eVolta.message; }
+            throw eCria;
+          }
+          id = novo && novo.id;
+          if (!id) throw new Error("o Graph não devolveu o id da revisão criada");
+          // a revisão fechada precisa entrar no estado local, senão a tabela
+          // continuaria exibindo a linha antiga como se fosse a vigente
+          upsertEnt(entKey, await relerItem(ent.lista, item.id));
         } else {
           // EDIÇÃO — dirty tracking: PATCH apenas do que mudou vs snapshot.
           // Campo esvaziado de propósito vai como null (limpa no SharePoint).
@@ -927,7 +1007,12 @@
         setStatus((item ? "Atualizado" : "Criado") + " — " + (((atual.fields || {}).Title) || ("#" + id)) + ".");
       } catch (e) {
         msg.className = "form-msg err";
-        msg.textContent = "Falha ao gravar: " + e.message;
+        const motivo = CAT.motivoRecusa(e);
+        msg.textContent = (motivo || ("Falha ao gravar: " + e.message))
+          + (e.revertido === true ? " A revisão anterior continua vigente — nada foi perdido."
+             : e.revertido === false ? " ATENÇÃO: a revisão anterior foi fechada e não foi possível reabri-la ("
+                 + (e.erroReversao || "") + ") — este código ficou sem revisão vigente; recarregue e verifique."
+             : "");
       } finally {
         gravando = false;
         const b = $("btnSalvar"); if (b) b.disabled = false;
@@ -1273,7 +1358,7 @@
       calibracao, ehEncerrada, renderDia, checarInicio,
       abrirForm, abrirCatDrawer, abrirPatDrawer, abrirVinDrawer,
       confirmarInicio, confirmarDesmob,
-      CHOICES, parseD, hojeKey, isoParaInput, inputParaIso,
+      CHOICES, CAT, parseD, hojeKey, isoParaInput, inputParaIso,
       forcarCarregado: (v) => { carregado = v !== false; $("tabs").hidden = false; },
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
     };

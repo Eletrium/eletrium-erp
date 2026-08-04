@@ -471,29 +471,37 @@
       $(id).addEventListener(id === "fBusca" ? "input" : "change", renderPrd);
     });
 
+    // Catálogo versionado: a tabela mostra só a revisão VIGENTE de cada código.
+    // As revisões fechadas continuam na lista (é o que impede o passado de ser
+    // reescrito) — ficam fora da tabela, não apagadas.
+    const produtosVigentes = () => produtos.filter(p => SUP.ehVigente(p.fields || {}));
+
     function renderPrd() {
-      const semN = produtos.filter(p => semDisp(p.fields || {})).length;
-      const custo = produtos.reduce((a, p) => {
+      const vigentes = produtosVigentes();
+      const fechadas = produtos.length - vigentes.length;
+      const semN = vigentes.filter(p => semDisp(p.fields || {})).length;
+      const custo = vigentes.reduce((a, p) => {
         const f = p.fields || {};
         return a + (num(f.Custo_Medio) || 0) * (num(f.Estoque_Atual) || 0);
       }, 0);
-      $("kPrdTotal").textContent = produtos.length;
+      $("kPrdTotal").textContent = vigentes.length;
       $("kPrdSem").textContent = semN;
       $("kPrdCusto").textContent = EG.BRL(custo);
 
       const q = $("fBusca").value.trim().toLowerCase();
-      const lista = produtos.filter(p => {
+      const lista = vigentes.filter(p => {
         const f = p.fields || {};
         if ($("fSemEstoque").checked && !semDisp(f)) return false;
         if ($("fSoAtivos").checked && f.Ativo !== true) return false;
         if (q && !((f.Title || "") + " " + (f.Codigo_Interno || "")).toLowerCase().includes(q)) return false;
         return true;
       });
-      $("cntPrd").textContent = lista.length + " de " + produtos.length + " exibido(s)";
+      $("cntPrd").textContent = lista.length + " de " + vigentes.length + " exibido(s)"
+        + (fechadas ? " · " + fechadas + " revisão(ões) anterior(es) preservada(s)" : "");
 
       if (!lista.length) {
         $("tblPrd").hidden = true; $("emptyPrd").hidden = false;
-        $("emptyPrd").textContent = produtos.length
+        $("emptyPrd").textContent = vigentes.length
           ? "Nenhum produto atende aos filtros."
           : "Nenhum produto cadastrado.";
         return;
@@ -502,8 +510,9 @@
       $("tbPrd").innerHTML = lista.map(p => {
         const f = p.fields || {}, sem = semDisp(f);
         const cls = [sem ? "semestoque" : "", f.Ativo === false ? "inativo" : ""].filter(Boolean).join(" ");
+        const rev = Number(f.Versao) || 1;
         return `<tr data-id="${esc(p.id)}" class="${cls}">
-          <td>${esc(f.Codigo_Interno ?? "—")}</td>
+          <td>${esc(f.Codigo_Interno ?? "—")}${rev > 1 ? ' <span class="sub">v' + esc(rev) + "</span>" : ""}</td>
           <td>${esc(f.Title ?? "—")}${f.Ativo === false ? ' <span class="sub">(inativo)</span>' : ""}</td>
           <td>${fmtNum(num(f.Estoque_Atual))}</td>
           <td>${fmtNum(num(f.Estoque_Reservado))}</td>
@@ -696,8 +705,10 @@
     function drawerPrd(p) {
       const f = p.fields || {};
       const disp = num(f.Estoque_Disponivel);
+      const vigente = SUP.ehVigente(f);
       const rows = [
         rowD("Código interno", f.Codigo_Interno),
+        rowD("Revisão", "v" + (f.Versao || 1) + (vigente ? " (vigente)" : " (encerrada na v" + f.Versao_Fim + ")")),
         rowD("Ativo", f.Ativo === true ? "Sim" : f.Ativo === false ? "Não" : null),
         rowD("Estoque atual", f.Estoque_Atual != null ? fmtNum(num(f.Estoque_Atual)) : null),
         rowD("Estoque reservado", f.Estoque_Reservado != null ? fmtNum(num(f.Estoque_Reservado)) : null),
@@ -779,7 +790,53 @@
         const erros = [];
         if (!c || !c.titulo) erros.push("informe a descrição");
         if (!c || !c.cod) erros.push("informe o código interno (campo obrigatório da lista)");
+        // As três regras abaixo são as MESMAS que o servidor impõe em
+        // Produtos.Codigo_Interno (ValidationFormula
+        // '=AND(LEN([Codigo Interno])>=3,TRIM([Codigo Interno])=[Codigo Interno])').
+        // Repetir aqui não substitui o servidor — serve só para dizer ao
+        // usuário QUAL regra ele quebrou, porque a recusa do SharePoint chega
+        // como "Falha na validação de dados de lista", sem apontar o campo.
+        else {
+          if (c.cod.length < 3) erros.push("o código interno precisa de pelo menos 3 caracteres (regra do servidor)");
+          if (c.cod !== c.cod.trim()) erros.push("o código interno não pode começar nem terminar com espaço (regra do servidor)");
+        }
         return { ok: !erros.length, erros };
+      },
+
+      /* ---------- catálogo versionado (item 9) ----------
+         Padrão: versionamento por INTERVALO com raiz estável, herdado de
+         Perguntas_Checklist (Versao_Criacao/Versao_Fim/Substituida_Por).
+         Aqui a raiz é Codigo_Interno e a coordenada do intervalo é a revisão
+         DO PRÓPRIO CÓDIGO — por isso os campos são Versao/Versao_Fim e não
+         Versao_Criacao: os dois números não são comparáveis entre as listas.
+         Editar NÃO reescreve a linha: fecha a revisão atual e cria a próxima. */
+
+      /** revisão vigente = a que ainda não foi fechada */
+      ehVigente: (f) => !!f && (f.Versao_Fim == null || f.Versao_Fim === ""),
+      /** chave única por (código, revisão) — espelha Chave_Versao no servidor */
+      chaveVersao: (cod, v) => (cod == null ? "" : String(cod)) + "|v" + (v == null ? 1 : v),
+      /** número da próxima revisão */
+      proximaRevisao: (f) => (Number((f || {}).Versao) || 1) + 1,
+
+      /** Traduz a recusa do servidor para uma frase que diz O QUE fazer.
+          Sem isto o usuário vê "Graph 400 — requisição inválida: ..." e não
+          sabe se errou o código, a versão ou se houve corrida de duas abas. */
+      motivoRecusa: (e) => {
+        const m = String((e && e.message) || "");
+        if (/duplicad/i.test(m) || /duplicate value/i.test(m)) {
+          if (/Chave Vigente|Chave_Vigente/i.test(m))
+            return "o servidor recusou: já existe outra revisão VIGENTE com este código interno. "
+                 + "Recarregue a lista — provavelmente alguém criou ou revisou este produto em outra aba.";
+          if (/Chave Vers/i.test(m))
+            return "o servidor recusou: esta revisão do código já existe. "
+                 + "Recarregue a lista antes de revisar de novo.";
+          return "o servidor recusou por valor duplicado: este código interno já está em uso.";
+        }
+        if (/valida(ç|c)(ã|a)o de dados de lista|list data validation/i.test(m))
+          return "o servidor recusou pelas regras da lista: código interno com no mínimo 3 caracteres, "
+               + "sem espaço nas pontas, e versão maior ou igual a 1.";
+        if (e && e.conflitoEdicao) return m;
+        return "";
       }
     };
     window.SUP = SUP;
@@ -1111,15 +1168,25 @@
 
     /* ---------- catálogo de produtos: editar e criar (nunca delete) ---------- */
     function blocoEdicaoPrd(f) {
+      // Revisão encerrada: o formulário NÃO some — fica desabilitado com o
+      // motivo, para o usuário ver que a opção existe e por que não vale aqui.
+      const travado = !SUP.ehVigente(f);
+      const dis = travado ? " disabled" : "";
       return "<div class='eo'>" +
         "<div class='eo-t'>Catálogo do produto (estoque continua somente leitura — ver mapa de dono)</div>" +
-        "<label>Descrição * <input type='text' id='epTitle' maxlength='255' value='" + esc(f.Title || "") + "' /></label>" +
-        "<label>Código interno * <input type='text' id='epCod' maxlength='255' value='" + esc(f.Codigo_Interno || "") + "' /></label>" +
-        "<label>Categoria <select id='epCat'>" + optsChoice((prdCampoChoices || {}).Categoria, f.Categoria, "(sem categoria)") + "</select></label>" +
-        "<label>Unidade <select id='epUni'>" + optsChoice((prdCampoChoices || {}).Unidade, f.Unidade, "(sem unidade)") + "</select></label>" +
-        "<label style='flex-direction:row;align-items:center;gap:8px'><input type='checkbox' id='epAtivo'" + (f.Ativo !== false ? " checked" : "") + " /> produto ativo (desmarcar = inativar; não existe exclusão)</label>" +
-        "<label>Observações <textarea id='epObs' maxlength='2000'>" + esc(f.Observacoes || "") + "</textarea></label>" +
-        "<div class='eo-btns'><button id='epSalvar'>Salvar catálogo</button></div>" +
+        (travado
+          ? "<div class='eo-msg err'>Revisão v" + esc(f.Versao || 1) + " encerrada (substituída na v" + esc(f.Versao_Fim) + "). "
+            + "Ela é mantida para que os documentos que a referenciam não mudem de sentido. "
+            + "Para alterar o produto, abra a revisão vigente deste código.</div>"
+          : "<div class='eo-msg'>Salvar cria a revisão v" + esc(SUP.proximaRevisao(f)) + ". "
+            + "A v" + esc(f.Versao || 1) + " é preservada — editar não reescreve o passado.</div>") +
+        "<label>Descrição * <input type='text' id='epTitle' maxlength='255'" + dis + " value='" + esc(f.Title || "") + "' /></label>" +
+        "<label>Código interno * <input type='text' id='epCod' maxlength='255'" + dis + " value='" + esc(f.Codigo_Interno || "") + "' /></label>" +
+        "<label>Categoria <select id='epCat'" + dis + ">" + optsChoice((prdCampoChoices || {}).Categoria, f.Categoria, "(sem categoria)") + "</select></label>" +
+        "<label>Unidade <select id='epUni'" + dis + ">" + optsChoice((prdCampoChoices || {}).Unidade, f.Unidade, "(sem unidade)") + "</select></label>" +
+        "<label style='flex-direction:row;align-items:center;gap:8px'><input type='checkbox' id='epAtivo'" + dis + (f.Ativo !== false ? " checked" : "") + " /> produto ativo (desmarcar = inativar; não existe exclusão)</label>" +
+        "<label>Observações <textarea id='epObs' maxlength='2000'" + dis + ">" + esc(f.Observacoes || "") + "</textarea></label>" +
+        "<div class='eo-btns'><button id='epSalvar'" + dis + ">" + (travado ? "Revisão encerrada" : "Salvar como nova revisão") + "</button></div>" +
         "<div class='eo-msg' id='epMsg'></div></div>";
     }
 
@@ -1139,19 +1206,78 @@
       const atv = $("epAtivo").checked; if (atv !== (f.Ativo !== false)) campos.Ativo = atv;
       const obs = $("epObs").value; if (obs !== (f.Observacoes || "")) campos.Observacoes = obs; // limpar de propósito grava vazio mesmo
       if (!Object.keys(campos).length) { msg.className = "eo-msg"; msg.textContent = "Nada foi alterado."; return; }
+
+      // Editar não sobrescreve mais a linha. Fecha a revisão atual e cria a
+      // próxima, para que um orçamento que aponte para a revisão antiga
+      // continue significando o que significava (mesmo dano que o PATCH direto
+      // de checklist.html:1086 causa nas perguntas).
+      if (!SUP.ehVigente(f)) {
+        msg.className = "eo-msg err";
+        msg.textContent = "Esta é uma revisão encerrada (v" + (f.Versao || 1) + ") e não pode ser editada. "
+                        + "Abra a revisão vigente deste código.";
+        return;
+      }
+      const rev = SUP.proximaRevisao(f);
+      const codNovo = campos.Codigo_Interno != null ? campos.Codigo_Interno : (f.Codigo_Interno || "");
+
       try {
         gravandoPrd = true; $("epSalvar").disabled = true;
-        msg.className = "eo-msg"; msg.textContent = "Gravando...";
-        await EG.patchItemFields("Produtos", p.id, campos);
+        msg.className = "eo-msg"; msg.textContent = "Gravando revisão v" + rev + "...";
+
+        // ORDEM OBRIGATÓRIA: fechar a atual ANTES de criar a nova.
+        // Chave_Vigente é única no servidor e a unicidade vale também no PATCH
+        // (provado) — criar antes de fechar seria recusado pelo SharePoint.
+        await EG.patchItemFields("Produtos", p.id, {
+          Versao_Fim: Number(f.Versao) || 1,
+          Chave_Vigente: null
+        });
+
+        // Estado da nova revisão = revisão anterior + o que mudou. Campos de
+        // estoque NÃO são copiados: têm outro dono (ver mapa no topo) e são
+        // recalculados/gravados pelo Canvas; copiá-los criaria segunda verdade.
+        const base = {
+          Title: f.Title || "", Codigo_Interno: f.Codigo_Interno || "",
+          Ativo: f.Ativo !== false
+        };
+        if (f.Categoria) base.Categoria = f.Categoria;
+        if (f.Unidade) base.Unidade = f.Unidade;
+        if (f.Observacoes) base.Observacoes = f.Observacoes;
+        const novosCampos = Object.assign(base, campos);
+        Object.keys(novosCampos).forEach(k => { if (novosCampos[k] === null) delete novosCampos[k]; });
+        novosCampos.Versao = rev;
+        novosCampos.Chave_Versao = SUP.chaveVersao(codNovo, rev);
+        novosCampos.Chave_Vigente = codNovo;
+
+        let criado;
+        try {
+          criado = await EG.createItem("Produtos", novosCampos);
+        } catch (eCria) {
+          // A revisão anterior já foi fechada e a nova não entrou: sem este
+          // rollback o código ficaria SEM revisão vigente (fail-open silencioso).
+          try {
+            await EG.patchItemFields("Produtos", p.id, { Versao_Fim: null, Chave_Vigente: f.Codigo_Interno || "" });
+            eCria.revertido = true;
+          } catch (eVolta) { eCria.revertido = false; eCria.erroReversao = eVolta.message; }
+          throw eCria;
+        }
+
         const sid = await EG.resolveSite();
-        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + p.id + "?expand=fields");
-        const i = produtos.findIndex(x => String(x.id) === String(p.id));
-        if (i > -1) produtos[i] = novo;
-        prdMap[p.id] = novo; nomeProduto[p.id] = (novo.fields || {}).Title;
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + criado.id + "?expand=fields");
+        const anterior = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + p.id + "?expand=fields");
+        const iAnt = produtos.findIndex(x => String(x.id) === String(p.id));
+        if (iAnt > -1) produtos[iAnt] = anterior;
+        prdMap[p.id] = anterior;
+        produtos.push(novo); prdMap[novo.id] = novo; nomeProduto[novo.id] = (novo.fields || {}).Title;
         renderPrd(); drawerPrd(novo);
-        setStatus("Produto " + ((novo.fields || {}).Title || p.id) + " atualizado.");
+        setStatus("Produto " + ((novo.fields || {}).Title || novo.id) + " revisado — v" + rev + " vigente, v" + (f.Versao || 1) + " preservada.");
       } catch (e) {
-        msg.className = "eo-msg err"; msg.textContent = "Falha ao gravar: " + e.message;
+        const motivo = SUP.motivoRecusa(e);
+        msg.className = "eo-msg err";
+        msg.textContent = (motivo || ("Falha ao gravar: " + e.message))
+          + (e.revertido === true ? " A revisão anterior continua vigente — nada foi perdido."
+             : e.revertido === false ? " ATENÇÃO: a revisão anterior foi fechada e não foi possível reabri-la ("
+                 + (e.erroReversao || "") + ") — este código está sem revisão vigente; recarregue e verifique."
+             : "");
         $("epSalvar").disabled = false;
       } finally { gravandoPrd = false; }
     }
@@ -1187,14 +1313,22 @@
         const cat = $("npCat").value; if (cat) campos.Categoria = cat;   // nunca gravar ""
         const uni = $("npUni").value; if (uni) campos.Unidade = uni;
         const obs = $("npObs").value.trim(); if (obs) campos.Observacoes = obs;
+        // catálogo versionado: todo produto nasce na revisão 1 e já vigente.
+        // Chave_Vigente é ÚNICA no servidor — se este código já tiver uma
+        // revisão vigente, o POST é RECUSADO pelo SharePoint, não por nós.
+        campos.Versao = 1;
+        campos.Chave_Versao = SUP.chaveVersao(c.cod, 1);
+        campos.Chave_Vigente = c.cod;
         const criado = await EG.createItem("Produtos", campos);
         const sid = await EG.resolveSite();
         const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + criado.id + "?expand=fields");
         produtos.push(novo); prdMap[novo.id] = novo; nomeProduto[novo.id] = (novo.fields || {}).Title;
         renderPrd(); drawerPrd(novo);
-        setStatus("Produto “" + ((novo.fields || {}).Title || criado.id) + "” criado.");
+        setStatus("Produto “" + ((novo.fields || {}).Title || criado.id) + "” criado (v1).");
       } catch (e) {
-        msg.className = "eo-msg err"; msg.textContent = "Falha ao criar: " + e.message;
+        const motivo = SUP.motivoRecusa(e);
+        msg.className = "eo-msg err";
+        msg.textContent = motivo || ("Falha ao criar: " + e.message);
         $("npSalvar").disabled = false;
       } finally { salvandoPrd = false; }
     }
