@@ -57,6 +57,16 @@
       campo que os consumidores dos eixos novos foram orientados a ler —
       registrada em docs/VERIFICACAO-PARCIAIS-0408.md.
 
+      ✅ RESOLVIDO 05/08: criação e edição (quando a ferramenta muda) agora
+      gravam `Alvo_Codigo` também, resolvido a partir do `Codigo_Interno` do
+      item de catálogo escolhido no form (não é campo do form — dirty
+      tracking genérico não alcançaria). `Catalogo` continua sendo gravado
+      (compatibilidade retroativa — é o que o checklist de início de dia
+      desta própria tela ainda lê via `CatalogoLookupId`, ver
+      `porCat[k].catId` mais abaixo). `Eixo="Ferramenta"` passou a ser
+      gravado explicitamente na criação, em vez de depender só do default do
+      servidor. Ver `docs/VERIFICACAO-PARCIAIS-0408.md` ("divida-catalogo-alvo-codigo").
+
       Tipo_OS_Completo_Valor é TEXT de propósito: o select da UI é populado
       dinamicamente dos choices de OrdensDeServico.Tipo_OS_Completo (via
       EG.listColumns) para não hardcodar rótulo; um valor legado gravado que
@@ -946,6 +956,17 @@
           const payload = {};
           ent.dados.forEach(c => { const v = vals[c.n]; if (v === "") return; payload[chaveGraph(c)] = paraGraph(c, v); });
           if (entKey === "vin") payload.Title = tituloVinculo(vals);
+          if (entKey === "vin") {
+            // DÍVIDA (VERIFICACAO-PARCIAIS-0408.md): Catalogo é lookup para uma
+            // REVISÃO do catálogo (076bce1); Alvo_Codigo é a raiz estável
+            // (Codigo_Interno) que os consumidores dos eixos novos devem ler.
+            // Resolve pelo item de catálogo escolhido no próprio form — não é
+            // campo do formulário, então dirty tracking não o alcançaria.
+            const catF = vals.Catalogo ? (mapCat[vals.Catalogo] && mapCat[vals.Catalogo].fields) : null;
+            const codigo = catF ? String(catF.Codigo_Interno || "").trim() : "";
+            if (codigo) payload.Alvo_Codigo = codigo;
+            payload.Eixo = "Ferramenta"; // explícito — não depender só do default do servidor
+          }
           if (entKey === "cat") {
             // nasce na revisão 1 e já vigente. Chave_Vigente é ÚNICA no
             // servidor: código repetido é recusado lá, não aqui.
@@ -1006,6 +1027,15 @@
           // para a linha continuar se descrevendo sozinha em views do SharePoint
           if (entKey === "vin" && (("Tipo_OS_Completo_Valor" in mudados) || ("CatalogoLookupId" in mudados)))
             mudados.Title = tituloVinculo(vals);
+          // DÍVIDA (VERIFICACAO-PARCIAIS-0408.md): se a ferramenta mudou, o
+          // Alvo_Codigo (raiz estável) tem de acompanhar — senão o vínculo
+          // ficaria com Catalogo e Alvo_Codigo apontando para ferramentas
+          // diferentes, o que é pior do que a dívida original.
+          if (entKey === "vin" && ("CatalogoLookupId" in mudados)) {
+            const catF = mapCat[mudados.CatalogoLookupId] && mapCat[mudados.CatalogoLookupId].fields;
+            const codigo = catF ? String(catF.Codigo_Interno || "").trim() : "";
+            mudados.Alvo_Codigo = codigo || null;
+          }
           if (!Object.keys(mudados).length) { msg.textContent = "Nada foi alterado."; return; }
           await EG.patchItemFields(ent.lista, item.id, mudados);
           id = item.id;
