@@ -1194,6 +1194,18 @@
     async function gravarPrd(p) {
       if (gravandoPrd) return;
       const f = p.fields || {}, msg = $("epMsg");
+      // GUARDA EM CÓDIGO da revisão encerrada — PRIMEIRA verificação, antes de
+      // ler o formulário. Mesmo padrão de duas camadas do bloqueio do aceite:
+      // os campos saem disabled (blocoEdicaoPrd) E o caminho de gravação recusa,
+      // para que o DOM adulterado não fure. Precisa vir ANTES do dirty tracking:
+      // se viesse depois, um DOM adulterado sem alteração de campo receberia
+      // "Nada foi alterado" em vez do motivo real (revisão encerrada).
+      if (!SUP.ehVigente(f)) {
+        msg.className = "eo-msg err";
+        msg.textContent = "Esta é uma revisão encerrada (v" + (f.Versao || 1) + ") e não pode ser editada. "
+                        + "Abra a revisão vigente deste código.";
+        return;
+      }
       const titulo = $("epTitle").value.trim(), cod = $("epCod").value.trim();
       const v = SUP.validarNovoProduto({ titulo, cod });
       if (!v.ok) { msg.className = "eo-msg err"; msg.textContent = v.erros.join(" · "); return; }
@@ -1211,12 +1223,7 @@
       // próxima, para que um orçamento que aponte para a revisão antiga
       // continue significando o que significava (mesmo dano que o PATCH direto
       // de checklist.html:1086 causa nas perguntas).
-      if (!SUP.ehVigente(f)) {
-        msg.className = "eo-msg err";
-        msg.textContent = "Esta é uma revisão encerrada (v" + (f.Versao || 1) + ") e não pode ser editada. "
-                        + "Abra a revisão vigente deste código.";
-        return;
-      }
+      // (a guarda da revisão encerrada subiu para o topo desta função)
       const rev = SUP.proximaRevisao(f);
       const codNovo = campos.Codigo_Interno != null ? campos.Codigo_Interno : (f.Codigo_Interno || "");
 
@@ -1332,6 +1339,434 @@
         $("npSalvar").disabled = false;
       } finally { salvandoPrd = false; }
     }
+
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12, 2ª passada) — SUP.assertRegras().
+       Trava as regras que ESTA tela impõe, não a renderização:
+         1) BLOQUEIO DA TRANSIÇÃO DE ACEITE em duas camadas (option disabled que
+            nunca some + guarda em código que segura o DOM adulterado);
+         2) camada operacional: guarda do "Pedido Emitido", escolha de cotação
+            descartando as demais UMA A UMA sem rollback fantasma, espelho do
+            Fornecedor_Escolhido;
+         3) catálogo VERSIONADO: editar cria revisão (fecha a atual, cria a
+            próxima) em vez de PATCH destrutivo; tabela/KPIs só vigentes;
+            revisão encerrada com formulário visível porém desabilitado;
+            recusa do servidor virando frase acionável;
+         4) nunca gravar "" e PATCH mínimo.
+
+       ATENÇÃO — esta suíte é ASSÍNCRONA: use `await SUP.assertRegras()`.
+       Diferente das 15 da 1ª passada, as regras centrais daqui só existem
+       DENTRO de fluxos de gravação, e provar a ORDEM de PATCH/POST, o rollback
+       da revisão e a ausência de rollback nas cotações exige rodar o fluxo de
+       verdade. Nenhuma rede é tocada: EG.patchItemFields/createItem/gget/
+       listItems/resolveSite viram gravadores de chamada e são restaurados no
+       finally, junto com todo o estado e o DOM da tela.
+       ========================================================================= */
+    window.SUP.assertRegras = async function () {
+      const falhas = []; let total = 0;
+      const ok = (c, regra) => { total++; if (!c) falhas.push(regra); };
+
+      // estado real da tela, para restauração integral no finally
+      const snap = {
+        orcamentos: orcamentos, produtos: produtos, itens: itens, orcMap: orcMap, prdMap: prdMap,
+        nomeProduto: nomeProduto, nomeCliente: nomeCliente, itensCols: itensCols,
+        solicitacoes: solicitacoes, cotacoes: cotacoes, fornecedores: fornecedores, ordens: ordens,
+        solMap: solMap, nomeFornecedor: nomeFornecedor, nomeOS: nomeOS,
+        solCampoChoices: solCampoChoices, cotCampoChoices: cotCampoChoices,
+        prdCampoChoices: prdCampoChoices, orcCampoChoices: orcCampoChoices,
+        drawer: $("drawer").innerHTML, tbOrc: $("tbOrc").innerHTML, tbPrd: $("tbPrd").innerHTML,
+        fStatus: $("fStatus").innerHTML, statusTxt: $("status").textContent, statusCls: $("status").className
+      };
+      const REAL = { patch: EG.patchItemFields, create: EG.createItem, site: EG.resolveSite, get: EG.gget, list: EG.listItems };
+      let log = [];
+      const stubar = (cfg) => {
+        cfg = cfg || {}; log = [];
+        EG.resolveSite = () => Promise.resolve("site-de-teste");
+        EG.gget = (url) => { log.push({ op: "get", url: url }); return Promise.resolve(cfg.get ? cfg.get(url) : { id: "0", fields: {} }); };
+        EG.listItems = (l) => { log.push({ op: "list", lista: l }); return Promise.resolve(cfg.list ? cfg.list(l) : []); };
+        EG.patchItemFields = (l, id, campos) => { log.push({ op: "patch", lista: l, id: String(id), campos: campos }); return cfg.patch ? cfg.patch(l, String(id), campos) : Promise.resolve({}); };
+        EG.createItem = (l, campos) => { log.push({ op: "create", lista: l, campos: campos }); return cfg.create ? cfg.create(l, campos) : Promise.resolve({ id: "900", fields: JSON.parse(JSON.stringify(campos)) }); };
+      };
+      const patches = (lista) => log.filter(x => x.op === "patch" && (!lista || x.lista === lista));
+      const creates = (lista) => log.filter(x => x.op === "create" && (!lista || x.lista === lista));
+      const ETAPAS = Object.keys(STATUS_CORES);
+
+      try {
+        /* ============ 1. BLOQUEIO DO ACEITE — camada 1 (HTML) ============ */
+        const semAceite = optsChoice(ETAPAS, "Rascunho", null, STATUS_ACEITO);
+        ok(/<option value='Aceito - Aguardando Faturamento' disabled>/.test(semAceite),
+          "aceite: a option do status de aceite tem de sair DISABLED");
+        ok(semAceite.indexOf("— indisponível aqui") >= 0,
+          "aceite: bloqueio não é sumiço — a option continua visível e explicada");
+        ok(semAceite.split("<option").length - 1 === ETAPAS.length,
+          "aceite: nenhuma option é REMOVIDA da lista (as " + ETAPAS.length + " continuam lá)");
+        ok(/value='Aceito - Aguardando Faturamento' selected disabled/.test(optsChoice(ETAPAS, STATUS_ACEITO, null, STATUS_ACEITO)),
+          "aceite: item JÁ nesse status mantém a option selecionada e ainda disabled (não dá para re-selecionar vindo de outro status)");
+        ok(optsChoice(ETAPAS, "Rascunho", null, null).indexOf("disabled") === -1,
+          "optsChoice: sem status bloqueado, nenhuma option sai disabled (o bloqueio é explícito, não acidental)");
+        ok(optsChoice(ETAPAS, "Status Antigo", null, STATUS_ACEITO).indexOf("(valor atual — fora da lista)") >= 0,
+          "optsChoice: valor atual fora da lista do servidor é PRESERVADO como option própria (nunca troca por acidente)");
+        ok(avisoAceitoLegado({ Status_Orcamento: STATUS_ACEITO }).indexOf("Estoque_Reservado") >= 0 &&
+           avisoAceitoLegado({ Status_Orcamento: "Rascunho" }) === "" && avisoAceitoLegado(null) === "",
+          "aceite legado: só o item já aceito ganha o aviso persistente sobre a reserva de estoque não feita");
+
+        aplicarColunasOrc([
+          { name: "Status_Orcamento", choice: { choices: ETAPAS } },
+          { name: "Prioridade", choice: { choices: ["Alta", "Média", "Baixa"] } }
+        ]);
+        const blocoOrc = blocoEdicaoOrc({ Status_Orcamento: "Rascunho" });
+        ok(/value='Aceito - Aguardando Faturamento' disabled/.test(blocoOrc),
+          "aceite: o bloco de edição real passa mesmo o status de aceite como bloqueado");
+        ok(blocoOrc.indexOf("eo-aviso") >= 0 && blocoOrc.indexOf("Scr_Vendas_DetalheOrcamento") >= 0,
+          "aceite: a explicação do bloqueio é PERMANENTE no bloco (não depende da seleção) e aponta o caminho válido");
+        aplicarColunasOrc([]);
+        const blocoSemChoice = blocoEdicaoOrc({ Status_Orcamento: "Rascunho" });
+        ok(blocoSemChoice.indexOf("eoSalvar") === -1 && blocoSemChoice.indexOf("Edição indisponível") >= 0,
+          "fail-closed: sem os Choices do SharePoint o bloco não oferece botão de gravar");
+        aplicarColunasOrc([
+          { name: "Status_Orcamento", choice: { choices: ETAPAS } },
+          { name: "Prioridade", choice: { choices: ["Alta", "Média", "Baixa"] } }
+        ]);
+
+        // badge âmbar do aceite legado na TABELA (não só no drawer)
+        orcamentos = [
+          { id: "1", fields: { Title: "ORC-1", Status_Orcamento: STATUS_ACEITO, Valor_Total_Orcamento: 100 } },
+          { id: "2", fields: { Title: "ORC-2", Status_Orcamento: "Rascunho", Valor_Total_Orcamento: 50 } }
+        ];
+        orcMap = { "1": orcamentos[0], "2": orcamentos[1] };
+        montaFiltroStatus(); $("fStatus").value = ""; renderOrc();
+        ok(($("tbOrc").innerHTML.match(/b-semreserva/g) || []).length === 1,
+          "aceite legado: a linha em “" + STATUS_ACEITO + "” ganha o badge “aceito sem reserva?” e só ela");
+
+        /* ====== 2. BLOQUEIO DO ACEITE — camada 2 (guarda com DOM adulterado) ====== */
+        const caixa = document.createElement("div");
+        caixa.style.display = "none";
+        caixa.innerHTML = "<div id='eoMsg'></div><input id='eoStatus'><input id='eoPrior'>" +
+          "<input id='eoData'><textarea id='eoObs'></textarea><button id='eoSalvar'></button>";
+        document.body.appendChild(caixa);
+        const orcRascunho = { id: "1", fields: { Title: "ORC-1", Status_Orcamento: "Rascunho" } };
+        // o drawer também tem #eoStatus/#eoMsg; como ele vem ANTES da caixa no
+        // documento, esvaziá-lo antes de cada cenário garante que a caixa (o DOM
+        // adulterado) seja mesmo o que gravarOrc lê.
+        const soCaixa = () => { $("drawer").innerHTML = ""; };
+        try {
+          soCaixa(); stubar({ get: () => orcRascunho });
+          // o ataque: alguém tirou o disabled no DevTools e escolheu o aceite
+          $("eoStatus").value = STATUS_ACEITO; $("eoPrior").value = ""; $("eoData").value = ""; $("eoObs").value = "";
+          await gravarOrc(orcRascunho);
+          ok(patches().length === 0,
+            "DEFEITO GRAVE: a transição para o aceite chegou a chamar o PATCH mesmo com o DOM adulterado");
+          ok($("eoMsg").textContent.indexOf("bloqueada") >= 0 && $("eoMsg").textContent.indexOf("Scr_Vendas_DetalheOrcamento") >= 0,
+            "aceite: a guarda em código explica o bloqueio e aponta o canvas como caminho válido");
+
+          // PERMANECER no aceite é legítimo — o que é proibido é a TRANSIÇÃO
+          const orcAceito = { id: "1", fields: { Title: "ORC-1", Status_Orcamento: STATUS_ACEITO, Observacoes: "" } };
+          soCaixa(); stubar({ get: () => orcAceito });
+          $("eoStatus").value = STATUS_ACEITO; $("eoPrior").value = ""; $("eoData").value = ""; $("eoObs").value = "conferir reserva";
+          await gravarOrc(orcAceito);
+          ok(patches("Orcamentos_Venda").length === 1 && !("Status_Orcamento" in patches()[0].campos),
+            "aceite: item JÁ aceito continua editável nos outros campos — o dirty tracking não reenvia o status");
+
+          // PATCH mínimo + nunca gravar "" onde a limpeza é intencional (null)
+          const orcCheio = { id: "1", fields: { Title: "ORC-1", Status_Orcamento: "Rascunho", Prioridade: "Alta", Data_Proximo_Passo: "2026-08-10T03:00:00Z", Observacoes: "texto" } };
+          soCaixa(); stubar({ get: () => orcCheio });
+          $("eoStatus").value = "Rascunho"; $("eoPrior").value = "";$("eoData").value = ""; $("eoObs").value = "";
+          await gravarOrc(orcCheio);
+          const cOrc = patches("Orcamentos_Venda")[0].campos;
+          ok(cOrc && cOrc.Prioridade === null && cOrc.Data_Proximo_Passo === null,
+            "limpeza intencional de Choice/Data vai como null (nunca a string vazia)");
+          ok(cOrc && cOrc.Observacoes === "" && !("Status_Orcamento" in cOrc) && Object.keys(cOrc).length === 3,
+            "PATCH mínimo: só os 3 campos alterados vão no corpo (Observações esvaziada é a exceção declarada e grava vazio)");
+
+          soCaixa(); stubar({ get: () => orcCheio });
+          $("eoStatus").value = "Rascunho"; $("eoPrior").value = "Alta"; $("eoData").value = "2026-08-10"; $("eoObs").value = "texto";
+          await gravarOrc(orcCheio);
+          ok(patches().length === 0 && $("eoMsg").textContent === "Nada foi alterado.",
+            "PATCH mínimo: nada mudou => nenhuma chamada de rede");
+
+          soCaixa(); stubar({ get: () => orcCheio });
+          $("eoStatus").value = "Rascunho"; $("eoPrior").value = "Alta"; $("eoData").value = "2026-09-01"; $("eoObs").value = "texto";
+          await gravarOrc(orcCheio);
+          ok(patches()[0].campos.Data_Proximo_Passo === "2026-09-01T03:00:00Z",
+            "data grava a meia-noite de Brasília (T03:00:00Z) — a data exibida não escorrega de dia");
+        } finally { caixa.remove(); gravandoOrc = false; }
+
+        ok(isoParaInputDate("2026-08-04T03:00:00Z") === "2026-08-04" && isoParaInputDate(null) === "",
+          "isoParaInputDate: converte para o input date e devolve '' quando não há data");
+
+        /* ================ 3. ABA OPERACIONAL — guardas puras ================ */
+        const cot = (id, st) => ({ id: String(id), fields: { SolicitacaoLookupId: 5, Status_Cotacao: st } });
+        ok(SUP.guardaStatusSolicitacao(SOL_STATUS_PEDIDO, [cot(1, COT_RECEBIDA)]).ok === false,
+          "guarda: “" + SOL_STATUS_PEDIDO + "” sem cotação Escolhida é recusado");
+        ok(SUP.guardaStatusSolicitacao(SOL_STATUS_PEDIDO, [cot(1, COT_RECEBIDA)]).motivo.indexOf("Escolhida") >= 0,
+          "guarda: o motivo diz o que falta (cotação Escolhida), não um erro genérico");
+        ok(SUP.guardaStatusSolicitacao(SOL_STATUS_PEDIDO, [cot(1, COT_DESCARTADA), cot(2, COT_ESCOLHIDA)]).ok === true,
+          "guarda: com uma cotação Escolhida a transição é liberada");
+        ok(SUP.guardaStatusSolicitacao(SOL_STATUS_PEDIDO, [cot(1, COT_DESCARTADA)]).ok === false &&
+           SUP.guardaStatusSolicitacao(SOL_STATUS_PEDIDO, []).ok === false,
+          "guarda: Descartada não vale como Escolhida e lista vazia não libera");
+        ok(SUP.guardaStatusSolicitacao("Em Cotacao", []).ok === true && SUP.guardaStatusSolicitacao("Cancelada", []).ok === true,
+          "guarda: a exigência é SÓ do “" + SOL_STATUS_PEDIDO + "” — não vaza para os outros status");
+
+        const cots3 = [cot(101, COT_RECEBIDA), cot(102, COT_RECEBIDA), cot(103, COT_DESCARTADA)];
+        ok(JSON.stringify(SUP.aDescartar(cots3, "101")) === JSON.stringify(["102"]),
+          "aDescartar: descarta as demais e ignora quem já está Descartada (não regrava o que já está no destino)");
+        ok(SUP.aDescartar(cots3, 101).length === 1,
+          "aDescartar: compara id como string (o Graph devolve string, o DOM devolve string, o código pode passar número)");
+        ok(SUP.aDescartar([], "1").length === 0 && SUP.aDescartar(null, "1").length === 0,
+          "aDescartar: lista vazia/nula não explode");
+        ok(SUP.origemSolicitacao("7") === "Ordem de Servico" && SUP.origemSolicitacao("") === "Solicitacao Manual",
+          "origemSolicitacao: a origem é derivada da OS vinculada, não digitada");
+        ok(SUP.totalCotacao(10, 3) === 30 && SUP.totalCotacao(null, 3) === null && SUP.totalCotacao(10, null) === null,
+          "totalCotacao: ausência de preço ou de quantidade devolve null (nunca 0)");
+        ok(SUP.validarNovaSolicitacao({ titulo: "x", qtd: 0, data: "2026-08-05" }).ok === false &&
+           SUP.validarNovaSolicitacao({ titulo: "x", qtd: -1, data: "2026-08-05" }).ok === false &&
+           SUP.validarNovaSolicitacao({ titulo: "x", qtd: 2, data: "2026-08-05" }).ok === true,
+          "validarNovaSolicitacao: quantidade tem de ser > 0");
+        ok(SUP.validarNovaSolicitacao({ titulo: "", qtd: 2, data: "" }).erros.length === 2,
+          "validarNovaSolicitacao: reporta TODOS os campos faltantes de uma vez");
+        ok(SUP.validarNovaCotacao({ fornId: "__novo", fornNovo: "", preco: 1, prazo: 0 }).ok === false,
+          "validarNovaCotacao: “+ cadastrar fornecedor” sem nome é recusado");
+        ok(SUP.validarNovaCotacao({ fornId: "3", preco: 1, prazo: 0 }).ok === true &&
+           SUP.validarNovaCotacao({ fornId: "3", preco: 1, prazo: -1 }).ok === false &&
+           SUP.validarNovaCotacao({ fornId: "3", preco: 1, prazo: "" }).ok === false,
+          "validarNovaCotacao: prazo 0 é válido (entrega imediata), negativo e vazio não");
+        ok(SUP.validarNovaCotacao({ fornId: "3", preco: 0, prazo: 1 }).ok === false,
+          "validarNovaCotacao: preço unitário 0 é recusado");
+
+        /* ====== 4. ESCOLHER COTAÇÃO — uma a uma, sem rollback fantasma ====== */
+        solCampoChoices = { Status: Object.keys(SOL_STATUS_CORES), Urgencia: Object.keys(URG_CORES) };
+        cotCampoChoices = {}; fornecedores = []; ordens = []; nomeFornecedor = {}; nomeOS = {};
+        const sol = { id: "5", fields: { Title: "Cabo 2,5", Status: "Em Cotacao", Quantidade_Solicitada: 10 } };
+        const k1 = { id: "101", fields: { SolicitacaoLookupId: 5, Status_Cotacao: COT_RECEBIDA, Preco_Unitario: 10, FornecedorLookupId: 7 } };
+        const k2 = { id: "102", fields: { SolicitacaoLookupId: 5, Status_Cotacao: COT_RECEBIDA, Preco_Unitario: 12 } };
+        const k3 = { id: "103", fields: { SolicitacaoLookupId: 5, Status_Cotacao: COT_DESCARTADA, Preco_Unitario: 99 } };
+        const montarSol = () => { solicitacoes = [sol]; solMap = { "5": sol }; cotacoes = [k1, k2, k3]; montaFiltroSolStatus(); renderSol(); drawerSol(sol); };
+
+        montarSol();
+        stubar({ get: () => sol, list: () => [k1, k2, k3] });
+        await escolherCotacao(sol, "101");
+        const pc = patches("Cotacoes_Fornecedor");
+        ok(pc.length === 2 && pc[0].id === "101" && pc[1].id === "102",
+          "escolher cotação: a escolhida é gravada e as demais são descartadas UMA A UMA (uma chamada por cotação, não um lote)");
+        ok(pc.every(x => Object.keys(x.campos).length === 2),
+          "escolher cotação: PATCH mínimo — só Status_Cotacao e o espelho legado Selecionada");
+        ok(pc[0].campos.Status_Cotacao === COT_ESCOLHIDA && pc[0].campos.Selecionada === true &&
+           pc[1].campos.Status_Cotacao === COT_DESCARTADA && pc[1].campos.Selecionada === false,
+          "escolher cotação: o Boolean legado Selecionada é mantido em sincronia com Status_Cotacao");
+        ok(!pc.some(x => x.id === "103"),
+          "escolher cotação: cotação já Descartada não é regravada");
+        const psol = patches("Solicitacoes_Compra");
+        ok(psol.length === 1 && psol[0].campos.Fornecedor_EscolhidoLookupId === 7 && typeof psol[0].campos.Fornecedor_EscolhidoLookupId === "number",
+          "escolher cotação: Fornecedor_Escolhido é espelhado na solicitação como lookup NUMÉRICO");
+        ok($("dcMsg") && $("dcMsg").textContent.indexOf("1 descartada") >= 0,
+          "escolher cotação: o resultado informa quantas foram descartadas");
+
+        // falha no meio: sem rollback fantasma, e o que gravou continua gravado
+        montarSol();
+        stubar({
+          get: () => sol, list: () => [k1, k2, k3],
+          patch: (l, id) => (l === "Cotacoes_Fornecedor" && id === "102") ? Promise.reject(new Error("412 conflito")) : Promise.resolve({})
+        });
+        await escolherCotacao(sol, "101");
+        ok(!patches("Cotacoes_Fornecedor").some(x => x.id === "101" && x.campos.Status_Cotacao === COT_RECEBIDA),
+          "sem rollback fantasma: falhar ao descartar NÃO desfaz a cotação já escolhida (nada é revertido às escondidas)");
+        ok(patches("Solicitacoes_Compra").length === 1,
+          "escolher cotação: uma falha no descarte não impede o espelho do Fornecedor_Escolhido");
+        ok($("dcMsg") && /COM FALHAS/.test($("dcMsg").textContent) && /sem rollback/.test($("dcMsg").textContent) &&
+           /descartadas 0 de 1/.test($("dcMsg").textContent),
+          "escolher cotação: falhas são REPORTADAS com contagem e com o aviso de que o estado exibido é o real");
+
+        // falha na própria escolhida: ninguém é descartado
+        montarSol();
+        stubar({ get: () => sol, list: () => [k1, k2, k3], patch: (l, id) => id === "101" ? Promise.reject(new Error("403")) : Promise.resolve({}) });
+        await escolherCotacao(sol, "101");
+        ok(patches().length === 1,
+          "escolher cotação: se a ESCOLHIDA falha, nenhuma outra é descartada (não sobra solicitação sem escolhida e com tudo descartado)");
+
+        // transição de status com a guarda, pelo fluxo real do drawer
+        montarSol();
+        stubar({ get: () => sol, list: () => [k1, k2, k3] });
+        $("dsStatus").value = SOL_STATUS_PEDIDO;
+        await gravarStatusSol(sol);
+        ok(patches().length === 0 && $("dsMsg").textContent.indexOf("Escolhida") >= 0,
+          "transição: o fluxo real do drawer aplica a guarda ANTES de chamar a rede");
+        montarSol();
+        stubar({ get: () => sol, list: () => [k1, k2, k3] });
+        $("dsStatus").value = "Em Cotacao";
+        await gravarStatusSol(sol);
+        ok(patches().length === 0 && $("dsMsg").textContent === "Nada foi alterado.",
+          "transição: gravar o mesmo status não gera chamada de rede");
+        montarSol();
+        stubar({ get: () => sol, list: () => [k1, k2, k3] });
+        $("dsStatus").value = "Em Aprovacao";
+        await gravarStatusSol(sol);
+        ok(patches("Solicitacoes_Compra").length === 1 && patches()[0].campos.Status === "Em Aprovacao" &&
+           typeof patches()[0].campos.Data_Ultima_Mudanca_Status === "string" && Object.keys(patches()[0].campos).length === 2,
+          "transição: PATCH mínimo — status + trilha Data_Ultima_Mudanca_Status, nada além");
+
+        // nova solicitação: nunca gravar ""
+        montarSol();
+        stubar({ get: () => sol, list: () => [k1, k2, k3] });
+        produtos = []; montarFormNovaSol();
+        $("nsTitulo").value = "Cabo"; $("nsQtd").value = "3"; $("nsData").value = "2026-08-20";
+        $("nsSolic").value = ""; $("nsObs").value = ""; $("nsUrg").value = ""; $("nsProduto").value = ""; $("nsOS").value = "";
+        await salvarNovaSol();
+        const cNova = creates("Solicitacoes_Compra")[0].campos;
+        ok(Object.keys(cNova).every(k => cNova[k] !== ""),
+          "nova solicitação: nenhuma chave entra no POST com string vazia");
+        ok(!("Urgencia" in cNova) && !("Solicitante" in cNova) && !("Observacoes" in cNova) && !("ProdutoLookupId" in cNova),
+          "nova solicitação: campo em branco é OMITIDO do POST, não gravado vazio");
+        ok(cNova.Status === SOL_STATUS_INICIAL && cNova.Origem_Solicitacao === "Solicitacao Manual" &&
+           cNova.Data_Necessidade === "2026-08-20T03:00:00Z",
+          "nova solicitação: nasce em “" + SOL_STATUS_INICIAL + "”, origem derivada da OS e data na meia-noite de Brasília");
+
+        /* ============ 5. CATÁLOGO VERSIONADO — regra do commit 076bce1 ============ */
+        ok(SUP.ehVigente({ Versao: 1 }) === true && SUP.ehVigente({ Versao: 1, Versao_Fim: "" }) === true &&
+           SUP.ehVigente({ Versao: 1, Versao_Fim: 1 }) === false,
+          "ehVigente: revisão é vigente enquanto Versao_Fim está vazia");
+        ok(SUP.proximaRevisao({ Versao: 1 }) === 2 && SUP.proximaRevisao({}) === 2 && SUP.proximaRevisao({ Versao: "3" }) === 4,
+          "proximaRevisao: sempre a atual + 1, tolerando Versao ausente ou string");
+        ok(SUP.chaveVersao("CAB-025", 2) === "CAB-025|v2" && SUP.chaveVersao("CAB-025", null) === "CAB-025|v1",
+          "chaveVersao: espelha a Chave_Versao única do servidor");
+
+        prdCampoChoices = { Categoria: ["Elétrica", "Hidráulica"], Unidade: ["un", "m"] };
+        const pVig = { id: "10", fields: { Title: "Cabo 2,5mm", Codigo_Interno: "CAB-025", Ativo: true, Versao: 1, Categoria: "Elétrica", Estoque_Atual: 10, Estoque_Reservado: 4, Estoque_Disponivel: 6, Custo_Medio: 2 } };
+        const pEnc = { id: "9", fields: { Title: "Cabo 2,5mm (antigo)", Codigo_Interno: "CAB-025", Ativo: true, Versao: 1, Versao_Fim: 1, Estoque_Atual: 10, Estoque_Disponivel: 0, Custo_Medio: 100 } };
+        produtos = [pVig, pEnc]; prdMap = { "10": pVig, "9": pEnc }; nomeProduto = {};
+        $("fBusca").value = ""; $("fSemEstoque").checked = false; $("fSoAtivos").checked = false;
+        renderPrd();
+        ok($("kPrdTotal").textContent === "1",
+          "catálogo versionado: o KPI de produtos conta só revisões VIGENTES");
+        ok($("kPrdSem").textContent === "0",
+          "catálogo versionado: o KPI de “sem disponibilidade” ignora a revisão encerrada (senão o mesmo produto contaria duas vezes)");
+        ok($("kPrdCusto").textContent === EG.BRL(20),
+          "catálogo versionado: o custo total em estoque soma só vigentes (a encerrada duplicaria o valor)");
+        ok($("tbPrd").innerHTML.indexOf("Cabo 2,5mm (antigo)") === -1 && $("tbPrd").innerHTML.indexOf("Cabo 2,5mm") >= 0,
+          "catálogo versionado: a tabela mostra a vigente e não a encerrada");
+        ok($("cntPrd").textContent.indexOf("preservada") >= 0,
+          "catálogo versionado: a revisão encerrada é PRESERVADA e contada à vista, não apagada em silêncio");
+
+        // revisão encerrada: formulário visível, porém desabilitado e com motivo
+        drawerPrd(pEnc);
+        const htmlEnc = $("drawer").innerHTML;
+        ok(htmlEnc.indexOf("epTitle") >= 0 && htmlEnc.indexOf("epSalvar") >= 0,
+          "revisão encerrada: o formulário NÃO some — a opção continua visível");
+        ok(($("epTitle") || {}).disabled === true && ($("epCod") || {}).disabled === true &&
+           ($("epCat") || {}).disabled === true && ($("epAtivo") || {}).disabled === true && ($("epSalvar") || {}).disabled === true,
+          "revisão encerrada: todos os campos e o botão saem DESABILITADOS");
+        ok(htmlEnc.indexOf("encerrada") >= 0 && htmlEnc.indexOf("revisão vigente") >= 0,
+          "revisão encerrada: o motivo é dito e aponta para onde o usuário deve ir (a revisão vigente)");
+        stubar({});
+        await gravarPrd(pEnc);
+        ok(log.length === 0 && $("epMsg").textContent.indexOf("encerrada") >= 0,
+          "revisão encerrada: mesmo chamando a gravação direto, nada vai à rede (guarda em código, não só disabled)");
+        // 2ª camada, igual ao aceite: com o DOM adulterado (campos reabilitados
+        // e descrição trocada) a guarda em código tem de segurar do mesmo jeito
+        ["epTitle", "epCod", "epCat", "epUni", "epAtivo", "epObs", "epSalvar"].forEach(id => { const el = $(id); if (el) el.disabled = false; });
+        $("epTitle").value = "Cabo adulterado";
+        stubar({});
+        await gravarPrd(pEnc);
+        ok(log.length === 0 && $("epMsg").textContent.indexOf("encerrada") >= 0,
+          "revisão encerrada + DOM adulterado: a guarda em código recusa ANTES do dirty tracking e antes da rede");
+
+        // editar a vigente CRIA revisão: fecha a atual ANTES de criar a próxima
+        drawerPrd(pVig);
+        ok($("drawer").innerHTML.indexOf("Salvar cria a revisão v2") >= 0,
+          "catálogo versionado: o formulário avisa que salvar CRIA a revisão v2 e preserva a v1");
+        $("epTitle").value = "Cabo 2,5mm azul";
+        const pAntDepois = { id: "10", fields: Object.assign({}, pVig.fields, { Versao_Fim: 1 }) };
+        stubar({ get: (u) => /items\/900/.test(u) ? { id: "900", fields: { Title: "Cabo 2,5mm azul", Codigo_Interno: "CAB-025", Versao: 2 } } : pAntDepois });
+        await gravarPrd(pVig);
+        const iPatch = log.findIndex(x => x.op === "patch"), iCreate = log.findIndex(x => x.op === "create");
+        ok(iPatch >= 0 && iCreate >= 0 && iPatch < iCreate,
+          "catálogo versionado: a revisão atual é FECHADA antes de a próxima ser criada (a unicidade de Chave_Vigente vale também no PATCH)");
+        const fechar = log[iPatch].campos, nova = log[iCreate].campos;
+        ok(fechar.Versao_Fim === 1 && fechar.Chave_Vigente === null && Object.keys(fechar).length === 2,
+          "catálogo versionado: o PATCH na linha antiga só fecha o intervalo — NÃO reescreve Title/Codigo (nada de PATCH destrutivo)");
+        ok(nova.Title === "Cabo 2,5mm azul" && nova.Versao === 2 && nova.Chave_Versao === "CAB-025|v2" && nova.Chave_Vigente === "CAB-025",
+          "catálogo versionado: a nova revisão nasce com o valor editado, Versao=2 e as duas chaves de unicidade");
+        ok(nova.Categoria === "Elétrica" && nova.Codigo_Interno === "CAB-025",
+          "catálogo versionado: a nova revisão HERDA o que não foi alterado");
+        ok(!("Estoque_Atual" in nova) && !("Estoque_Reservado" in nova) && !("Estoque_Disponivel" in nova) && !("Custo_Medio" in nova),
+          "catálogo versionado: campos de ESTOQUE não são copiados para a nova revisão (outro dono — copiar criaria segunda verdade)");
+
+        // POST recusado: a revisão anterior é REABERTA (senão o código fica sem vigente)
+        drawerPrd(pVig);
+        $("epTitle").value = "Cabo 2,5mm verde";
+        stubar({ get: () => pVig, create: () => Promise.reject(new Error("Graph 400 — duplicate value Chave Vigente")) });
+        await gravarPrd(pVig);
+        const ps = patches("Produtos");
+        ok(ps.length === 2 && ps[1].campos.Versao_Fim === null && ps[1].campos.Chave_Vigente === "CAB-025",
+          "rollback da revisão: POST recusado reabre a revisão anterior — o código nunca fica SEM revisão vigente");
+        ok($("epMsg").textContent.indexOf("já existe outra revisão VIGENTE") >= 0 && $("epMsg").textContent.indexOf("nada foi perdido") >= 0,
+          "rollback da revisão: a recusa do servidor vira frase acionável + confirmação de que nada foi perdido");
+
+        drawerPrd(pVig);
+        $("epTitle").value = "Cabo 2,5mm preto";
+        stubar({
+          get: () => pVig, create: () => Promise.reject(new Error("Graph 500")),
+          patch: (l, id, c) => c.Versao_Fim === null ? Promise.reject(new Error("rede caiu")) : Promise.resolve({})
+        });
+        await gravarPrd(pVig);
+        ok(/sem revisão vigente/.test($("epMsg").textContent) && /ATENÇÃO/.test($("epMsg").textContent),
+          "rollback da revisão: se nem a reabertura funciona, a tela DENUNCIA que o código ficou sem revisão vigente (não finge sucesso)");
+
+        // nada mudou => nenhuma revisão é criada
+        drawerPrd(pVig);
+        stubar({});
+        await gravarPrd(pVig);
+        ok(log.length === 0 && $("epMsg").textContent === "Nada foi alterado.",
+          "catálogo versionado: salvar sem alterar NÃO cria revisão (senão a lista encheria de revisões idênticas)");
+
+        ok(SUP.motivoRecusa({ message: "duplicate value Chave Vigente" }).indexOf("Recarregue") >= 0 &&
+           SUP.motivoRecusa({ message: "duplicate value Chave Versao" }).indexOf("Recarregue") >= 0,
+          "motivoRecusa: duplicidade de Chave_Vigente e de Chave_Versao dão frases DIFERENTES e acionáveis");
+        ok(SUP.motivoRecusa({ message: "Falha na validação de dados de lista" }).indexOf("3 caracteres") >= 0,
+          "motivoRecusa: a recusa muda de “validação de dados de lista” para a regra concreta que o usuário quebrou");
+        ok(SUP.motivoRecusa({ message: "timeout" }) === "",
+          "motivoRecusa: erro desconhecido NÃO é traduzido em palpite — cai na mensagem crua");
+        ok(SUP.validarNovoProduto({ titulo: "x", cod: "ab" }).erros.join(" ").indexOf("3 caracteres") >= 0 &&
+           SUP.validarNovoProduto({ titulo: "x", cod: " abc " }).erros.join(" ").indexOf("espaço") >= 0 &&
+           SUP.validarNovoProduto({ titulo: "x", cod: "abc" }).ok === true,
+          "validarNovoProduto: repete as 3 regras do servidor para dizer QUAL delas o usuário quebrou");
+        ok(SUP.validarNovoProduto({ titulo: "", cod: "" }).erros.length === 2,
+          "validarNovoProduto: descrição e código são ambos obrigatórios");
+
+        // criação: nasce v1 vigente e sem string vazia
+        abreDrawer("Novo produto", blocoNovoPrd(), {});
+        $("npSalvar").onclick = salvarNovoPrd;
+        $("npTitle").value = "Disjuntor 20A"; $("npCod").value = "DIS-020";
+        $("npCat").value = ""; $("npUni").value = ""; $("npObs").value = "";
+        stubar({ get: () => ({ id: "900", fields: { Title: "Disjuntor 20A", Versao: 1 } }) });
+        await salvarNovoPrd();
+        const cNovoP = creates("Produtos")[0].campos;
+        ok(cNovoP.Versao === 1 && cNovoP.Chave_Versao === "DIS-020|v1" && cNovoP.Chave_Vigente === "DIS-020" && cNovoP.Ativo === true,
+          "novo produto: nasce na revisão 1, já vigente, com as duas chaves de unicidade");
+        ok(!("Categoria" in cNovoP) && !("Unidade" in cNovoP) && !("Observacoes" in cNovoP) &&
+           Object.keys(cNovoP).every(k => cNovoP[k] !== ""),
+          "novo produto: campo em branco é OMITIDO do POST (nunca gravar \"\")");
+      } finally {
+        EG.patchItemFields = REAL.patch; EG.createItem = REAL.create;
+        EG.resolveSite = REAL.site; EG.gget = REAL.get; EG.listItems = REAL.list;
+        gravandoOrc = false; gravandoPrd = false; salvandoPrd = false; salvandoSol = false;
+        salvandoCot = false; gravandoSol = false; escolhendoCot = false;
+        orcamentos = snap.orcamentos; produtos = snap.produtos; itens = snap.itens;
+        orcMap = snap.orcMap; prdMap = snap.prdMap; nomeProduto = snap.nomeProduto;
+        nomeCliente = snap.nomeCliente; itensCols = snap.itensCols;
+        solicitacoes = snap.solicitacoes; cotacoes = snap.cotacoes; fornecedores = snap.fornecedores;
+        ordens = snap.ordens; solMap = snap.solMap; nomeFornecedor = snap.nomeFornecedor; nomeOS = snap.nomeOS;
+        solCampoChoices = snap.solCampoChoices; cotCampoChoices = snap.cotCampoChoices;
+        prdCampoChoices = snap.prdCampoChoices; orcCampoChoices = snap.orcCampoChoices;
+        $("drawer").innerHTML = snap.drawer; $("tbOrc").innerHTML = snap.tbOrc; $("tbPrd").innerHTML = snap.tbPrd;
+        $("fStatus").innerHTML = snap.fStatus; $("status").textContent = snap.statusTxt; $("status").className = snap.statusCls;
+        closeDrawer();
+      }
+
+      const r = { ok: falhas.length === 0, total: total, falhas: falhas };
+      console.log("SUP.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
 
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>

@@ -1363,6 +1363,455 @@
       setUsuario: (n, e) => { usuarioNome = n; usuarioEmail = e || ""; }
     };
 
+    /* =========================================================================
+       SUITE DE ASSERÇÃO (item 12, 2ª passada) — FER.assertRegras().
+       Trava as regras que ESTA tela impõe:
+         1) MATRIZ DE COMPATIBILIDADE no início de dia: filtra por
+            Tipo_OS_Completo_Valor, deduplica por catálogo com Obrigatória
+            vencendo Recomendada, e — desde que a lista virou multi-eixo
+            (item 10) — linhas de OUTROS eixos não podem poluir o checklist;
+         2) TRAVA DE CALIBRAÇÃO: vencida/sem data bloqueia alocação e início de
+            dia, vencimento HOJE ainda vale, e o item bloqueado aparece
+            desabilitado COM MOTIVO em vez de sumir;
+         3) CATÁLOGO VERSIONADO: editar cria revisão (fecha a atual, cria a
+            próxima), tabela só com vigentes, e o lookup do patrimônio NÃO
+            oferece revisão encerrada — mas mantém a que já estava apontada;
+         4) MOBILIZAÇÃO/DESMOBILIZAÇÃO: revalidação no momento do confirmar,
+            PATCH mínimo, limpeza intencional dos lookups na devolução e
+            registro de devolução com autor e carimbo.
+
+       ATENÇÃO — esta suíte é ASSÍNCRONA: use `await FER.assertRegras()`.
+       As regras centrais só existem dentro de fluxos de gravação; provar ordem
+       de PATCH/POST e revalidação exige rodar o fluxo. Nenhuma rede é tocada:
+       EG.patchItemFields/createItem/gget/resolveSite viram gravadores de
+       chamada, e estado + DOM são restaurados no finally.
+       ========================================================================= */
+    window.FER.assertRegras = async function () {
+      const falhas = []; let total = 0;
+      const ok = (c, regra) => { total++; if (!c) falhas.push(regra); };
+
+      const snap = {
+        catalogo: catalogo, patrimonio: patrimonio, vinculos: vinculos, oss: oss,
+        tecnicos: tecnicos, clientes: clientes, carregado: carregado, secAtual: secAtual,
+        tipoOS: CHOICES.Tipo_OS_Completo.slice(), usuarioNome: usuarioNome, usuarioEmail: usuarioEmail,
+        drawer: $("drawer").innerHTML, diaOS: $("diaOS").innerHTML,
+        statusTxt: $("status").textContent, statusCls: $("status").className
+      };
+      const REAL = { patch: EG.patchItemFields, create: EG.createItem, site: EG.resolveSite, get: EG.gget };
+      let log = [];
+      const stubar = (cfg) => {
+        cfg = cfg || {}; log = [];
+        EG.resolveSite = () => Promise.resolve("site-de-teste");
+        EG.gget = (url) => {
+          log.push({ op: "get", url: url });
+          if (cfg.get) return Promise.resolve(cfg.get(url));
+          const m = /items\/([^?]+)/.exec(url); const id = m ? m[1] : "0";
+          const orig = mapPat[id] || mapCat[id] || mapVin[id] || null;
+          return Promise.resolve({ id: id, fields: Object.assign({}, (orig && orig.fields) || {}) });
+        };
+        EG.patchItemFields = (l, id, campos) => { log.push({ op: "patch", lista: l, id: String(id), campos: campos }); return cfg.patch ? cfg.patch(l, String(id), campos) : Promise.resolve({}); };
+        EG.createItem = (l, campos) => { log.push({ op: "create", lista: l, campos: campos }); return cfg.create ? cfg.create(l, campos) : Promise.resolve({ id: "900", fields: JSON.parse(JSON.stringify(campos)) }); };
+      };
+      const patches = (lista) => log.filter(x => x.op === "patch" && (!lista || x.lista === lista));
+      const creates = (lista) => log.filter(x => x.op === "create" && (!lista || x.lista === lista));
+
+      // datas DateOnly (meia-noite UTC), como o SharePoint devolve
+      const dISO = (delta) => {
+        const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() + delta);
+        const p = (n) => String(n).padStart(2, "0");
+        return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + "T00:00:00Z";
+      };
+      const it = (id, f) => ({ id: String(id), fields: f });
+
+      /* ---------------- fixture ---------------- */
+      const TIPO = "Instalação", TIPO2 = "Manutenção";
+      const cat1 = it(1, { Title: "Multímetro", Codigo_Interno: "MUL-001", Requer_Calibracao: true, Versao: 1, Categoria_Ferramenta: "Medição" });
+      const cat2 = it(2, { Title: "Alicate", Codigo_Interno: "ALI-001", Requer_Calibracao: false, Versao: 1 });
+      const cat3 = it(3, { Title: "Trena (revisão encerrada)", Codigo_Interno: "TRE-001", Versao: 1, Versao_Fim: 1 });
+      const cat4 = it(4, { Title: "Trena", Codigo_Interno: "TRE-001", Versao: 2 });
+      const CATS = [cat1, cat2, cat3, cat4];
+
+      const pOk = it(11, { Title: "PAT-011", CatalogoLookupId: 1, Status_Ferramenta: "Disponível", Data_Vencimento_Calibracao: dISO(30) });
+      const pVenc = it(12, { Title: "PAT-012", CatalogoLookupId: 1, Status_Ferramenta: "Disponível", Data_Vencimento_Calibracao: dISO(-1) });
+      const pSemData = it(13, { Title: "PAT-013", CatalogoLookupId: 1, Status_Ferramenta: "Disponível" });
+      const pAli = it(14, { Title: "PAT-014", CatalogoLookupId: 2, Status_Ferramenta: "Disponível" });
+      const pAloc = it(15, { Title: "PAT-015", CatalogoLookupId: 2, Status_Ferramenta: "Alocada", OS_AtualLookupId: 100, Alocada_ParaLookupId: 50 });
+      const pHoje = it(16, { Title: "PAT-016", CatalogoLookupId: 1, Status_Ferramenta: "Disponível", Data_Vencimento_Calibracao: dISO(0) });
+      const pEnc = it(17, { Title: "PAT-017", CatalogoLookupId: 2, Status_Ferramenta: "Alocada", OS_AtualLookupId: 106, Alocada_ParaLookupId: 50 });
+      const pLegado = it(18, { Title: "PAT-018", CatalogoLookupId: 3, Status_Ferramenta: "Disponível" }); // aponta revisão ENCERRADA
+      const PATS = [pOk, pVenc, pSemData, pAli, pAloc, pHoje, pEnc, pLegado];
+
+      const vRec1 = it(21, { Tipo_OS_Completo_Valor: TIPO, CatalogoLookupId: 1, Exigencia: "Recomendada" });
+      const vObr1 = it(22, { Tipo_OS_Completo_Valor: TIPO, CatalogoLookupId: 1, Exigencia: "Obrigatória" });
+      const vRec2 = it(23, { Tipo_OS_Completo_Valor: TIPO, CatalogoLookupId: 2, Exigencia: "Recomendada" });
+      const vOutroTipo = it(24, { Tipo_OS_Completo_Valor: TIPO2, CatalogoLookupId: 2, Exigencia: "Obrigatória" });
+      // item 10: a mesma lista passou a guardar os outros eixos (Função/EPI/
+      // Material/Evidência), que apontam o alvo por Alvo_Codigo e NÃO usam o
+      // lookup Catalogo. É o guard `if (vf.CatalogoLookupId == null) return;`
+      // que impede essas linhas de virarem bloco no checklist de ferramenta.
+      const vEixoEPI = it(25, { Tipo_OS_Completo_Valor: TIPO, Eixo: "EPI", Alvo_Codigo: "EPI-CAPACETE", Exigencia: "Obrigatória" });
+      const vEixoFuncao = it(26, { Tipo_OS_Completo_Valor: TIPO, Eixo: "Função", Alvo_Codigo: "ELETRICISTA", Exigencia: "Obrigatória" });
+      const VINS = [vRec1, vObr1, vRec2, vOutroTipo, vEixoEPI, vEixoFuncao];
+
+      const os1 = it(100, { Title: "OS-100", Tipo_OS_Completo: TIPO, TecnicoLookupId: 50, ClienteLookupId: 60, Status: "Em Andamento" });
+      const osSemTec = it(101, { Title: "OS-101", Tipo_OS_Completo: TIPO, Status: "Em Andamento" });
+      const osSemTipo = it(102, { Title: "OS-102", TecnicoLookupId: 50, Status: "Em Andamento" });
+      const osTipoSemVinc = it(103, { Title: "OS-103", Tipo_OS_Completo: "Reparo", TecnicoLookupId: 50, Status: "Em Andamento" });
+      const osEncVazia = it(104, { Title: "OS-104", Tipo_OS_Completo: TIPO, Status: "Concluída" });
+      const osTipo2 = it(105, { Title: "OS-105", Tipo_OS_Completo: TIPO2, TecnicoLookupId: 50, Status: "Em Andamento" });
+      const osEncComFer = it(106, { Title: "OS-106", Tipo_OS_Completo: TIPO, Status: "Concluída" });
+      const OSS = [os1, osSemTec, osSemTipo, osTipoSemVinc, osEncVazia, osTipo2, osEncComFer];
+      const TECS = [it(50, { Title: "João Técnico" })], CLIS = [it(60, { Title: "Cliente X" })];
+
+      const montar = (vins) => {
+        setDados(CATS.map(c => it(c.id, Object.assign({}, c.fields))),
+                 PATS.map(p => it(p.id, Object.assign({}, p.fields))),
+                 (vins || VINS).map(v => it(v.id, Object.assign({}, v.fields))),
+                 OSS.map(o => it(o.id, Object.assign({}, o.fields))), TECS, CLIS);
+        carregado = true; $("tabs").hidden = false;
+        CHOICES.Tipo_OS_Completo = [TIPO, TIPO2, "Reparo"];
+        montarFiltros(); renderTudo();
+      };
+      const abrirOS = (id) => { montarSelectOS(); $("diaOS").value = String(id); renderDia(); };
+      const blocoDe = (catId) => diaBlocosInfo.filter(b => String(b.catId) === String(catId))[0];
+      const radio = (catId, patId) => {
+        const b = blocoDe(catId); if (!b) return null;
+        return document.querySelector("input[name='dsel_" + b.key + "'][value='" + patId + "']");
+      };
+
+      try {
+        montar(); mostrarSec("dia");
+
+        /* ========== 1. MATRIZ DE COMPATIBILIDADE (renderInicio) ========== */
+        abrirOS(100);
+        ok(diaBlocosInfo.length === 2,
+          "matriz: o checklist tem um bloco por CATÁLOGO distinto do tipo da OS (dedup) — nem por vínculo, nem por eixo");
+        ok(blocoDe(1) && blocoDe(1).exig === "Obrigatória",
+          "matriz: catálogo que aparece como Recomendada E Obrigatória vale como OBRIGATÓRIA (a exigência mais forte vence)");
+        ok(blocoDe(2) && blocoDe(2).exig === "Recomendada",
+          "matriz: catálogo exigido só como Recomendada continua Recomendada (a mais forte não vaza para os outros)");
+        ok(diaBlocosInfo[0].exig === "Obrigatória",
+          "matriz: os blocos Obrigatórios vêm primeiro (o que bloqueia o dia é o que se lê antes)");
+        ok(!diaBlocosInfo.some(b => b.catId == null),
+          "matriz multi-eixo: linha de outro eixo (EPI/Função) não tem lookup de catálogo e NÃO vira bloco no checklist de ferramenta");
+        ok($("diaBlocos").innerHTML.indexOf("EPI-CAPACETE") === -1 && $("diaBlocos").innerHTML.indexOf("ELETRICISTA") === -1,
+          "matriz multi-eixo: o alvo dos outros eixos (Alvo_Codigo) não aparece no checklist de início de dia desta tela");
+        abrirOS(105);
+        ok(diaBlocosInfo.length === 1 && String(diaBlocosInfo[0].catId) === "2" && diaBlocosInfo[0].exig === "Obrigatória",
+          "matriz: o filtro por Tipo_OS_Completo_Valor vale nos dois sentidos — a OS de “" + TIPO2 + "” vê só o vínculo dela");
+
+        // linha de OUTRO eixo que TAMBÉM traga o lookup legado de catálogo
+        montar(VINS.concat([it(27, { Tipo_OS_Completo_Valor: TIPO, Eixo: "Material", Alvo_Codigo: "MAT-CABO", Exigencia: "Obrigatória", CatalogoLookupId: 2 })]));
+        abrirOS(100);
+        ok(blocoDe(2) && blocoDe(2).exig === "Recomendada",
+          "matriz multi-eixo: linha de eixo != Ferramenta NÃO pode alterar o checklist de ferramenta (aqui ela promove o catálogo 2 a Obrigatória — o filtro é só por CatalogoLookupId, não por Eixo)");
+        montar();
+
+        abrirOS(102);
+        ok($("diaAviso").hidden === false && $("diaAviso").innerHTML.indexOf("Tipo_OS_Completo") >= 0 &&
+           diaBlocosInfo.length === 0 && $("btnInicio").disabled === true,
+          "matriz: OS sem Tipo_OS_Completo não inventa exigência — avisa e mantém o início bloqueado");
+        abrirOS(103);
+        ok($("diaAviso").hidden === false && $("diaAviso").innerHTML.indexOf("Nenhum vínculo") >= 0 && $("btnInicio").disabled === true,
+          "matriz: tipo sem vínculo cadastrado é dito em voz alta (nada é exigido) em vez de liberar em silêncio");
+
+        /* ========== 2. TRAVA DE CALIBRAÇÃO ========== */
+        abrirOS(100);
+        ok(radio(1, 12) && radio(1, 12).disabled === true && radio(1, 13) && radio(1, 13).disabled === true,
+          "calibração: item vencido e item sem data de vencimento ficam DESABILITADOS no checklist");
+        ok(radio(1, 11) && radio(1, 11).disabled === false && radio(1, 16) && radio(1, 16).disabled === false,
+          "calibração: item em dia (inclusive vencendo HOJE) continua selecionável");
+        ok($("diaBlocos").innerHTML.indexOf("PAT-012") >= 0 && /calibração vencida em/.test($("diaBlocos").innerHTML),
+          "calibração: o item bloqueado APARECE com o motivo na frente — transparência em vez de sumiço");
+        ok(radio(2, 15) && radio(2, 15).disabled === true && $("diaBlocos").innerHTML.indexOf("OS-100") >= 0,
+          "checklist: item já Alocada aparece desabilitado dizendo em qual OS está");
+
+        ok(calibracao({ CatalogoLookupId: 2 }).requer === false && calibracao({ CatalogoLookupId: 2 }).vencida === false,
+          "calibracao: catálogo que não exige calibração nunca fica vencido");
+        ok(calibracao({}).requer === false,
+          "calibracao: item sem catálogo não inventa exigência de calibração");
+        ok(calibracao({ CatalogoLookupId: 1 }).vencida === true &&
+           calibracao({ CatalogoLookupId: 1 }).motivo.indexOf("não tem data") >= 0,
+          "calibracao: exige calibração e não tem data => VENCIDA (direção segura: sem prova, bloqueia)");
+        ok(calibracao({ CatalogoLookupId: 1, Data_Vencimento_Calibracao: "banana" }).vencida === true,
+          "calibracao: data ilegível conta como vencida (nunca passa por não conseguir ler)");
+        ok(calibracao({ CatalogoLookupId: 1, Data_Vencimento_Calibracao: dISO(-1) }).vencida === true,
+          "calibracao: vencimento de ontem está vencido");
+        ok(calibracao({ CatalogoLookupId: 1, Data_Vencimento_Calibracao: dISO(0) }).vencida === false,
+          "calibracao: vencimento HOJE ainda vale (vence ao fim do dia) — o erro de fuso de 1 dia mataria o item cedo demais");
+        ok(calibracao({ CatalogoLookupId: 1, Data_Vencimento_Calibracao: dISO(1) }).vencida === false,
+          "calibracao: vencimento futuro não bloqueia");
+
+        const colher = () => { const e = []; return { falha: (n, m) => e.push(n + ": " + m), erros: e }; };
+        let cl = colher();
+        validarPat({ Status_Ferramenta: "Alocada", Catalogo: "1", Data_Vencimento_Calibracao: "" }, cl.falha);
+        ok(cl.erros.length === 1 && cl.erros[0].indexOf("Status_Ferramenta") === 0 && cl.erros[0].indexOf("trava de calibração") >= 0,
+          "trava no formulário: não deixa gravar Status “Alocada” para item cujo catálogo exige calibração e está sem vencimento");
+        cl = colher();
+        validarPat({ Status_Ferramenta: "Alocada", Catalogo: "1", Data_Vencimento_Calibracao: hojeKey() }, cl.falha);
+        ok(cl.erros.length === 0,
+          "trava no formulário: com vencimento HOJE a alocação passa (mesma régua do checklist)");
+        cl = colher();
+        validarPat({ Status_Ferramenta: "Em Manutenção", Catalogo: "1", Data_Vencimento_Calibracao: "" }, cl.falha);
+        ok(cl.erros.length === 0,
+          "trava no formulário: a trava é só do status “Alocada” — não impede registrar o item em manutenção");
+        cl = colher();
+        validarPat({ Status_Ferramenta: "Alocada", Catalogo: "2", Data_Vencimento_Calibracao: "" }, cl.falha);
+        ok(cl.erros.length === 0,
+          "trava no formulário: catálogo que não exige calibração aloca sem vencimento");
+
+        // a trava vale no fluxo REAL do formulário, não só na função solta
+        abrirForm("pat", null);
+        $("c_Title").value = "PAT-NOVO"; $("c_Catalogo").value = "1";
+        $("c_Status_Ferramenta").value = "Alocada"; $("c_Data_Vencimento_Calibracao").value = "";
+        stubar({});
+        await salvar("pat", null);
+        ok(log.length === 0 && $("e_Status_Ferramenta").textContent.indexOf("trava de calibração") >= 0,
+          "trava no formulário: o fluxo real de gravação recusa antes da rede e explica no PRÓPRIO campo");
+
+        /* ========== 3. CHECKLIST BLOQUEANTE ========== */
+        abrirOS(100);
+        ok($("btnInicio").disabled === true && $("diaPainel").className.indexOf("bloq") >= 0 &&
+           $("diaPainel").innerHTML.indexOf("Multímetro") >= 0,
+          "checklist: sem item marcado para a Obrigatória o início fica BLOQUEADO e o painel nomeia o que falta");
+        ok(document.querySelector("input[name='dsel_" + blocoDe(2).key + "'][value='']") &&
+           document.querySelector("input[name='dsel_" + blocoDe(2).key + "'][value='']").checked === true,
+          "checklist: bloco Recomendado tem a opção “não levar” marcada por padrão (não bloqueia o dia)");
+        ok(!document.querySelector("input[name='dsel_" + blocoDe(1).key + "'][value='']"),
+          "checklist: bloco Obrigatório NÃO tem a opção “não levar”");
+        radio(1, 11).checked = true; checarInicio();
+        ok($("btnInicio").disabled === false && $("diaPainel").className.indexOf("ok") >= 0,
+          "checklist: marcada a obrigatória, o início é LIBERADO");
+
+        /* ========== 4. MOBILIZAÇÃO (confirmar início de dia) ========== */
+        abrirOS(101); radio(1, 11).checked = true;
+        stubar({});
+        await confirmarInicio();
+        ok(log.length === 0 && $("diaMsg").textContent.indexOf("técnico") >= 0,
+          "mobilização: OS sem técnico não aloca nada — sem para quem alocar, a rastreabilidade quebraria");
+
+        abrirOS(100); radio(1, 11).checked = true;
+        mapPat["11"].fields.Status_Ferramenta = "Em Manutenção"; // outro usuário mexeu depois do render
+        stubar({});
+        await confirmarInicio();
+        ok(log.length === 0 && $("diaMsg").textContent.indexOf("não está mais Disponível") >= 0,
+          "mobilização: a trava é REVALIDADA no momento do confirmar (o estado pode ter mudado desde a renderização)");
+        mapPat["11"].fields.Status_Ferramenta = "Disponível";
+
+        abrirOS(100); radio(1, 12).checked = true; // vencido, via DOM adulterado
+        radio(1, 12).disabled = false;
+        stubar({});
+        await confirmarInicio();
+        ok(log.length === 0 && $("diaMsg").textContent.indexOf("calibração vencida") >= 0,
+          "mobilização: item com calibração vencida marcado à força (DOM adulterado) é recusado pela revalidação");
+
+        abrirOS(100); radio(1, 11).checked = true;
+        stubar({});
+        await confirmarInicio();
+        const pi = patches("Ferramentas_Patrimonio");
+        ok(pi.length === 1 && pi[0].id === "11",
+          "mobilização: grava só o item marcado (a Recomendada em “não levar” não é tocada)");
+        ok(pi[0].campos.Status_Ferramenta === "Alocada" && pi[0].campos.Alocada_ParaLookupId === 50 &&
+           pi[0].campos.OS_AtualLookupId === 100 && Object.keys(pi[0].campos).length === 3,
+          "mobilização: PATCH mínimo — exatamente Status, técnico e OS, com lookups NUMÉRICOS");
+
+        /* ========== 5. DESMOBILIZAÇÃO ========== */
+        montar(); usuarioNome = "Fulano"; usuarioEmail = "fulano@eletrium.com.br";
+        abrirOS(100);
+        ok($("desmobLista").innerHTML.indexOf("PAT-015") >= 0,
+          "desmobilização: lista os itens cuja OS_Atual é a OS selecionada");
+        $("dok_15").checked = false; $("dobs_15").value = "";
+        stubar({});
+        await confirmarDesmob();
+        ok(log.length === 0 && $("desmobMsg").textContent.indexOf("observação") >= 0,
+          "desmobilização: item devolvido com avaria SEM observação é recusado (registro mudo não serve de trilha)");
+        $("dok_15").checked = false; $("dobs_15").value = "chegou com o cabo rompido";
+        stubar({});
+        await confirmarDesmob();
+        const pd = patches("Ferramentas_Patrimonio");
+        ok(pd.length === 1 && pd[0].id === "15",
+          "desmobilização: grava um PATCH por item devolvido");
+        ok(pd[0].campos.Status_Ferramenta === "Disponível" &&
+           pd[0].campos.OS_AtualLookupId === null && pd[0].campos.Alocada_ParaLookupId === null,
+          "desmobilização: limpeza INTENCIONAL dos lookups — ferramenta devolvida não tem OS nem portador");
+        const reg = JSON.parse(pd[0].campos.Desmob_Checklist_JSON);
+        ok(reg.estado_ok === false && reg.observacao === "chegou com o cabo rompido" && reg.patrimonio.id === "15" && reg.os.id === "100",
+          "desmobilização: o registro guarda o estado, a observação, o item e a OS");
+        ok(reg.quem.indexOf("Fulano") >= 0 && reg.quem.indexOf("fulano@eletrium.com.br") >= 0 && typeof reg.quando === "string",
+          "desmobilização: o registro identifica QUEM devolveu (nome + e-mail, porque homônimos existem) e QUANDO");
+
+        montar();
+        ok(ehEncerrada(it(1, { Status: "Concluída" })) && ehEncerrada(it(1, { Status: "cancelada" })) &&
+           ehEncerrada(it(1, { Status: "FINALIZADA" })) && !ehEncerrada(it(1, { Status: "Em Andamento" })) && !ehEncerrada(it(1, {})),
+          "ehEncerrada: reconhece concluída/cancelada/finalizada sem depender de caixa, e não encerra OS em andamento");
+        montarSelectOS();
+        const opcoes = [...$("diaOS").options].map(o => o.value);
+        ok(opcoes.indexOf("104") === -1,
+          "select de OS: OS encerrada e sem ferramenta alocada sai da lista (não há o que iniciar nem devolver)");
+        ok(opcoes.indexOf("106") >= 0,
+          "select de OS: OS encerrada que AINDA tem ferramenta alocada continua na lista — senão a ferramenta ficaria presa");
+        abrirOS(106);
+        ok($("blkInicio").hidden === true && $("desmobLista").innerHTML.indexOf("PAT-017") >= 0,
+          "OS encerrada: o bloco de início some (não se inicia dia em OS concluída), mas a devolução continua possível");
+
+        /* ========== 6. CATÁLOGO VERSIONADO ========== */
+        ok(CAT.ehVigente({ Versao: 1 }) === true && CAT.ehVigente({ Versao: 1, Versao_Fim: "" }) === true &&
+           CAT.ehVigente({ Versao: 1, Versao_Fim: 1 }) === false,
+          "CAT.ehVigente: revisão é vigente enquanto Versao_Fim está vazia");
+        ok(CAT.proximaRevisao({ Versao: 1 }) === 2 && CAT.proximaRevisao({}) === 2 && CAT.proximaRevisao({ Versao: "3" }) === 4,
+          "CAT.proximaRevisao: sempre a atual + 1, tolerando Versao ausente ou string");
+        ok(CAT.chaveVersao("MUL-001", 2) === "MUL-001|v2" && CAT.chaveVersao("MUL-001", null) === "MUL-001|v1",
+          "CAT.chaveVersao: espelha a Chave_Versao única do servidor");
+        mostrarSec("cat");
+        ok($("cTbody").innerHTML.indexOf("revisão encerrada") === -1 && $("cTbody").innerHTML.indexOf("Trena") >= 0,
+          "catálogo versionado: a tabela mostra só a revisão VIGENTE de cada código");
+        ok($("cContador").textContent.indexOf("preservada") >= 0,
+          "catálogo versionado: a revisão encerrada é contada à vista como preservada, não apagada");
+
+        const fonte = fonteCatalogo();
+        ok(!fonte.some(o => String(o.id) === "3"),
+          "lookup do patrimônio: revisão ENCERRADA não é oferecida (vincular a ela já nasceria apontando para o passado)");
+        ok(fonte.some(o => String(o.id) === "4") && fonte.some(o => String(o.id) === "1"),
+          "lookup do patrimônio: as revisões vigentes continuam disponíveis");
+        ok((fonte.filter(o => String(o.id) === "1")[0] || {}).rotulo.indexOf("requer calibração") >= 0,
+          "lookup do patrimônio: o rótulo avisa quando o catálogo exige calibração");
+        ok(optsLookup(fonte, "3").indexOf("(valor atual — fora da lista)") >= 0,
+          "lookup do patrimônio: item que JÁ aponta uma revisão encerrada mantém o valor (o lookup não o apaga em silêncio)");
+        abrirForm("pat", mapPat["18"]);
+        ok($("c_Catalogo").value === "3",
+          "lookup do patrimônio: no formulário, o patrimônio legado continua com sua revisão encerrada selecionada");
+
+        abrirForm("cat", mapCat["4"]);
+        $("c_Title").value = "Trena 5m";
+        stubar({});
+        await salvar("cat", mapCat["4"]);
+        const iP = log.findIndex(x => x.op === "patch"), iC = log.findIndex(x => x.op === "create");
+        ok(iP >= 0 && iC >= 0 && iP < iC,
+          "catálogo versionado: fecha a revisão atual ANTES de criar a próxima (a unicidade de Chave_Vigente vale também no PATCH)");
+        ok(log[iP].campos.Versao_Fim === 2 && log[iP].campos.Chave_Vigente === null && Object.keys(log[iP].campos).length === 2,
+          "catálogo versionado: o PATCH na linha antiga só fecha o intervalo — não reescreve o conteúdo (nada de PATCH destrutivo)");
+        ok(log[iC].campos.Title === "Trena 5m" && log[iC].campos.Versao === 3 &&
+           log[iC].campos.Chave_Versao === "TRE-001|v3" && log[iC].campos.Chave_Vigente === "TRE-001",
+          "catálogo versionado: a nova revisão nasce com o valor editado, a próxima versão e as duas chaves de unicidade");
+
+        montar();
+        abrirForm("cat", mapCat["3"]); // revisão ENCERRADA
+        $("c_Title").value = "Trena adulterada";
+        stubar({});
+        await salvar("cat", mapCat["3"]);
+        ok(log.length === 0 && $("formMsg").textContent.indexOf("encerrada") >= 0,
+          "catálogo versionado: editar revisão encerrada é recusado antes da rede, apontando a revisão vigente");
+
+        montar();
+        abrirForm("cat", mapCat["4"]);
+        $("c_Title").value = "Trena 8m";
+        stubar({ create: () => Promise.reject(new Error("Graph 400 — duplicate value Chave Vigente")) });
+        await salvar("cat", mapCat["4"]);
+        const pc2 = patches("Ferramentas_Catalogo");
+        ok(pc2.length === 2 && pc2[1].campos.Versao_Fim === null && pc2[1].campos.Chave_Vigente === "TRE-001",
+          "rollback da revisão: POST recusado REABRE a revisão anterior — o código nunca fica sem revisão vigente");
+        ok($("formMsg").textContent.indexOf("já existe outra revisão vigente") >= 0 && $("formMsg").textContent.indexOf("nada foi perdido") >= 0,
+          "rollback da revisão: a recusa vira frase acionável + confirmação de que nada foi perdido");
+        montar();
+        abrirForm("cat", mapCat["4"]);
+        $("c_Title").value = "Trena 10m";
+        stubar({
+          create: () => Promise.reject(new Error("Graph 500")),
+          patch: (l, id, c) => c.Versao_Fim === null ? Promise.reject(new Error("rede caiu")) : Promise.resolve({})
+        });
+        await salvar("cat", mapCat["4"]);
+        ok(/sem revisão vigente/.test($("formMsg").textContent) && /ATENÇÃO/.test($("formMsg").textContent),
+          "rollback da revisão: se nem a reabertura funciona, a tela DENUNCIA que o código ficou sem revisão vigente");
+        ok(CAT.motivoRecusa({ message: "duplicate value Chave Vigente" }).indexOf("recarregue") >= 0 &&
+           CAT.motivoRecusa({ message: "duplicate value Chave Versao" }).indexOf("recarregue") >= 0 &&
+           CAT.motivoRecusa({ message: "Falha na validação de dados de lista" }).indexOf("3 caracteres") >= 0 &&
+           CAT.motivoRecusa({ message: "timeout" }) === "",
+          "CAT.motivoRecusa: cada recusa conhecida vira instrução; erro desconhecido NÃO vira palpite");
+
+        montar();
+        abrirForm("cat", null);
+        $("c_Title").value = "Torquímetro"; $("c_Codigo_Interno").value = "TOR-001";
+        $("c_Categoria_Ferramenta").value = ""; $("c_Descricao").value = ""; $("c_Requer_Calibracao").value = "";
+        stubar({});
+        await salvar("cat", null);
+        const cNovo = creates("Ferramentas_Catalogo")[0].campos;
+        ok(cNovo.Versao === 1 && cNovo.Chave_Versao === "TOR-001|v1" && cNovo.Chave_Vigente === "TOR-001",
+          "catálogo: ferramenta nova nasce na revisão 1, já vigente, com as duas chaves");
+        ok(!("Categoria_Ferramenta" in cNovo) && !("Descricao" in cNovo) && !("Requer_Calibracao" in cNovo) &&
+           Object.keys(cNovo).every(k => cNovo[k] !== ""),
+          "catálogo: campo em branco é OMITIDO do POST (nunca gravar \"\")");
+
+        /* ========== 7. FORMULÁRIO: dirty tracking e valores legados ========== */
+        montar();
+        abrirForm("pat", mapPat["14"]);
+        $("c_Numero_Serie").value = "SN-999";
+        stubar({});
+        await salvar("pat", mapPat["14"]);
+        const pp = patches("Ferramentas_Patrimonio");
+        ok(pp.length === 1 && Object.keys(pp[0].campos).length === 1 && pp[0].campos.Numero_Serie === "SN-999",
+          "dirty tracking: o PATCH leva SÓ o campo que mudou");
+        montar();
+        abrirForm("pat", mapPat["11"]);
+        $("c_Data_Vencimento_Calibracao").value = "";
+        stubar({});
+        await salvar("pat", mapPat["11"]);
+        ok(patches()[0].campos.Data_Vencimento_Calibracao === null,
+          "dirty tracking: campo esvaziado DE PROPÓSITO vai como null (limpa no SharePoint) — não como \"\"");
+        montar();
+        abrirForm("pat", mapPat["14"]);
+        stubar({});
+        await salvar("pat", mapPat["14"]);
+        ok(log.length === 0 && $("formMsg").textContent === "Nada foi alterado.",
+          "dirty tracking: nada mudou => nenhuma chamada de rede");
+
+        montar();
+        CHOICES.Tipo_OS_Completo = [TIPO, TIPO2];
+        ok(optsChoice("Tipo_OS_Completo", "Tipo Legado").indexOf("(valor atual — fora da lista)") >= 0,
+          "valor legado: tipo de OS que saiu dos choices continua selecionável (nunca apagado em silêncio)");
+        renderVin();
+        ok($("vTbody").innerHTML.indexOf("valor legado") === -1,
+          "vínculos: com todos os tipos dentro dos choices, nenhum é marcado como legado");
+        CHOICES.Tipo_OS_Completo = [TIPO2];
+        renderVin();
+        ok($("vTbody").innerHTML.indexOf("valor legado") >= 0,
+          "vínculos: tipo fora dos choices atuais de OS é SINALIZADO na tabela em vez de sumir");
+        CHOICES.Tipo_OS_Completo = [TIPO, TIPO2, "Reparo"];
+
+        montar();
+        abrirForm("vin", mapVin["23"]);
+        $("c_Catalogo").value = "1";
+        stubar({});
+        await salvar("vin", mapVin["23"]);
+        const pv = patches("Servico_Ferramenta_Obrigatoria")[0].campos;
+        ok(pv.CatalogoLookupId === 1 && typeof pv.CatalogoLookupId === "number",
+          "lookup: grava como <Campo>LookupId NUMÉRICO (regra do Graph)");
+        ok(pv.Title === TIPO + " × Multímetro",
+          "vínculo: o Title acompanha tipo/ferramenta quando um dos dois muda (a linha continua se descrevendo sozinha no SharePoint)");
+        ok(paraGraph({ tipo: "bool" }, "Sim") === true && paraGraph({ tipo: "bool" }, "Não") === false &&
+           paraGraph({ tipo: "number" }, "12") === 12 && String(paraGraph({ tipo: "date" }, "2026-08-10")).indexOf("2026-08-10") >= 0,
+          "paraGraph: booleano, número e data saem do formulário no tipo certo (data ao meio-dia local, não vira o dia no fuso)");
+      } finally {
+        EG.patchItemFields = REAL.patch; EG.createItem = REAL.create;
+        EG.resolveSite = REAL.site; EG.gget = REAL.get;
+        gravando = false; gravandoDia = false;
+        usuarioNome = snap.usuarioNome; usuarioEmail = snap.usuarioEmail;
+        CHOICES.Tipo_OS_Completo = snap.tipoOS;
+        setDados(snap.catalogo, snap.patrimonio, snap.vinculos, snap.oss, snap.tecnicos, snap.clientes);
+        carregado = snap.carregado;
+        $("tabs").hidden = !carregado;
+        if (carregado) { montarFiltros(); renderTudo(); mostrarSec(snap.secAtual); }
+        else { ["cat", "pat", "vin", "dia"].forEach(s => { $("sec_" + s).hidden = true; }); }
+        $("diaOS").innerHTML = snap.diaOS; $("diaBlocos").innerHTML = ""; $("desmobLista").innerHTML = "";
+        diaBlocosInfo = []; $("diaVazio").hidden = false; $("diaConteudo").hidden = true;
+        $("drawer").innerHTML = snap.drawer; fecharDrawer();
+        $("status").textContent = snap.statusTxt; $("status").className = snap.statusCls;
+      }
+
+      const r = { ok: falhas.length === 0, total: total, falhas: falhas };
+      console.log("FER.assertRegras:", JSON.stringify(r, null, 2));
+      return r;
+    };
+
     boot().catch(e => setStatus("Erro MSAL: " + e.message, "err"));
   </script>
 </body>
