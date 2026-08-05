@@ -38,11 +38,24 @@
       + data LOCAL, senão em Brasília (UTC-3) tudo viraria "1 dia antes".
 
     VÍNCULOS SERVIÇO×FERRAMENTA — sem exclusão e sem soft-delete:
-      o padrão do repo é nunca deletar itens, e a lista
-      Servico_Ferramenta_Obrigatoria NÃO tem campo Ativo. Decisão: a aba só
-      CRIA e LISTA; para corrigir um vínculo errado o gestor EDITA o item
-      existente no drawer (troca tipo de OS, ferramenta ou exigência) em vez
-      de criar outro e abandonar o antigo.
+      o padrão do repo é nunca deletar itens. Decisão: a aba só CRIA e LISTA;
+      para corrigir um vínculo errado o gestor EDITA o item existente no drawer
+      (troca tipo de OS, ferramenta ou exigência) em vez de criar outro e
+      abandonar o antigo.
+
+      ⚠ ATUALIZADO 05/08: este comentário dizia que a lista "NÃO tem campo
+      Ativo" — deixou de ser verdade. O item 10 (matriz de 6 eixos, commit
+      448b858) acrescentou `Ativo` (Boolean) e `Eixo` (Choice), e o consumidor
+      da matriz em os.html filtra por `Ativo !== false`. Esta aba ainda não
+      expõe nem `Ativo` nem `Eixo` no formulário: o que ela cria nasce sem
+      `Eixo` e o SERVIDOR grava "Ferramenta" por default (provado no item 10),
+      então as linhas continuam válidas aqui. Cadastro dos eixos novos ainda
+      não tem tela — ver PLANO/VERIFICACAO nos docs.
+
+      DÍVIDA relacionada: esta aba grava o vínculo pelo lookup `Catalogo`
+      (aponta REVISÃO) e não preenche `Alvo_Codigo` (raiz estável), que é o
+      campo que os consumidores dos eixos novos foram orientados a ler —
+      registrada em docs/VERIFICACAO-PARCIAIS-0408.md.
 
       Tipo_OS_Completo_Valor é TEXT de propósito: o select da UI é populado
       dinamicamente dos choices de OrdensDeServico.Tipo_OS_Completo (via
@@ -1082,7 +1095,20 @@
 
       // vínculos do tipo, deduplicados por catálogo — se o mesmo catálogo
       // aparecer como Obrigatória E Recomendada, vale a mais forte (Obrigatória)
-      const doTipo = vinculos.filter(v => (v.fields || {}).Tipo_OS_Completo_Valor === tipo);
+      // FILTRO POR EIXO (05/08) — desde o item 10 a lista guarda 6 eixos, não só
+      // ferramenta. Filtrar só por CatalogoLookupId != null NÃO basta: uma linha de
+      // eixo Material/EPI que também traga o lookup legado `Catalogo` entraria neste
+      // checklist e podia até promover um catálogo de Recomendada a Obrigatória.
+      // Vazio/ausente conta como "Ferramenta" porque é o default que o SERVIDOR grava
+      // (provado no item 10, P1+P1b) — é o que mantém as linhas antigas válidas aqui.
+      const ehEixoFerramenta = (vf) => {
+        const e = vf.Eixo;
+        return e == null || String(e).trim() === "" || e === "Ferramenta";
+      };
+      const doTipo = vinculos.filter(v => {
+        const vf = v.fields || {};
+        return vf.Tipo_OS_Completo_Valor === tipo && ehEixoFerramenta(vf);
+      });
       const porCat = {};
       doTipo.forEach(v => {
         const vf = v.fields || {};
