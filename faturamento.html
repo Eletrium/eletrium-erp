@@ -52,8 +52,6 @@
     .kcard .val { color: #e6edf3; font-weight: 600; font-size: .84rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
     .kcard .st { color: #f0883e; font-size: .74rem; margin-top: 4px; }
     .col-empty { color: #484f58; font-size: .78rem; text-align: center; padding: 14px 0; }
-    /* badge âmbar do "Aceito" legado (pode ter chegado pela web sem reserva de estoque) */
-    .b-semreserva { display: inline-block; border: 1px solid #d29922; color: #e3b341; background: #d2992218; border-radius: 999px; padding: 0 7px; font-size: .68rem; margin-top: 4px; white-space: nowrap; }
     .board-sep { margin: 6px 0 8px; color: #8b949e; font-size: .82rem; }
 
     /* --- Funil --- */
@@ -235,32 +233,30 @@
        Orcamentos_Venda
          · Criação: canvas Scr_Vendas_Novo (Numero, Cliente, Origem_Demanda,
            valores/margens, Status_Orcamento="Rascunho", Data_Criacao, Observacoes="").
-         · Única transição automática existente: canvas Scr_Vendas_DetalheOrcamento
-           faz Status -> "Aceito - Aguardando Faturamento" e, JUNTO, soma
-           Produtos.Estoque_Reservado dos itens. Esse efeito colateral NÃO foi
-           portado para cá.
-         · RESTRIÇÃO TEMPORÁRIA (2026-08-03): a transição de Status para
-           "Aceito - Aguardando Faturamento" está BLOQUEADA no drawer desta tela —
-           option disabled (NUNCA removida: bloqueio não é sumiço) + explicação
-           permanente junto ao select — porque a reserva de Estoque_Reservado do
-           aceite não foi portada para a web; aceitar por aqui comprometeria o
-           saldo disponível. Orçamento que JÁ está nesse status mantém a option
-           selecionada como valor atual (o dirty tracking não grava mudança
-           acidental), porém disabled para re-seleção a partir de outro status.
-           CONDIÇÃO DE REMOÇÃO: o bloqueio cai quando a reserva de
-           Estoque_Reservado existir na web — remover JUNTOS este bloqueio
-           (optsChoice/blocoEdicaoOrc/gravarOrc), os avisos (badge "aceito sem
-           reserva?" + boxes .eo-aviso) e este comentário.
-         · DOIS ESCRITORES (achado F0 §2): suprimentos.html e faturamento.html
-           editam os MESMOS 4 campos (Status_Orcamento, Prioridade,
-           Data_Proximo_Passo, Observacoes) em drawers que são cópia um do outro.
-           Concorrência mitigada pelo If-Match/ETag de EG.patchItemFields
-           (graph.js): gravação simultânea leva 412 e nada é sobrescrito.
-           Qualquer mudança de regra de edição PRECISA ir nos DOIS arquivos.
+         · Transição para "Aceito - Aguardando Faturamento": desde 2026-08-10
+           também acontece por aqui (não só pelo canvas Scr_Vendas_DetalheOrcamento).
+           gravarOrc() delega para aceitarOrcamentoComReserva(), que RESERVA o
+           estoque dos itens (Produtos.Estoque_Reservado, um PATCH condicional
+           por ETag por produto — reservarEstoqueItens()) e só DEPOIS grava o
+           status; falha em qualquer ponto reverte as reservas já aplicadas
+           (reverterReservas()). Pedido insuficiente recusa com erro claro,
+           sem gravar nada. Ver PARTE 4 do pacote de 06/08/2026 (origem desta
+           implementação) e RASTREABILIDADE no rodapé de suprimentos.html.
+         · DOIS ESCRITORES DO ACEITE (achado F0 §2, ainda vale): suprimentos.html
+           e faturamento.html editam os MESMOS 4 campos do orçamento em drawers
+           que são cópia um do outro, e agora os DOIS também reservam estoque
+           pelo mesmo caminho — qualquer mudança de regra PRECISA ir nos DOIS
+           arquivos. Produtos.Estoque_Reservado passa a ter DOIS escritores
+           reais (canvas + web); o ETag/If-Match de cada PATCH (aqui e no
+           canvas) protege contra sobrescrita entre qualquer par deles.
+         · DOIS ESCRITORES DO ORÇAMENTO (Status/Prioridade/Data/Observações):
+           concorrência mitigada pelo If-Match/ETag de EG.patchItemFields
+           (graph.js) — gravação simultânea leva 412 e nada é sobrescrito.
          · Nenhum flow e nenhum cenário Make escreve nesta lista.
-         · SEM escritor: demais transições de Status_Orcamento, Prioridade,
-           Data_Proximo_Passo, Observacoes -> editáveis aqui (drawer do card).
-           Canal_Venda também não tem escritor, mas ficou fora do escopo.
+         · SEM escritor automatizado: demais transições de Status_Orcamento,
+           Prioridade, Data_Proximo_Passo, Observacoes -> editáveis aqui
+           (drawer do card). Canal_Venda também não tem escritor, mas ficou
+           fora do escopo.
        Notas_Fiscais_Entrada
          · NENHUM escritor encontrado: o flow ImportarFaturaCSV roda um Office
            Script no Excel (shared_excelonlinebusiness/RunScriptProd) e não grava
@@ -547,10 +543,6 @@
         '<div class="cli">' + esc(cliNome(f)) + "</div>" +
         '<div class="val">' + esc(brl(f.Valor_Total_Orcamento)) + "</div>" +
         (mostraStatus ? '<div class="st">' + esc(f.Status_Orcamento || "(sem status)") + "</div>" : "") +
-        // badge âmbar persistente: "Aceito" pode ser legado da web (sem reserva de estoque)
-        (f.Status_Orcamento === STATUS_ACEITO
-          ? '<div><span class="b-semreserva" title="Se o aceite foi feito pela web antes do bloqueio, a reserva de estoque não aconteceu — confira Produtos.Estoque_Reservado no canvas (Scr_Vendas_DetalheOrcamento).">aceito sem reserva?</span></div>'
-          : "") +
         "</div>";
     }
 
@@ -741,6 +733,123 @@
     const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
 
     /* ==================================================================
+       RESERVA DE ESTOQUE NO ACEITE (06/08/2026, aplicada 2026-08-10).
+       Esta tela NÃO carrega Produtos/Itens_Orcamento_Venda de antemão (é um
+       kanban de orçamentos + notas fiscais, não uma tela de catálogo) — os
+       itens do orçamento são buscados SOB DEMANDA no momento do aceite.
+       Cada produto é lido e gravado com ETag PRÓPRIO (não via
+       EG.patchItemFields — aquela função relê o ETag bem antes de gravar, o
+       que é certo para um PATCH de valor fixo mas ERRADO aqui: o valor
+       gravado é CALCULADO a partir da leitura, então o ETag do If-Match tem
+       de ser o MESMO da leitura que gerou o valor, senão uma gravação
+       concorrente no meio do caminho seria silenciosamente sobrescrita em
+       vez de barrada com 412). Mesma implementação de suprimentos.html —
+       ver o comentário lá para o raciocínio completo; mudança de regra
+       PRECISA ir nos DOIS arquivos (ver MAPA DE DONO no topo).
+       ================================================================== */
+    async function itensDoOrcamento(orcamentoId) {
+      const todos = await EG.listItems("Itens_Orcamento_Venda");
+      return todos.filter(i => String((i.fields || {}).OrcamentoLookupId) === String(orcamentoId));
+    }
+
+    async function _lerProdutoComEtag(produtoId) {
+      const sid = await EG.resolveSite();
+      const base = "/sites/" + sid + "/lists/" + encodeURIComponent("Produtos") + "/items/" + produtoId;
+      const item = await EG.gget(base + "?expand=fields");
+      return { base: base, etag: item && item["@odata.etag"], fields: (item && item.fields) || {} };
+    }
+
+    async function _patchReservado(base, etag, novoValor, nomeProduto) {
+      try {
+        await EG.gpatch(base + "/fields", { Estoque_Reservado: novoValor }, etag ? { "If-Match": etag } : undefined);
+      } catch (e) {
+        if (e && e.status === 412) {
+          e.message = "conflito de edição: o estoque de “" + nomeProduto + "” foi alterado por outro processo depois que você o carregou — recarregue e reaplique (nada foi sobrescrito)";
+          e.conflitoEdicao = true;
+        }
+        throw e;
+      }
+    }
+
+    async function reverterReservas(aplicados) {
+      for (const ap of aplicados) {
+        try {
+          const p = await _lerProdutoComEtag(ap.produtoId);
+          const atual = num(p.fields.Estoque_Reservado);
+          await _patchReservado(p.base, p.etag, atual - ap.quantidade, p.fields.Title || ("produto #" + ap.produtoId));
+        } catch (rbErr) {
+          console.error("CRITICO: falha ao reverter reserva do produto " + ap.produtoId + " (" + ap.quantidade + " un.) — ajuste manual necessario em Produtos.Estoque_Reservado.", rbErr);
+        }
+      }
+    }
+
+    async function reservarEstoqueItens(orcamentoId) {
+      const its = await itensDoOrcamento(orcamentoId);
+      const porProduto = {};
+      its.forEach(i => {
+        const g = i.fields || {};
+        const pid = g.ProdutoLookupId;
+        const qtd = num(g.Quantidade);
+        if (!pid || qtd <= 0) return;
+        porProduto[pid] = (porProduto[pid] || 0) + qtd;
+      });
+      const aplicados = [];
+      try {
+        for (const pid of Object.keys(porProduto)) {
+          const qtd = porProduto[pid];
+          const p = await _lerProdutoComEtag(pid);
+          const estoqueAtual = num(p.fields.Estoque_Atual);
+          const reservadoAtual = num(p.fields.Estoque_Reservado);
+          const disponivel = estoqueAtual - reservadoAtual;
+          const nome = p.fields.Title || ("produto #" + pid);
+          if (qtd > disponivel) {
+            throw new Error("Estoque insuficiente para “" + nome + "”: disponível " + fmtNum(disponivel) + ", necessário " + fmtNum(qtd) + ". Transição cancelada, nada foi reservado.");
+          }
+          await _patchReservado(p.base, p.etag, reservadoAtual + qtd, nome);
+          aplicados.push({ produtoId: pid, quantidade: qtd });
+        }
+        return aplicados;
+      } catch (e) {
+        if (aplicados.length) await reverterReservas(aplicados);
+        throw e;
+      }
+    }
+
+    async function aceitarOrcamentoComReserva(o, camposExtras, msg) {
+      const its = await itensDoOrcamento(o.id);
+      if (!its.length) {
+        msg.className = "eo-msg err";
+        msg.textContent = "Orçamento sem itens vinculados — nada para reservar. Transição bloqueada.";
+        return;
+      }
+      let aplicados = null;
+      try {
+        gravandoOrc = true;
+        $("eoSalvar").disabled = true;
+        msg.className = "eo-msg"; msg.textContent = "Reservando estoque...";
+        aplicados = await reservarEstoqueItens(o.id);
+        msg.textContent = "Estoque reservado — gravando aceite...";
+        const camposFinal = Object.assign({}, camposExtras, { Status_Orcamento: STATUS_ACEITO });
+        await EG.patchItemFields("Orcamentos_Venda", o.id, camposFinal);
+        const sid = await EG.resolveSite();
+        const novo = await EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent("Orcamentos_Venda") + "/items/" + o.id + "?expand=fields");
+        const i = orcamentos.findIndex(x => x.id === o.id);
+        if (i > -1) orcamentos[i] = novo;
+        orcMap[o.id] = novo;
+        renderKanban(); renderFunil();
+        drawerOrc(novo);
+        setStatus("Orçamento " + ((novo.fields || {}).Title || o.id) + " aceito — estoque reservado.");
+      } catch (e) {
+        if (aplicados && aplicados.length) await reverterReservas(aplicados);
+        msg.className = "eo-msg err";
+        msg.textContent = "Falha ao aceitar: " + e.message;
+        $("eoSalvar").disabled = false;
+      } finally {
+        gravandoOrc = false;
+      }
+    }
+
+    /* ==================================================================
        EDIÇÃO DO ORÇAMENTO — única escrita desta tela (padrão de
        fechamentos.html: blocoDecisao/decidirVeiculo).
        Campos: Status_Orcamento (Choice, obrigatório), Prioridade (Choice),
@@ -775,30 +884,20 @@
       return html;
     }
 
-    // Aviso persistente do "Aceito" legado: o orçamento pode ter chegado a esse
-    // status PELA WEB antes do bloqueio do aceite — nesse caso a reserva de
-    // estoque nunca aconteceu. Box fixo no drawer (persistente, não toast).
-    function avisoAceitoLegado(f) {
-      if (!f || f.Status_Orcamento !== STATUS_ACEITO) return "";
-      return "<div class='eo-aviso'>⚠ Este orçamento está em “" + esc(STATUS_ACEITO) + "”. Se esse aceite foi feito " +
-        "pela web (antes do bloqueio), a reserva de estoque NÃO aconteceu. Antes de faturar, confira " +
-        "Produtos.Estoque_Reservado dos itens no canvas (Scr_Vendas_DetalheOrcamento).</div>";
-    }
-
     function blocoEdicaoOrc(f) {
       const stChoices = orcCampoChoices ? orcCampoChoices.Status_Orcamento : null;
       if (!stChoices || !stChoices.length) {
         return "<div class='eo'><div class='eo-t'>Atualizar orçamento</div>" +
           "<div class='eo-msg'>Edição indisponível: as opções de Choice não foram lidas do SharePoint — recarregue os dados.</div></div>";
       }
+      const avisoAceite = f.Status_Orcamento !== STATUS_ACEITO
+        ? "<div class='eo-aviso'>Selecionar “" + esc(STATUS_ACEITO) + "” reserva o estoque dos itens deste orçamento " +
+          "(Produtos.Estoque_Reservado) antes de gravar o status; estoque insuficiente recusa a transição sem gravar nada.</div>"
+        : "";
       return "<div class='eo'>" +
         "<div class='eo-t'>Atualizar orçamento</div>" +
-        "<label>Status <select id='eoStatus'>" + optsChoice(stChoices, f.Status_Orcamento, null, STATUS_ACEITO) + "</select></label>" +
-        // explicação PERMANENTE do bloqueio: sempre visível, não depende da seleção
-        "<div class='eo-aviso'>“" + esc(STATUS_ACEITO) + "” está indisponível aqui: a reserva de estoque " +
-          "(Produtos.Estoque_Reservado) não foi portada para a web, e aceitar sem reservar comprometeria o saldo " +
-          "disponível. O caminho válido é o botão de aceite do canvas (Scr_Vendas_DetalheOrcamento), que executa o " +
-          "efeito completo (status + reserva).</div>" +
+        "<label>Status <select id='eoStatus'>" + optsChoice(stChoices, f.Status_Orcamento) + "</select></label>" +
+        avisoAceite +
         "<label>Prioridade <select id='eoPrior'>" + optsChoice(orcCampoChoices.Prioridade, f.Prioridade, "(não definida)") + "</select></label>" +
         "<label>Data do próximo passo <input type='date' id='eoData' value='" + esc(isoParaInputDate(f.Data_Proximo_Passo)) + "' /></label>" +
         "<label>Observações <textarea id='eoObs' maxlength='2000'>" + esc(f.Observacoes || "") + "</textarea></label>" +
@@ -810,7 +909,6 @@
     function ligarEdicaoOrc(o) {
       const sv = $("eoSalvar");
       if (!sv) return; // bloco indisponível (choices não carregados)
-      // (o aviso do aceite é permanente no bloco — nada a ligar por seleção)
       sv.onclick = () => gravarOrc(o);
     }
 
@@ -822,14 +920,6 @@
       const campos = {};
       const st = $("eoStatus").value;
       if (st && st !== (f.Status_Orcamento || "")) campos.Status_Orcamento = st;
-      // cinto e suspensório do bloqueio do aceite: mesmo com DOM manipulado,
-      // a TRANSIÇÃO para esse status não sai desta tela (permanecer nele pode:
-      // o dirty tracking acima já descarta valor igual ao atual).
-      if (campos.Status_Orcamento === STATUS_ACEITO) {
-        msg.className = "eo-msg err";
-        msg.textContent = "Transição para “" + STATUS_ACEITO + "” bloqueada nesta tela — use o botão de aceite do canvas (Scr_Vendas_DetalheOrcamento), que também reserva o estoque.";
-        return;
-      }
       const pr = $("eoPrior").value;
       if (pr !== (f.Prioridade || "")) campos.Prioridade = pr === "" ? null : pr;
       const dt = $("eoData").value; // "AAAA-MM-DD" ou ""
@@ -838,6 +928,14 @@
       const ob = $("eoObs").value;
       if (ob !== (f.Observacoes || "")) campos.Observacoes = ob; // limpar de propósito grava vazio mesmo
       if (!Object.keys(campos).length) { msg.className = "eo-msg"; msg.textContent = "Nada foi alterado."; return; }
+      // transição para o aceite: reserva estoque primeiro, grava os demais
+      // campos dirty JUNTO com o status (aceitarOrcamentoComReserva cuida
+      // do próprio gravandoOrc/disabled/mensagens e do rollback em falha).
+      if (campos.Status_Orcamento === STATUS_ACEITO) {
+        delete campos.Status_Orcamento;
+        await aceitarOrcamentoComReserva(o, campos, msg);
+        return;
+      }
       try {
         gravandoOrc = true;
         $("eoSalvar").disabled = true;
@@ -886,7 +984,7 @@
         : "";
       abrir(f.Title || "(sem número)",
         '<span class="pill" style="background:' + etapaCor(s) + '">' + esc(s || "(sem status)") + "</span>",
-        "<dl>" + rows + "</dl>" + alerta + avisoAceitoLegado(f) + blocoEdicaoOrc(f), f);
+        "<dl>" + rows + "</dl>" + alerta + blocoEdicaoOrc(f), f);
       ligarEdicaoOrc(o);
     }
 
@@ -939,104 +1037,211 @@
       // edição do orçamento (testável sem login: injete colunas falsas e abra o drawer)
       aplicarColunasOrc: aplicarColunasOrc, blocoEdicaoOrc: blocoEdicaoOrc,
       optsChoice: optsChoice, isoParaInputDate: isoParaInputDate,
-      // bloqueio do aceite (RESTRIÇÃO TEMPORÁRIA — ver mapa no topo)
-      STATUS_ACEITO: STATUS_ACEITO, avisoAceitoLegado: avisoAceitoLegado
+      STATUS_ACEITO: STATUS_ACEITO,
+      // reserva de estoque no aceite (2026-08-10) — ver mapa no topo
+      reservarEstoqueItens: reservarEstoqueItens, aceitarOrcamentoComReserva: aceitarOrcamentoComReserva
     };
 
     /* =========================================================================
-       SUITE DE ASSERÇÃO (item 12) — FAT.assertRegras(). A regra que esta tela
-       impõe é o BLOQUEIO DA TRANSIÇÃO DE ACEITE: a option fica disabled e NUNCA
-       é removida, e há uma guarda em código que recusa o PATCH mesmo com o DOM
-       manipulado. As duas camadas são exercitadas de verdade aqui — inclusive
-       um teste que manipula o DOM para provar que a segunda camada segura.
-       Também trava: o denominador do funil ignora Cancelado/fora-de-fluxo, e
-       nada desaparece em silêncio.
+       SUITE DE ASSERÇÃO (item 12, 2ª passada) — FAT.assertRegras().
+       Trava as regras que ESTA tela impõe, não a renderização:
+         1) reserva de estoque no aceite (reservarEstoqueItens/aceitarOrcamentoComReserva),
+            com rollback em falha parcial ou em falha do PATCH de status;
+         2) funil: o denominador não pode ser contaminado por Cancelado/fora-de-fluxo.
+
+       ATENÇÃO — esta suíte é ASSÍNCRONA: use `await FAT.assertRegras()`.
+       A regra central do aceite só existe DENTRO do fluxo de gravação — provar
+       a ORDEM (reserva antes do status) e o rollback exige rodar o fluxo de
+       verdade. Nenhuma rede é tocada: EG.gget/gpatch/patchItemFields/listItems/
+       resolveSite viram gravadores de chamada e são restaurados no finally.
        ========================================================================= */
-    window.FAT.assertRegras = function () {
+    window.FAT.assertRegras = async function () {
       const falhas = []; let total = 0;
       const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
       const orc = (id, status, valor, margem) => ({ id: String(id), fields: {
         Status_Orcamento: status, Valor_Total_Orcamento: valor,
         Margem_Contribuicao_Pct: margem } });
 
-      // ---- CAMADA 1: a option do aceite sai DISABLED, sempre ----
-      const semAceite = optsChoice(ETAPAS, "Rascunho", null, STATUS_ACEITO);
-      ok(/<option value='Aceito - Aguardando Faturamento' disabled>/.test(semAceite),
-        "aceite: a option do status de aceite tem de sair DISABLED");
-      ok(semAceite.indexOf("— indisponível aqui") >= 0,
-        "aceite: bloqueio não é sumiço — a option continua visível e explicada");
-      ok(optsChoice(ETAPAS, "Rascunho", null, STATUS_ACEITO).split("<option").length === semAceite.split("<option").length &&
-         semAceite.split("<option").length - 1 === ETAPAS.length,
-        "aceite: nenhuma option é REMOVIDA da lista (todas as " + ETAPAS.length + " etapas continuam lá)");
-      // item JÁ no status de aceite: continua selecionado E continua disabled
-      const jaAceito = optsChoice(ETAPAS, STATUS_ACEITO, null, STATUS_ACEITO);
-      ok(/value='Aceito - Aguardando Faturamento' selected disabled/.test(jaAceito),
-        "aceite: item já nesse status mantém a option selecionada, mas ainda disabled (não dá para re-selecionar de outro status)");
-      ok(avisoAceitoLegado({ Status_Orcamento: STATUS_ACEITO }).length > 0 &&
-         avisoAceitoLegado({ Status_Orcamento: "Rascunho" }) === "",
-        "aceite legado: item já aceito ganha aviso persistente sobre a reserva de estoque não feita");
-      // o bloco de edição real usa mesmo o bloqueio (não só a função solta)
-      aplicarColunasOrc([{ name: "Status_Orcamento", choice: { choices: ETAPAS } }]);
-      ok(blocoEdicaoOrc({ Status_Orcamento: "Rascunho" }).indexOf("disabled") >= 0,
-        "aceite: o bloco de edição realmente passa o status de aceite como bloqueado");
+      const REAL = { patch: EG.patchItemFields, site: EG.resolveSite, get: EG.gget, list: EG.listItems, gpatch: EG.gpatch };
+      let log = [];
+      const stubar = (cfg) => {
+        cfg = cfg || {}; log = [];
+        EG.resolveSite = () => Promise.resolve("site-de-teste");
+        EG.gget = (url) => { log.push({ op: "get", url: url }); return Promise.resolve(cfg.get ? cfg.get(url) : { id: "0", fields: {} }); };
+        EG.listItems = (l) => { log.push({ op: "list", lista: l }); return Promise.resolve(cfg.list ? cfg.list(l) : []); };
+        EG.patchItemFields = (l, id, campos) => { log.push({ op: "patch", lista: l, id: String(id), campos: campos }); return cfg.patch ? cfg.patch(l, String(id), campos) : Promise.resolve({}); };
+        EG.gpatch = (url, body, headers) => { log.push({ op: "gpatch", url: url, body: body, headers: headers }); return cfg.gpatch ? cfg.gpatch(url, body, headers) : Promise.resolve({}); };
+      };
+      const patches = (lista) => log.filter(x => x.op === "patch" && (!lista || x.lista === lista));
+      const gpatches = (urlContem) => log.filter(x => x.op === "gpatch" && (!urlContem || x.url.indexOf(urlContem) >= 0));
+      const itensFake = [{ id: "i1", fields: { OrcamentoLookupId: "1", ProdutoLookupId: "10", Quantidade: 3 } }];
+      const produtoFake = (url) => url.indexOf("/Produtos/") >= 0
+        ? { "@odata.etag": "etag-p10-v1", fields: { Title: "Cabo 2,5mm", Estoque_Atual: 10, Estoque_Reservado: 2 } }
+        : null;
 
-      // ---- CAMADA 2: a guarda em código segura mesmo com o DOM manipulado ----
-      const box = document.createElement("div");
-      box.style.display = "none";
-      box.innerHTML = "<div id='eoMsg'></div><input id='eoStatus'><input id='eoPrior'>" +
-        "<input id='eoData'><textarea id='eoObs'></textarea><button id='eoSalvar'></button>";
-      document.body.appendChild(box);
-      const patchReal = EG.patchItemFields;
-      let chamouPatch = false;
-      EG.patchItemFields = function () { chamouPatch = true; return Promise.resolve({}); };
       try {
-        // simula exatamente o ataque: alguém removeu o disabled e escolheu o aceite
+        /* ---- RESERVA DE ESTOQUE: cálculo, insuficiência, rollback parcial ---- */
+        stubar({
+          list: () => itensFake,
+          get: (url) => produtoFake(url) || { id: "0", fields: {} }
+        });
+        const aplic1 = await reservarEstoqueItens("1");
+        ok(aplic1.length === 1 && aplic1[0].produtoId === "10" && aplic1[0].quantidade === 3,
+          "reserva: um item -> uma operação aplicada, com a quantidade certa");
+        ok(gpatches("/Produtos/").length === 1 && gpatches("/Produtos/")[0].body.Estoque_Reservado === 5,
+          "reserva: grava Estoque_Reservado = reservado atual (2) + quantidade pedida (3)");
+        ok(gpatches("/Produtos/")[0].headers && gpatches("/Produtos/")[0].headers["If-Match"] === "etag-p10-v1",
+          "reserva: PATCH condicional pelo MESMO ETag lido na validação (não um relido depois)");
+
+        stubar({
+          list: () => itensFake,
+          get: () => ({ "@odata.etag": "etag-p10-v1", fields: { Title: "Cabo 2,5mm", Estoque_Atual: 10, Estoque_Reservado: 8 } })
+        });
+        let erroInsuf = null;
+        try { await reservarEstoqueItens("1"); } catch (e) { erroInsuf = e; }
+        ok(erroInsuf && erroInsuf.message.indexOf("Cabo 2,5mm") >= 0 && erroInsuf.message.indexOf("insuficiente") >= 0,
+          "reserva: estoque insuficiente recusa com o nome do produto na mensagem");
+        ok(gpatches("/Produtos/").length === 0,
+          "reserva: recusa por estoque insuficiente não chega a gravar nada");
+
+        let reservado10a = 2; // estoque real do produto 10 no "servidor" — muda quando o gpatch grava, pro reread do rollback ver o valor certo
+        stubar({
+          list: () => [
+            { id: "i1", fields: { OrcamentoLookupId: "1", ProdutoLookupId: "10", Quantidade: 3 } },
+            { id: "i2", fields: { OrcamentoLookupId: "1", ProdutoLookupId: "20", Quantidade: 3 } }
+          ],
+          get: (url) => url.indexOf("/items/10") >= 0
+            ? { "@odata.etag": "etag-p10-v1", fields: { Title: "Cabo 2,5mm", Estoque_Atual: 10, Estoque_Reservado: reservado10a } }
+            : { "@odata.etag": "etag-p20-v1", fields: { Title: "Disjuntor 20A", Estoque_Atual: 5, Estoque_Reservado: 5 } },
+          gpatch: (url, body) => { if (url.indexOf("/items/10") >= 0) reservado10a = body.Estoque_Reservado; return Promise.resolve({}); }
+        });
+        let erroParcial = null;
+        try { await reservarEstoqueItens("1"); } catch (e) { erroParcial = e; }
+        ok(erroParcial && erroParcial.message.indexOf("Disjuntor 20A") >= 0,
+          "reserva: falha no segundo produto — a mensagem aponta o produto que faltou");
+        const gpProd10 = gpatches("/items/10");
+        ok(gpProd10.length === 2 && gpProd10[0].body.Estoque_Reservado === 5 && gpProd10[1].body.Estoque_Reservado === 2,
+          "reserva: falha parcial reverte o produto já aplicado (grava 5, depois desfaz de volta para 2)");
+        ok(gpatches("/items/20").length === 0,
+          "reserva: o produto que falhou nunca chega a ser gravado");
+
+        /* ---- ACEITE sem itens: bloqueia antes de qualquer chamada de rede ---- */
+        stubar({ list: () => [] });
+        const caixaVazia = document.createElement("div");
+        caixaVazia.innerHTML = "<div id='eoMsgTeste'></div>";
+        document.body.appendChild(caixaVazia);
+        const msgVazia = caixaVazia.querySelector("#eoMsgTeste");
+        await aceitarOrcamentoComReserva({ id: "1", fields: {} }, {}, msgVazia);
+        ok(msgVazia.textContent.indexOf("sem itens") >= 0 && log.length === 1,
+          "aceite: orçamento sem itens vinculados é bloqueado antes de qualquer chamada além da própria listagem");
+        caixaVazia.remove();
+
+        /* ---- bloco de edição: bloqueio removido, aviso de efeito no lugar ---- */
+        aplicarColunasOrc([
+          { name: "Status_Orcamento", choice: { choices: ETAPAS } },
+          { name: "Prioridade", choice: { choices: ["Alta", "Média", "Baixa"] } }
+        ]);
+        const blocoOrc = blocoEdicaoOrc({ Status_Orcamento: "Rascunho" });
+        ok(blocoOrc.indexOf("disabled") === -1,
+          "aceite: a option do status de aceite NÃO sai mais disabled (bloqueio removido, reserva real no lugar)");
+        ok(blocoOrc.indexOf("reserva o estoque") >= 0,
+          "aceite: o bloco explica o efeito da transição (reserva antes de gravar)");
+        const blocoJaAceito = blocoEdicaoOrc({ Status_Orcamento: STATUS_ACEITO });
+        ok(blocoJaAceito.indexOf("reserva o estoque") === -1,
+          "aceite: o aviso só aparece quando a transição ainda vai ACONTECER, não pra quem já está aceito");
+
+        /* ---- INTEGRAÇÃO gravarOrc <-> aceitarOrcamentoComReserva ---- */
+        const box = document.createElement("div");
+        box.style.display = "none";
+        box.innerHTML = "<div id='eoMsg'></div><input id='eoStatus'><input id='eoPrior'>" +
+          "<input id='eoData'><textarea id='eoObs'></textarea><button id='eoSalvar'></button>";
+        document.body.appendChild(box);
+
+        const orcRascunho = { id: "1", fields: { Title: "ORC-1", Status_Orcamento: "Rascunho", Prioridade: "" } };
+        stubar({
+          list: () => itensFake,
+          get: (url) => produtoFake(url) || Object.assign({}, orcRascunho, { fields: Object.assign({}, orcRascunho.fields, { Status_Orcamento: STATUS_ACEITO }) })
+        });
         document.getElementById("eoStatus").value = STATUS_ACEITO;
-        document.getElementById("eoPrior").value = "";
-        document.getElementById("eoData").value = "";
-        document.getElementById("eoObs").value = "";
-        gravarOrc({ id: "1", fields: { Status_Orcamento: "Rascunho" } });
-        ok(chamouPatch === false,
-          "DEFEITO GRAVE: a transição para o aceite chegou a chamar o PATCH mesmo com o DOM manipulado");
-        ok(document.getElementById("eoMsg").textContent.indexOf("bloqueada") >= 0,
-          "aceite: a guarda deve explicar o bloqueio e apontar o caminho válido (canvas)");
-      } finally {
-        EG.patchItemFields = patchReal;
-        gravandoOrc = false;
+        document.getElementById("eoPrior").value = "Alta";
+        document.getElementById("eoData").value = ""; document.getElementById("eoObs").value = "";
+        await gravarOrc(orcRascunho);
+        ok(gpatches("/Produtos/").length === 1 && gpatches("/Produtos/")[0].body.Estoque_Reservado === 5,
+          "integração: escolher o aceite no drawer reserva o estoque do item (2+3=5)");
+        ok(patches("Orcamentos_Venda").length === 1 &&
+           patches("Orcamentos_Venda")[0].campos.Status_Orcamento === STATUS_ACEITO &&
+           patches("Orcamentos_Venda")[0].campos.Prioridade === "Alta",
+          "integração: o PATCH do orçamento leva o status E os outros campos dirty (Prioridade) JUNTOS");
+        const seqAceite = log.filter(x => x.op === "gpatch" || (x.op === "patch" && x.lista === "Orcamentos_Venda"));
+        ok(seqAceite.length === 2 && seqAceite[0].op === "gpatch" && seqAceite[1].op === "patch",
+          "integração: a reserva de estoque acontece ANTES do PATCH de status (nunca depois)");
+
+        // falha no PATCH do status (depois da reserva já ter sido aplicada) reverte a reserva
+        const orcRascunho2 = { id: "1", fields: { Title: "ORC-1", Status_Orcamento: "Rascunho" } };
+        let reservado10b = 2;
+        stubar({
+          list: () => itensFake,
+          get: (url) => url.indexOf("/Produtos/") >= 0
+            ? { "@odata.etag": "etag-p10-v1", fields: { Title: "Cabo 2,5mm", Estoque_Atual: 10, Estoque_Reservado: reservado10b } }
+            : orcRascunho2,
+          gpatch: (url, body) => { if (url.indexOf("/Produtos/") >= 0) reservado10b = body.Estoque_Reservado; return Promise.resolve({}); },
+          patch: () => Promise.reject(new Error("falha simulada no PATCH do orçamento"))
+        });
+        document.getElementById("eoStatus").value = STATUS_ACEITO;
+        document.getElementById("eoPrior").value = ""; document.getElementById("eoData").value = ""; document.getElementById("eoObs").value = "";
+        await gravarOrc(orcRascunho2);
+        const gpProd10b = gpatches("/Produtos/");
+        ok(gpProd10b.length === 2 && gpProd10b[0].body.Estoque_Reservado === 5 && gpProd10b[1].body.Estoque_Reservado === 2,
+          "integração: falha ao gravar o status do orçamento reverte a reserva já aplicada (volta para 2)");
+        ok(document.getElementById("eoMsg").textContent.indexOf("Falha ao aceitar") >= 0,
+          "integração: mensagem de erro clara quando a transição falha depois da reserva");
+
+        // PERMANECER no aceite é legítimo — só a TRANSIÇÃO reserva estoque
+        const orcAceito = { id: "1", fields: { Title: "ORC-1", Status_Orcamento: STATUS_ACEITO, Observacoes: "" } };
+        stubar({ get: () => orcAceito });
+        document.getElementById("eoStatus").value = STATUS_ACEITO;
+        document.getElementById("eoPrior").value = ""; document.getElementById("eoData").value = "";
+        document.getElementById("eoObs").value = "conferir";
+        await gravarOrc(orcAceito);
+        ok(patches("Orcamentos_Venda").length === 1 && !("Status_Orcamento" in patches()[0].campos) && log.filter(x => x.op === "gpatch").length === 0,
+          "aceite: item JÁ aceito continua editável nos outros campos — dirty tracking não reenvia o status nem reserva de novo");
         box.remove();
+
+        // ---- funil: o denominador não pode ser contaminado ----
+        const g = agruparEtapas([
+          orc(1, "Rascunho", 100), orc(2, "Faturado", 200),
+          orc(3, "Cancelado", 999999), orc(4, "Status Inventado", 888888), orc(5, "", 777777)
+        ]);
+        ok(g.porEtapa["Rascunho"].length === 1 && g.porEtapa["Faturado"].length === 1 &&
+           g.cancelados.length === 1 && g.fora.length === 1 && g.semStatus.length === 1,
+          "agruparEtapas: cada item cai em EXATAMENTE um balde (nenhum some, nenhum duplica)");
+        const rf = resumoFunil([
+          orc(1, "Rascunho", 100), orc(2, "Faturado", 100),
+          orc(3, "Cancelado", 999999), orc(4, "Status Inventado", 888888)
+        ]);
+        ok(rf.totalQtd === 2 && rf.totalValor === 200,
+          "funil: Cancelado e status fora de fluxo NÃO entram no denominador (senão a conversão mente)");
+        ok(rf.convQtd === 50 && rf.canceladosQtd === 1 && rf.foraQtd === 1,
+          "funil: conversão sobre a base limpa, mas cancelados/fora continuam REPORTADOS à parte");
+        ok(resumoFunil([]).convQtd === null && pct(1, 0) === null,
+          "funil: sem base a conversão é null (nunca 0% nem Infinity)");
+
+        // ---- ausência não é zero ----
+        ok(margemMedia([orc(1, "Rascunho", 10, 40), orc(2, "Rascunho", 10, null)]) === 40,
+          "margemMedia: orçamento SEM margem informada é ignorado, não conta como 0");
+        ok(margemMedia([orc(1, "Rascunho", 10, null)]) === null,
+          "margemMedia: nenhuma margem informada devolve null (exibe '—')");
+
+        // ---- valor atual fora da lista nunca é trocado por acidente ----
+        ok(optsChoice(ETAPAS, "Status Antigo", null, null).indexOf("(valor atual — fora da lista)") >= 0,
+          "optsChoice: valor atual fora da lista do servidor é PRESERVADO como option própria");
+
+        ok(isoParaInputDate("2026-08-04T03:00:00Z") === "2026-08-04" && isoParaInputDate(null) === "",
+          "isoParaInputDate: converte para o input date e devolve '' quando não há data");
+      } finally {
+        EG.patchItemFields = REAL.patch; EG.resolveSite = REAL.site; EG.gget = REAL.get; EG.listItems = REAL.list; EG.gpatch = REAL.gpatch;
+        gravandoOrc = false;
       }
-
-      // ---- funil: o denominador não pode ser contaminado ----
-      const g = agruparEtapas([
-        orc(1, "Rascunho", 100), orc(2, "Faturado", 200),
-        orc(3, "Cancelado", 999999), orc(4, "Status Inventado", 888888), orc(5, "", 777777)
-      ]);
-      ok(g.porEtapa["Rascunho"].length === 1 && g.porEtapa["Faturado"].length === 1 &&
-         g.cancelados.length === 1 && g.fora.length === 1 && g.semStatus.length === 1,
-        "agruparEtapas: cada item cai em EXATAMENTE um balde (nenhum some, nenhum duplica)");
-      const rf = resumoFunil([
-        orc(1, "Rascunho", 100), orc(2, "Faturado", 100),
-        orc(3, "Cancelado", 999999), orc(4, "Status Inventado", 888888)
-      ]);
-      ok(rf.totalQtd === 2 && rf.totalValor === 200,
-        "funil: Cancelado e status fora de fluxo NÃO entram no denominador (senão a conversão mente)");
-      ok(rf.convQtd === 50 && rf.canceladosQtd === 1 && rf.foraQtd === 1,
-        "funil: conversão sobre a base limpa, mas cancelados/fora continuam REPORTADOS à parte");
-      ok(resumoFunil([]).convQtd === null && pct(1, 0) === null,
-        "funil: sem base a conversão é null (nunca 0% nem Infinity)");
-
-      // ---- ausência não é zero ----
-      ok(margemMedia([orc(1, "Rascunho", 10, 40), orc(2, "Rascunho", 10, null)]) === 40,
-        "margemMedia: orçamento SEM margem informada é ignorado, não conta como 0");
-      ok(margemMedia([orc(1, "Rascunho", 10, null)]) === null,
-        "margemMedia: nenhuma margem informada devolve null (exibe '—')");
-
-      // ---- valor atual fora da lista nunca é trocado por acidente ----
-      ok(optsChoice(ETAPAS, "Status Antigo", null, null).indexOf("(valor atual — fora da lista)") >= 0,
-        "optsChoice: valor atual fora da lista do servidor é PRESERVADO como option própria");
-
-      ok(isoParaInputDate("2026-08-04T03:00:00Z") === "2026-08-04" && isoParaInputDate(null) === "",
-        "isoParaInputDate: converte para o input date e devolve '' quando não há data");
 
       const r = { ok: falhas.length === 0, total, falhas };
       console.log("FAT.assertRegras:", JSON.stringify(r, null, 2));
