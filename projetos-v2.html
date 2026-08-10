@@ -120,9 +120,9 @@
 
   <main>
     <div class="aviso-ro" id="avisoRo" hidden>
-      <strong>Escrita parcial.</strong> Alocações, materiais, medições, custos/receitas e aditivos (criação)
-      já gravam direto no SharePoint. Editar status de item da EAP e aprovar/rejeitar aditivo seguem
-      bloqueados — falta o campo "Motivo" obrigatório no schema dessas duas listas.
+      <strong>Escrita direta (8 de 8 ações aprovadas).</strong> EAP, alocações, materiais, medições,
+      custos/receitas e aditivos gravam direto no SharePoint — sair de "Concluído" (EAP) e
+      aprovar/rejeitar aditivo exigem motivo obrigatório.
     </div>
 
     <div class="toolbar" id="barProjeto" hidden>
@@ -252,7 +252,7 @@
 
   <script>
     /* ===================================================================
-       PROJETOS v2 — Onda 3, Frente Projetos (§14). ESCRITA DIRETA (6 de 8
+       PROJETOS v2 — Onda 3, Frente Projetos (§14). ESCRITA DIRETA (8 de 8
        ações aprovadas), fora do gateway B1 — B1 cobre só 3 fluxos
        transacionais (concluir OS, fechar lote de medição, aceite de
        oferta), Projetos §14 nunca esteve no escopo dele. Mesmo padrão do
@@ -260,11 +260,15 @@
        automático), EG.travarChoices fail-closed nos campos Choice
        gravados, releitura do servidor após cada gravação.
 
-       AÇÕES CONSTRUÍDAS (aprovadas com os ajustes: sem bloqueio nos itens
-       3 e 4; lacuna de papel/autorização registrada nos itens 5 e 8 —
-       não existe controle de papel nesta tela nem no login MSAL, então
-       qualquer usuário autenticado pode acionar qualquer uma destas):
-         1. (BLOQUEADO — ver abaixo)
+       AÇÕES CONSTRUÍDAS (aprovadas com os ajustes: Motivo obrigatório nos
+       itens 1 e 8; sem bloqueio nos itens 3 e 4; lacuna de papel/
+       autorização registrada nos itens 5 e 8 — não existe controle de
+       papel nesta tela nem no login MSAL, então qualquer usuário
+       autenticado pode acionar qualquer uma destas):
+         1. Alterar Status_Item de um item da EAP (Projeto_EAP) — livre
+            entre Planejado/Em Andamento/Cancelado; sair de "Concluído"
+            grava Motivo_Status obrigatório (coluna criada no SharePoint
+            em 10/08, texto multilinha).
          2. Criar alocação (Projeto_Alocacoes) — botão na aba Alocações.
          3. Editar Qtd_Aplicada/Custo_Real de um material (Projeto_Materiais)
             — no drawer do material; sem teto contra Qtd_Prevista.
@@ -277,21 +281,10 @@
             botão na aba Custos × Receitas.
          7. Criar aditivo, nasce em "Proposto" (Projeto_Aditivos) — botão
             na aba Aditivos.
-         8. (BLOQUEADO — ver abaixo)
-
-       ITENS 1 e 8 BLOQUEADOS: a decisão exige "Motivo" obrigatório
-       (editar Status_Item de EAP e aprovar/rejeitar aditivo — este
-       último altera valor/prazo contratual de verdade). NENHUM dos dois
-       campos existe hoje no schema real de Projeto_EAP nem de
-       Projeto_Aditivos (confirmado por leitura de todos os campos que
-       esta própria tela já lê — nem Observacoes nem Motivo aparecem em
-       nenhum dos dois, ao contrário de Medicoes_Quantitativas e
-       Projeto_Custos_Receitas, que já têm Observacoes). Criar a coluna
-       exige SharePoint (a ferramenta Make disponível nesta sessão já
-       falhou para POST /columns — mesma limitação documentada em
-       INVESTIGACAO-LISTAS-ORFAS-0408.md). Até a coluna existir, os dois
-       drawers (EAP e Aditivo) só mostram um aviso — nenhum controle de
-       escrita aparece para eles, e a suíte de asserção prova isso.
+         8. Aprovar/rejeitar aditivo (Projeto_Aditivos) — só a partir de
+            "Proposto", grava Motivo_Aprovacao obrigatório (coluna criada
+            no SharePoint em 10/08, texto multilinha); aprovar também
+            grava Aprovado_Em (campo já existia, só não era escrito).
 
        Listas lidas (todas via EG.listItems):
          Projetos (raiz LEGADA, reutilizada — não modificada),
@@ -399,10 +392,9 @@
         setStatus("Carregando projetos…");
 
         // Campos GRAVADOS por esta tela usam travarChoices (fail-closed: registra a
-        // trava que patchItemFields/createItem checam antes de ir à rede). Status_Item
-        // e Status_Aditivo ficam de fora do que é gravado hoje (itens 1/8 bloqueados),
-        // mas travar mesmo assim já deixa a trava pronta para quando a coluna Motivo
-        // existir. Tipo_Item nunca é gravado por esta tela — validarChoices (só aviso).
+        // trava que patchItemFields/createItem checam antes de ir à rede) — os 7
+        // Choices abaixo são todos escritos (itens 1-8). Tipo_Item nunca é gravado
+        // por esta tela — validarChoices (só aviso).
         Promise.all([
           EG.validarChoices("Projeto_EAP", "Tipo_Item", TIPO_ITEM).then(v => ({ v, rotulo: "Tipo do Item (Projeto_EAP)" })),
           EG.travarChoices("Projeto_EAP", "Status_Item", STATUS_ITEM).then(v => ({ v, rotulo: "Status do Item (Projeto_EAP)" })),
@@ -909,10 +901,45 @@
         linha("Ordem", cel(f.Ordem)) +
         linha("Peso", ehNum(f.Peso_Pct) ? fmtN(f.Peso_Pct, 1) + " %" : null) +
         linha("Descrição", f.Descricao) +
-        "</dl>" +
-        "<div class='bloqueado'>🔒 Editar o status deste item exige motivo obrigatório, e " +
-        "<code>Projeto_EAP</code> ainda não tem um campo para isso. Bloqueado até a coluna existir.</div>";
-      mostrarDrawer(f.Codigo_EAP || f.Title || "Item da EAP", f.Title, f.Status_Item, cor(COR_STATUS_ITEM, f.Status_Item), corpo, f);
+        "</dl>";
+      const atualStatus = f.Status_Item || "Planejado";
+      const corpoFinal = corpo +
+        grupo("Alterar status") +
+        "<div class='acao'>" +
+        "<label for='eDestino'>Novo status</label>" +
+        "<select id='eDestino'>" + STATUS_ITEM.filter(s => s !== atualStatus).map(s => "<option value='" + esc(s) + "'>" + esc(s) + "</option>").join("") + "</select>" +
+        "<label for='eMotivo'>Motivo" + (atualStatus === "Concluído" ? " <span class='req'>* (obrigatório para sair de Concluído)</span>" : " (opcional)") + "</label>" +
+        "<textarea id='eMotivo' placeholder='" + (atualStatus === "Concluído" ? "por que este item sai de Concluído?" : "motivo da mudança (opcional)") + "'></textarea>" +
+        "<div class='acao-btns'><button id='eAplicar'>Aplicar</button></div>" +
+        "<div id='eMsg' class='acao-msg'></div>" +
+        "</div>";
+      mostrarDrawer(f.Codigo_EAP || f.Title || "Item da EAP", f.Title, f.Status_Item, cor(COR_STATUS_ITEM, f.Status_Item), corpoFinal, f);
+      $("eAplicar").onclick = () => alterarStatusEap(o);
+    }
+    async function alterarStatusEap(o) {
+      if (gravando) return;
+      const msg = $("eMsg");
+      const f = o.fields || {};
+      const atual = f.Status_Item || "Planejado";
+      const destino = $("eDestino").value;
+      const motivo = $("eMotivo").value.trim();
+      if (!destino || destino === atual) { msg.className = "acao-msg err"; msg.textContent = "Escolha um status diferente do atual."; return; }
+      if (atual === "Concluído" && !motivo) {
+        msg.className = "acao-msg err"; msg.textContent = "Sair de Concluído exige motivo."; $("eMotivo").focus(); return;
+      }
+      const campos = { Status_Item: destino };
+      if (motivo) campos.Motivo_Status = motivo;
+      try {
+        gravando = true; $("eAplicar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Projeto_EAP", o.id, campos);
+        const novo = await relerItem("Projeto_EAP", o.id);
+        upsertLocal("eap", eap, novo);
+        renderTudo(); abrirEap(novo);
+        setStatus("Item da EAP: " + atual + " → " + destino + ".");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("eAplicar").disabled = false;
+      } finally { gravando = false; }
     }
     function abrirAloc(o) {
       const f = o.fields || {};
@@ -1209,11 +1236,45 @@
         linha("Status", f.Status_Aditivo) +
         linha("Aprovado em", EG.fmtDate(f.Aprovado_Em)) +
         linha("Título", f.Title) +
-        "</dl>" +
-        "<div class='bloqueado'>🔒 Aprovar/rejeitar exige motivo obrigatório (este aditivo altera valor/prazo " +
-        "contratual de verdade), e <code>Projeto_Aditivos</code> ainda não tem um campo para isso. Bloqueado " +
-        "até a coluna existir — permanece \"" + esc(f.Status_Aditivo || "Proposto") + "\".</div>";
-      mostrarDrawer("Aditivo " + (ehNum(f.Numero_Aditivo) ? "nº " + fmtN(f.Numero_Aditivo) : ""), f.Tipo_Aditivo, f.Status_Aditivo, cor(COR_ADITIVO, f.Status_Aditivo), corpo, f);
+        "</dl>";
+      const atualAdt = f.Status_Aditivo || "Proposto";
+      const corpoFinal = corpo + (atualAdt !== "Proposto"
+        ? "<div class='bloqueado'>Este aditivo já está \"" + esc(atualAdt) + "\" — decisão só é permitida a partir de \"Proposto\".</div>"
+        : grupo("Aprovar / rejeitar") +
+          "<div class='acao'>" +
+          "<label for='dDecisao'>Decisão</label>" +
+          "<select id='dDecisao'><option value='Aprovado'>Aprovar</option><option value='Rejeitado'>Rejeitar</option></select>" +
+          "<label for='dMotivo'>Motivo <span class='req'>*</span></label>" +
+          "<textarea id='dMotivo' placeholder='justificativa da decisão'></textarea>" +
+          "<div class='hint'>Esta tela não distingue papel de usuário — qualquer autenticado pode decidir; lacuna registrada, não resolvida aqui. Aprovar também grava Aprovado_Em.</div>" +
+          "<div class='acao-btns'><button id='dAplicar'>Aplicar decisão</button></div>" +
+          "<div id='dMsg' class='acao-msg'></div>" +
+          "</div>");
+      mostrarDrawer("Aditivo " + (ehNum(f.Numero_Aditivo) ? "nº " + fmtN(f.Numero_Aditivo) : ""), f.Tipo_Aditivo, f.Status_Aditivo, cor(COR_ADITIVO, f.Status_Aditivo), corpoFinal, f);
+      if (atualAdt === "Proposto") $("dAplicar").onclick = () => decidirAditivo(o);
+    }
+    async function decidirAditivo(o) {
+      if (gravando) return;
+      const msg = $("dMsg");
+      const f = o.fields || {};
+      const atual = f.Status_Aditivo || "Proposto";
+      if (atual !== "Proposto") { msg.className = "acao-msg err"; msg.textContent = "Este aditivo não está mais em 'Proposto'."; return; }
+      const decisao = $("dDecisao").value;
+      const motivo = $("dMotivo").value.trim();
+      if (!motivo) { msg.className = "acao-msg err"; msg.textContent = "Motivo é obrigatório."; $("dMotivo").focus(); return; }
+      const campos = { Status_Aditivo: decisao, Motivo_Aprovacao: motivo };
+      if (decisao === "Aprovado") campos.Aprovado_Em = new Date().toISOString();
+      try {
+        gravando = true; $("dAplicar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Projeto_Aditivos", o.id, campos);
+        const novo = await relerItem("Projeto_Aditivos", o.id);
+        upsertLocal("adt", aditivos, novo);
+        renderTudo(); abrirAdt(novo);
+        setStatus("Aditivo: Proposto → " + decisao + ".");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("dAplicar").disabled = false;
+      } finally { gravando = false; }
     }
 
     /* ---- 7. criar aditivo (Projeto_Aditivos), nasce em "Proposto" ---- */
@@ -1278,8 +1339,8 @@
       arvoreEap, medidoPorItem, deltasAprovados, doProjeto,
       renderEap, renderAloc, renderMat, renderCtr, renderCxr, renderAdt,
       abrirEap, abrirAloc, abrirMat, abrirCtr, abrirMed, abrirLanc, abrirAdt,
-      abrirNovaAlocacao, criarAlocacao, salvarMaterial, criarMedicao, avancarMedicao,
-      abrirNovoLancamento, criarLancamento, abrirNovoAditivo, criarAditivo,
+      alterarStatusEap, abrirNovaAlocacao, criarAlocacao, salvarMaterial, criarMedicao, avancarMedicao,
+      abrirNovoLancamento, criarLancamento, abrirNovoAditivo, criarAditivo, decidirAditivo,
       reqNum, okComp, upsertLocal,
       num, cel, celBRL, pct,
       setProjeto: (id) => { projetoAtual = String(id); renderTudo(); },
@@ -1288,18 +1349,16 @@
 
     /* =========================================================================
        SUITE DE ASSERÇÃO (item 12) — PRJ.assertRegras(), agora ASSÍNCRONA.
-       Esta tela deixou de ser 100% leitura (6 das 8 ações de escrita aprovadas
-       em Projetos §14 foram construídas). A suíte prova três frentes:
-       (a) BLOQUEIO — os itens 1 (Status_Item) e 8 (aprovar/rejeitar aditivo)
-           continuam sem NENHUM controle de escrita no drawer (só o aviso
-           .bloqueado), porque Projeto_EAP/Projeto_Aditivos não têm campo de
-           motivo ainda;
-       (b) ESCRITA — sentinelas no lugar de EG.createItem/patchItemFields/gget
-           provam, para cada uma das 6 ações construídas, que (i) entrada
-           inválida é recusada SEM chamar o EG, e (ii) entrada válida chama o
-           EG certo, com a lista e os campos certos, e o item local é
-           atualizado (upsertLocal) com o que o "servidor" (mock) devolveu;
-       (c) AGREGAÇÕES — as mesmas regras de antes (aditivo só conta se
+       Esta tela deixou de ser 100% leitura (as 8 ações de escrita aprovadas em
+       Projetos §14 foram construídas). A suíte prova duas frentes:
+       (a) ESCRITA — sentinelas no lugar de EG.createItem/patchItemFields/gget
+           provam, para cada uma das 8 ações, que (i) entrada inválida é
+           recusada SEM chamar o EG (Motivo obrigatório ao sair de Concluído
+           ou ao aprovar/rejeitar aditivo, entre outras), e (ii) entrada
+           válida chama o EG certo, com a lista e os campos certos, e o item
+           local é atualizado (upsertLocal) com o que o "servidor" (mock)
+           devolveu;
+       (b) AGREGAÇÕES — as mesmas regras de antes (aditivo só conta se
            APROVADO, EAP nunca some da árvore, ciclo não trava a aba).
        ========================================================================= */
     window.PRJ.assertRegras = async function () {
@@ -1328,21 +1387,15 @@
       PRJ.setProjeto("1");
       PRJ.mostrarSec("eap"); PRJ.mostrarSec("ctr"); PRJ.mostrarSec("adt");
 
-      // ---------- (a) itens 1 e 8: bloqueados, sem controle de escrita ----------
-      PRJ.abrirEap({ id: "10", fields: { Status_Item: "Planejado", Title: "Fase 1", Codigo_EAP: "1" } });
-      ok(document.querySelectorAll("#drawer .bloqueado").length === 1 && document.querySelectorAll("#drawer .acao-btns").length === 0,
-        "item 1 BLOQUEADO: drawer de EAP mostra o aviso, mas não tem nenhum botão de escrita");
-      PRJ.abrirAdt({ id: "70", fields: { Status_Aditivo: "Proposto", Numero_Aditivo: 9, Tipo_Aditivo: "Valor" } });
-      ok(document.querySelectorAll("#drawer .bloqueado").length === 1 && document.querySelectorAll("#drawer .acao-btns").length === 0,
-        "item 8 BLOQUEADO: drawer de Aditivo mostra o aviso, mas não tem nenhum botão de aprovar/rejeitar");
-
-      // ---------- (b) sentinelas para as 6 ações de escrita ----------
+      // ---------- (a) sentinelas para as 8 ações de escrita ----------
       const originais = { createItem: EG.createItem, patchItemFields: EG.patchItemFields, gget: EG.gget, resolveSite: EG.resolveSite };
       const chamadas = { create: [], patch: [] };
       let seq = 900;
       const fixturePorId = {
+        "10": { ProjetoLookupId: 1, Codigo_EAP: "1", Title: "Fase 1", Ordem: 1, Status_Item: "Planejado" },
         "30": { ProjetoLookupId: 1, ProdutoLookupId: 7, Qtd_Prevista: 2 },
-        "50": { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 4, Status_Medicao: "Aprovada" }
+        "50": { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 4, Status_Medicao: "Aprovada" },
+        "70": { ProjetoLookupId: 1, Status_Aditivo: "Proposto", Numero_Aditivo: 9, Tipo_Aditivo: "Valor" }
       };
       EG.resolveSite = async () => "fake-site";
       EG.createItem = async (lista, fields) => { const id = String(++seq); chamadas.create.push({ lista, id, fields: Object.assign({}, fields) }); return { id }; };
@@ -1356,6 +1409,25 @@
         return { id, fields: Object.assign({}, base, doPatch ? doPatch.fields : {}), "@odata.etag": "W/\"1\"" };
       };
       try {
+        // item 1: alterar Status_Item (Motivo obrigatório só ao sair de Concluído)
+        PRJ.abrirEap({ id: "10", fields: fixturePorId["10"] });
+        $("eDestino").value = "Em Andamento"; $("eMotivo").value = "";
+        await PRJ.alterarStatusEap({ id: "10", fields: fixturePorId["10"] });
+        const p1a = chamadas.patch.find(c => c.lista === "Projeto_EAP" && c.id === "10");
+        ok(!!p1a && p1a.fields.Status_Item === "Em Andamento" && !("Motivo_Status" in p1a.fields),
+          "EAP: Planejado -> Em Andamento não exige motivo, e não manda Motivo_Status vazio");
+        const concluidoObj = { id: "10", fields: { ProjetoLookupId: 1, Status_Item: "Concluído" } };
+        PRJ.abrirEap(concluidoObj);
+        $("eDestino").value = "Cancelado"; $("eMotivo").value = "";
+        await PRJ.alterarStatusEap(concluidoObj);
+        ok(chamadas.patch.filter(c => c.lista === "Projeto_EAP" && c.id === "10").length === 1,
+          "EAP: sair de Concluído SEM motivo é recusado (nenhum patch novo além do anterior)");
+        $("eMotivo").value = "Retrabalho identificado na auditoria";
+        await PRJ.alterarStatusEap(concluidoObj);
+        const p1b = chamadas.patch.filter(c => c.lista === "Projeto_EAP" && c.id === "10").pop();
+        ok(!!p1b && p1b.fields.Status_Item === "Cancelado" && p1b.fields.Motivo_Status === "Retrabalho identificado na auditoria",
+          "EAP: sair de Concluído COM motivo grava Status_Item e Motivo_Status");
+
         // item 2: criar alocação
         PRJ.abrirNovaAlocacao();
         $("nTec").value = "5"; $("nPapel").value = "Eletricista"; $("nEap").value = "";
@@ -1374,7 +1446,7 @@
         PRJ.abrirMat({ id: "30", fields: fixturePorId["30"] });
         $("mQtd").value = "-1"; $("mCusto").value = "";
         await PRJ.salvarMaterial({ id: "30", fields: fixturePorId["30"] });
-        ok(chamadas.patch.length === 0, "material: Qtd. aplicada negativa é recusada SEM chamar o EG");
+        ok(chamadas.patch.filter(c => c.lista === "Projeto_Materiais").length === 0, "material: Qtd. aplicada negativa é recusada SEM chamar o EG");
         $("mQtd").value = "500"; $("mCusto").value = "";  // 500 > Qtd_Prevista=2 de propósito: NÃO deve bloquear
         await PRJ.salvarMaterial({ id: "30", fields: fixturePorId["30"] });
         const p3 = chamadas.patch.find(c => c.lista === "Projeto_Materiais");
@@ -1427,6 +1499,22 @@
         const c7 = chamadas.create.find(c => c.lista === "Projeto_Aditivos");
         ok(!!c7 && c7.fields.Status_Aditivo === "Proposto" && c7.fields.Valor_Delta === -50,
           "aditivo: nasce sempre 'Proposto' e aceita Δ valor negativo (redução de escopo)");
+
+        // item 8: aprovar/rejeitar aditivo (só a partir de Proposto, motivo obrigatório)
+        PRJ.abrirAdt({ id: "70", fields: fixturePorId["70"] });
+        ok(document.querySelectorAll("#drawer #dAplicar").length === 1, "aditivo: 'Proposto' mostra o controle de decisão");
+        $("dDecisao").value = "Aprovado"; $("dMotivo").value = "";
+        await PRJ.decidirAditivo({ id: "70", fields: fixturePorId["70"] });
+        ok(chamadas.patch.filter(c => c.lista === "Projeto_Aditivos").length === 0,
+          "aditivo: decisão sem motivo é recusada SEM chamar o EG");
+        $("dMotivo").value = "Escopo tecnicamente viável, cliente confirmou verbalmente";
+        await PRJ.decidirAditivo({ id: "70", fields: fixturePorId["70"] });
+        const p8 = chamadas.patch.find(c => c.lista === "Projeto_Aditivos" && c.id === "70");
+        ok(!!p8 && p8.fields.Status_Aditivo === "Aprovado" && p8.fields.Motivo_Aprovacao === "Escopo tecnicamente viável, cliente confirmou verbalmente" && !!p8.fields.Aprovado_Em,
+          "aditivo: aprovar com motivo grava Status_Aditivo/Motivo_Aprovacao/Aprovado_Em");
+        PRJ.abrirAdt({ id: "71", fields: { ProjetoLookupId: 1, Status_Aditivo: "Em análise", Numero_Aditivo: 2 } });
+        ok(document.querySelectorAll("#drawer #dAplicar").length === 0 && document.querySelectorAll("#drawer .bloqueado").length === 1,
+          "aditivo: status diferente de 'Proposto' não mostra controle de decisão");
       } finally {
         EG.createItem = originais.createItem; EG.patchItemFields = originais.patchItemFields;
         EG.gget = originais.gget; EG.resolveSite = originais.resolveSite;
