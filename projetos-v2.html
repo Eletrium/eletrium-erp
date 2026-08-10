@@ -61,6 +61,24 @@
     .drawer-body .tot { border-top: 1px solid #30363d; margin-top: 10px; padding-top: 10px; }
     .drawer-body .grupo { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; margin-top: 16px; }
     .diverge { color: #e3b341; font-size: .8rem; border: 1px solid #d2992255; background: #d2992218; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+
+    /* blocos de escrita do drawer (mesmo padrão de documentos-os.html) */
+    .acao { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+    .acao input, .acao select, .acao textarea {
+      background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
+      padding: 8px 10px; font-size: .88rem; font-family: inherit;
+    }
+    .acao input:focus, .acao select:focus, .acao textarea:focus { outline: 0; border-color: var(--acao-clara); }
+    .acao textarea { min-height: 60px; resize: vertical; }
+    .acao label { color: #8b949e; font-size: .76rem; text-transform: uppercase; letter-spacing: .04em; }
+    .acao label .req { color: #F85149; }
+    .acao-btns { display: flex; gap: 8px; }
+    .acao-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
+    .acao-msg.err { color: #F85149; }
+    .acao-msg.ok { color: #3fb950; }
+    .bloqueado { color: #8b949e; font-size: .8rem; border: 1px solid #30363d; border-radius: 6px; padding: 7px 10px; margin-top: 10px; line-height: 1.45; }
+    .secaoBtn { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .secaoBtn button { font-size: .8rem; }
   
     /* 2º CANAL (acessibilidade): a SEVERIDADE destes blocos era comunicada
        só pela cor de fundo/borda — layout idêntico entre info, aviso e ok.
@@ -102,14 +120,15 @@
 
   <main>
     <div class="aviso-ro" id="avisoRo" hidden>
-      <strong>Tela somente leitura.</strong> A escrita transacional da Frente Projetos (EAP, medições,
-      custos, aditivos…) entra pelo gateway B1 — até lá esta tela não grava <strong>nada</strong> no SharePoint.
+      <strong>Escrita parcial.</strong> Alocações, materiais, medições, custos/receitas e aditivos (criação)
+      já gravam direto no SharePoint. Editar status de item da EAP e aprovar/rejeitar aditivo seguem
+      bloqueados — falta o campo "Motivo" obrigatório no schema dessas duas listas.
     </div>
 
     <div class="toolbar" id="barProjeto" hidden>
       <label for="selProjeto">Projeto</label>
       <select id="selProjeto"></select>
-      <span class="hint right"><span class="ro">somente leitura — escrita via gateway B1</span></span>
+      <span class="hint right"><span class="ro">escrita parcial — ver aviso acima</span></span>
     </div>
 
     <div class="kpis" id="kpis" hidden>
@@ -144,7 +163,7 @@
 
     <!-- ======================== 2. ALOCAÇÕES ========================== -->
     <section id="sec_aloc" hidden>
-      <div class="secao">Alocações de equipe <span>— técnicos por item da EAP</span></div>
+      <div class="secao secaoBtn">Alocações de equipe <span>— técnicos por item da EAP</span><button id="btnNovaAloc" class="sec">+ Nova alocação</button></div>
       <table id="aTbl" hidden>
         <thead><tr>
           <th>Técnico</th><th>Papel</th><th>Item da EAP</th><th>Início</th><th>Fim</th><th>Horas previstas</th>
@@ -190,6 +209,7 @@
 
     <!-- ==================== 5. CUSTOS × RECEITAS ====================== -->
     <section id="sec_cxr" hidden>
+      <div class="secaoBtn"><span></span><button id="btnNovoLanc" class="sec">+ Novo lançamento</button></div>
       <div class="secao">Resumo por competência <span>— totais e saldo (receita − custo)</span></div>
       <table id="rTbl" hidden>
         <thead><tr>
@@ -216,7 +236,7 @@
         <div class="kpi"><div class="k">Δ prazo acumulado (aprovados)</div><div class="v" id="adK_dias">—</div></div>
         <div class="kpi"><div class="k">Valor do contrato atualizado</div><div class="v" id="adK_atual" style="color:#58a6ff">—</div><div class="sub">contrato original + Δ valor aprovado</div></div>
       </div>
-      <div class="secao">Aditivos <span>— deltas de valor/prazo por aditivo; acumulado considera só os aprovados</span></div>
+      <div class="secao secaoBtn">Aditivos <span>— deltas de valor/prazo por aditivo; acumulado considera só os aprovados</span><button id="btnNovoAdt" class="sec">+ Novo aditivo</button></div>
       <table id="adTbl" hidden>
         <thead><tr>
           <th>Nº</th><th>Tipo</th><th>Status</th><th>Δ valor</th><th>Δ prazo (dias)</th><th>Aprovado em</th><th>Descrição</th>
@@ -232,13 +252,46 @@
 
   <script>
     /* ===================================================================
-       PROJETOS v2 — Onda 3, Frente Projetos (§14). TELA 100% SOMENTE LEITURA.
+       PROJETOS v2 — Onda 3, Frente Projetos (§14). ESCRITA DIRETA (6 de 8
+       ações aprovadas), fora do gateway B1 — B1 cobre só 3 fluxos
+       transacionais (concluir OS, fechar lote de medição, aceite de
+       oferta), Projetos §14 nunca esteve no escopo dele. Mesmo padrão do
+       resto do repo: EG.patchItemFields/createItem (ETag/If-Match
+       automático), EG.travarChoices fail-closed nos campos Choice
+       gravados, releitura do servidor após cada gravação.
 
-       DONO DA ESCRITA: a escrita transacional (criar/editar EAP, alocações,
-       materiais, itens de contrato, medições, custos/receitas e aditivos)
-       entra pelo GATEWAY B1 — até o gateway existir, esta tela NÃO grava
-       NADA: nenhum patchItemFields/createItem aparece (nem deve aparecer)
-       neste arquivo. Qualquer botão de escrita futuro nasce depois do B1.
+       AÇÕES CONSTRUÍDAS (aprovadas com os ajustes: sem bloqueio nos itens
+       3 e 4; lacuna de papel/autorização registrada nos itens 5 e 8 —
+       não existe controle de papel nesta tela nem no login MSAL, então
+       qualquer usuário autenticado pode acionar qualquer uma destas):
+         1. (BLOQUEADO — ver abaixo)
+         2. Criar alocação (Projeto_Alocacoes) — botão na aba Alocações.
+         3. Editar Qtd_Aplicada/Custo_Real de um material (Projeto_Materiais)
+            — no drawer do material; sem teto contra Qtd_Prevista.
+         4. Criar medição quantitativa (Medicoes_Quantitativas) — no
+            drawer do item de contrato; sem bloqueio contra Qtd_Contratada
+            (a barra de % continua só informativa).
+         5. Avançar Status_Medicao (Aberta→Aprovada→Faturada, nunca
+            regride) — no drawer da medição.
+         6. Criar lançamento de custo/receita (Projeto_Custos_Receitas) —
+            botão na aba Custos × Receitas.
+         7. Criar aditivo, nasce em "Proposto" (Projeto_Aditivos) — botão
+            na aba Aditivos.
+         8. (BLOQUEADO — ver abaixo)
+
+       ITENS 1 e 8 BLOQUEADOS: a decisão exige "Motivo" obrigatório
+       (editar Status_Item de EAP e aprovar/rejeitar aditivo — este
+       último altera valor/prazo contratual de verdade). NENHUM dos dois
+       campos existe hoje no schema real de Projeto_EAP nem de
+       Projeto_Aditivos (confirmado por leitura de todos os campos que
+       esta própria tela já lê — nem Observacoes nem Motivo aparecem em
+       nenhum dos dois, ao contrário de Medicoes_Quantitativas e
+       Projeto_Custos_Receitas, que já têm Observacoes). Criar a coluna
+       exige SharePoint (a ferramenta Make disponível nesta sessão já
+       falhou para POST /columns — mesma limitação documentada em
+       INVESTIGACAO-LISTAS-ORFAS-0408.md). Até a coluna existir, os dois
+       drawers (EAP e Aditivo) só mostram um aviso — nenhum controle de
+       escrita aparece para eles, e a suíte de asserção prova isso.
 
        Listas lidas (todas via EG.listItems):
          Projetos (raiz LEGADA, reutilizada — não modificada),
@@ -298,6 +351,7 @@
     let mapItem = {};        // "tipo:id" -> item (drawer)
     let carregado = false;
     let projetoAtual = "";   // id (string) do projeto selecionado
+    let gravando = false;    // mutex simples contra duplo clique/submit concorrente
 
     const tecNome = (id) => id == null ? "—" : (nomeTecnico[id] || ("técnico #" + id));
     const prodNome = (id) => id == null ? "—" : (nomeProduto[id] || ("produto #" + id));
@@ -344,16 +398,20 @@
         EG.renderEstado($("estado"), "carregando", { mensagem: "Carregando Frente Projetos…" });
         setStatus("Carregando projetos…");
 
-        // guarda contra rótulo de Choice divergente (falha silenciosa) — só AVISA; leitura nunca grava
+        // Campos GRAVADOS por esta tela usam travarChoices (fail-closed: registra a
+        // trava que patchItemFields/createItem checam antes de ir à rede). Status_Item
+        // e Status_Aditivo ficam de fora do que é gravado hoje (itens 1/8 bloqueados),
+        // mas travar mesmo assim já deixa a trava pronta para quando a coluna Motivo
+        // existir. Tipo_Item nunca é gravado por esta tela — validarChoices (só aviso).
         Promise.all([
           EG.validarChoices("Projeto_EAP", "Tipo_Item", TIPO_ITEM).then(v => ({ v, rotulo: "Tipo do Item (Projeto_EAP)" })),
-          EG.validarChoices("Projeto_EAP", "Status_Item", STATUS_ITEM).then(v => ({ v, rotulo: "Status do Item (Projeto_EAP)" })),
-          EG.validarChoices("Projeto_Alocacoes", "Papel", PAPEL).then(v => ({ v, rotulo: "Papel (Projeto_Alocacoes)" })),
-          EG.validarChoices("Medicoes_Quantitativas", "Status_Medicao", STATUS_MEDICAO).then(v => ({ v, rotulo: "Status da Medição (Medicoes_Quantitativas)" })),
-          EG.validarChoices("Projeto_Custos_Receitas", "Tipo_Lancamento", TIPO_LANC).then(v => ({ v, rotulo: "Tipo de Lançamento (Projeto_Custos_Receitas)" })),
-          EG.validarChoices("Projeto_Custos_Receitas", "Categoria", CATEGORIA).then(v => ({ v, rotulo: "Categoria (Projeto_Custos_Receitas)" })),
-          EG.validarChoices("Projeto_Aditivos", "Tipo_Aditivo", TIPO_ADITIVO).then(v => ({ v, rotulo: "Tipo do Aditivo (Projeto_Aditivos)" })),
-          EG.validarChoices("Projeto_Aditivos", "Status_Aditivo", STATUS_ADITIVO).then(v => ({ v, rotulo: "Status do Aditivo (Projeto_Aditivos)" }))
+          EG.travarChoices("Projeto_EAP", "Status_Item", STATUS_ITEM).then(v => ({ v, rotulo: "Status do Item (Projeto_EAP)" })),
+          EG.travarChoices("Projeto_Alocacoes", "Papel", PAPEL).then(v => ({ v, rotulo: "Papel (Projeto_Alocacoes)" })),
+          EG.travarChoices("Medicoes_Quantitativas", "Status_Medicao", STATUS_MEDICAO).then(v => ({ v, rotulo: "Status da Medição (Medicoes_Quantitativas)" })),
+          EG.travarChoices("Projeto_Custos_Receitas", "Tipo_Lancamento", TIPO_LANC).then(v => ({ v, rotulo: "Tipo de Lançamento (Projeto_Custos_Receitas)" })),
+          EG.travarChoices("Projeto_Custos_Receitas", "Categoria", CATEGORIA).then(v => ({ v, rotulo: "Categoria (Projeto_Custos_Receitas)" })),
+          EG.travarChoices("Projeto_Aditivos", "Tipo_Aditivo", TIPO_ADITIVO).then(v => ({ v, rotulo: "Tipo do Aditivo (Projeto_Aditivos)" })),
+          EG.travarChoices("Projeto_Aditivos", "Status_Aditivo", STATUS_ADITIVO).then(v => ({ v, rotulo: "Status do Aditivo (Projeto_Aditivos)" }))
         ]).then(pares => EG.renderAvisosChoices($("choiceWarn"), pares)).catch(() => {});
 
         const [pr, ea, al, ma, ci, me, la, ad, te, pd] = await Promise.all([
@@ -800,8 +858,29 @@
     }
 
     /* ==================================================================
+       ESCRITA — helpers compartilhados pelos formulários dos drawers.
+       Padrão: EG.createItem/patchItemFields (ETag automático no patch),
+       releitura do item gravado do servidor, merge no estado local
+       (upsertLocal) e re-render — nunca confia só no payload que foi
+       enviado (o servidor pode ter default/normalização diferente).
+       ================================================================== */
+    async function relerItem(lista, id) {
+      const sid = await EG.resolveSite();
+      return EG.gget("/sites/" + sid + "/lists/" + encodeURIComponent(lista) + "/items/" + id + "?expand=fields");
+    }
+    function upsertLocal(tipo, arr, novo) {
+      const idx = arr.findIndex(o => String(o.id) === String(novo.id));
+      if (idx >= 0) arr[idx] = novo; else arr.push(novo);
+      mapItem[tipo + ":" + novo.id] = novo;
+      if (tipo === "eap") mapEapId[novo.id] = novo;
+      if (tipo === "ctr") mapCtrId[novo.id] = novo;
+      return novo;
+    }
+    const reqNum = (v) => { const n = Number(String(v).replace(",", ".")); return isFinite(n) ? n : null; };
+    const okComp = (v) => v === "" || /^\d{4}-(0[1-9]|1[0-2])$/.test(v);
+
+    /* ==================================================================
        DRAWER — um por entidade, com os campos crus (Graph) no rodapé.
-       Nenhum botão de escrita aqui: leitura pura até o gateway B1.
        ================================================================== */
     const linha = (l, v) => (v == null || v === "") ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(v) + "</dd>";
     const linhaM = (l, v) => !ehNum(v) ? "" : "<dt>" + esc(l) + "</dt><dd>" + esc(brl(v)) + "</dd>";
@@ -830,7 +909,9 @@
         linha("Ordem", cel(f.Ordem)) +
         linha("Peso", ehNum(f.Peso_Pct) ? fmtN(f.Peso_Pct, 1) + " %" : null) +
         linha("Descrição", f.Descricao) +
-        "</dl>";
+        "</dl>" +
+        "<div class='bloqueado'>🔒 Editar o status deste item exige motivo obrigatório, e " +
+        "<code>Projeto_EAP</code> ainda não tem um campo para isso. Bloqueado até a coluna existir.</div>";
       mostrarDrawer(f.Codigo_EAP || f.Title || "Item da EAP", f.Title, f.Status_Item, cor(COR_STATUS_ITEM, f.Status_Item), corpo, f);
     }
     function abrirAloc(o) {
@@ -845,6 +926,62 @@
         linha("Título", f.Title) +
         "</dl>";
       mostrarDrawer(tecNome(f.TecnicoLookupId), "Alocação", f.Papel, cor(COR_PAPEL, f.Papel), corpo, f);
+    }
+
+    /* ---- 2. criar alocação (Projeto_Alocacoes) ---- */
+    function abrirNovaAlocacao() {
+      if (!tecnicos.length) {
+        mostrarDrawer("Nova alocação", null, null, "#8b949e", "<div class='bloqueado'>Nenhum técnico carregado (TecnicosMEI) — não há o que selecionar.</div>");
+        return;
+      }
+      const optsTec = tecnicos.slice()
+        .sort((a, b) => String(tecNome(a.id)).localeCompare(String(tecNome(b.id)), "pt-BR"))
+        .map(t => "<option value='" + esc(t.id) + "'>" + esc(tecNome(t.id)) + "</option>").join("");
+      const optsPapel = PAPEL.map(p => "<option value='" + esc(p) + "'>" + esc(p) + "</option>").join("");
+      const eapDoProj = doProjeto(eap);
+      const optsEap = "<option value=''>— (sem item de EAP)</option>" +
+        eapDoProj.map(o => "<option value='" + esc(o.id) + "'>" + esc(eapRotulo(o.id)) + "</option>").join("");
+      const corpo = "<div class='acao'>" +
+        "<label for='nTec'>Técnico <span class='req'>*</span></label>" +
+        "<select id='nTec'>" + optsTec + "</select>" +
+        "<label for='nPapel'>Papel <span class='req'>*</span></label>" +
+        "<select id='nPapel'>" + optsPapel + "</select>" +
+        "<label for='nEap'>Item da EAP (opcional)</label>" +
+        "<select id='nEap'>" + optsEap + "</select>" +
+        "<label for='nIni'>Início (opcional)</label><input id='nIni' type='date' />" +
+        "<label for='nFim'>Fim (opcional)</label><input id='nFim' type='date' />" +
+        "<label for='nHoras'>Horas previstas (opcional)</label><input id='nHoras' type='number' step='0.5' min='0' />" +
+        "<div class='acao-btns'><button id='nCriar'>Criar alocação</button></div>" +
+        "<div id='nMsg' class='acao-msg'></div>" +
+        "</div>";
+      mostrarDrawer("Nova alocação", "Projeto_Alocacoes", null, "#8b949e", corpo);
+      $("nCriar").onclick = criarAlocacao;
+    }
+    async function criarAlocacao() {
+      if (gravando) return;
+      const msg = $("nMsg");
+      const tecId = $("nTec").value, papel = $("nPapel").value, eapId = $("nEap").value;
+      const ini = $("nIni").value, fim = $("nFim").value, horasStr = $("nHoras").value;
+      if (!tecId || !papel) { msg.className = "acao-msg err"; msg.textContent = "Técnico e Papel são obrigatórios."; return; }
+      if (ini && fim && fim < ini) { msg.className = "acao-msg err"; msg.textContent = "Fim não pode ser antes do Início."; return; }
+      let horas = null;
+      if (horasStr !== "") { horas = reqNum(horasStr); if (horas == null || horas < 0) { msg.className = "acao-msg err"; msg.textContent = "Horas previstas precisa ser um número ≥ 0."; return; } }
+      const campos = { ProjetoLookupId: Number(projetoAtual), TecnicoLookupId: Number(tecId), Papel: papel, Title: tecNome(Number(tecId)) + " — " + papel };
+      if (eapId) campos.EAPLookupId = Number(eapId);
+      if (ini) campos.Data_Inicio = ini;
+      if (fim) campos.Data_Fim = fim;
+      if (horas != null) campos.Horas_Previstas = horas;
+      try {
+        gravando = true; $("nCriar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        const criado = await EG.createItem("Projeto_Alocacoes", campos);
+        const novo = await relerItem("Projeto_Alocacoes", criado.id);
+        upsertLocal("aloc", alocacoes, novo);
+        renderTudo(); fechar();
+        setStatus("Alocação criada: " + tecNome(Number(tecId)) + " — " + papel + ".");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("nCriar").disabled = false;
+      } finally { gravando = false; }
     }
     function abrirMat(o) {
       const f = o.fields || {};
@@ -865,8 +1002,37 @@
         linhaM("Real", f.Custo_Real) +
         linha("Desvio", dCusto == null ? null : (dCusto > 0 ? "+" : "") + brl(dCusto)) +
         "</dl>" +
-        (dQtd != null && dQtd > 0 ? "<div class='diverge'>⚠️ Aplicado acima do previsto (" + esc(fmtN(dQtd, 2)) + " a mais).</div>" : "");
+        (dQtd != null && dQtd > 0 ? "<div class='diverge'>⚠️ Aplicado acima do previsto (" + esc(fmtN(dQtd, 2)) + " a mais).</div>" : "") +
+        grupo("Editar aplicado/real") +
+        "<div class='acao'>" +
+        "<label for='mQtd'>Qtd. aplicada (em branco = não altera)</label><input id='mQtd' type='number' step='0.01' min='0' value='" + (ehNum(f.Qtd_Aplicada) ? esc(f.Qtd_Aplicada) : "") + "' />" +
+        "<label for='mCusto'>Custo real (em branco = não altera)</label><input id='mCusto' type='number' step='0.01' min='0' value='" + (ehNum(f.Custo_Real) ? esc(f.Custo_Real) : "") + "' />" +
+        "<div class='hint'>Sem teto contra o previsto — aplicar acima só aparece como aviso acima, nunca bloqueia.</div>" +
+        "<div class='acao-btns'><button id='mSalvar'>Salvar</button></div>" +
+        "<div id='mMsg' class='acao-msg'></div>" +
+        "</div>";
       mostrarDrawer(f.ProdutoLookupId != null ? prodNome(f.ProdutoLookupId) : (f.Title || "Material"), "Material do projeto", null, "#8b949e", corpo, f);
+      $("mSalvar").onclick = () => salvarMaterial(o);
+    }
+    async function salvarMaterial(o) {
+      if (gravando) return;
+      const msg = $("mMsg");
+      const qtdStr = $("mQtd").value, custoStr = $("mCusto").value;
+      const campos = {};
+      if (qtdStr !== "") { const q = reqNum(qtdStr); if (q == null || q < 0) { msg.className = "acao-msg err"; msg.textContent = "Qtd. aplicada precisa ser um número ≥ 0."; return; } campos.Qtd_Aplicada = q; }
+      if (custoStr !== "") { const c = reqNum(custoStr); if (c == null || c < 0) { msg.className = "acao-msg err"; msg.textContent = "Custo real precisa ser um número ≥ 0."; return; } campos.Custo_Real = c; }
+      if (!Object.keys(campos).length) { msg.className = "acao-msg err"; msg.textContent = "Preencha ao menos um dos dois campos para gravar."; return; }
+      try {
+        gravando = true; $("mSalvar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Projeto_Materiais", o.id, campos);
+        const novo = await relerItem("Projeto_Materiais", o.id);
+        upsertLocal("mat", materiais, novo);
+        renderTudo(); abrirMat(novo);
+        setStatus("Material atualizado.");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("mSalvar").disabled = false;
+      } finally { gravando = false; }
     }
     function abrirCtr(o) {
       const f = o.fields || {};
@@ -891,8 +1057,43 @@
         linha("Por status", porStatus) +
         linha("Medições", g ? String(g.itens.length) : "0") +
         "</dl>" +
-        (p != null && p > 100.01 ? "<div class='diverge'>⚠️ Medido acima do contratado (" + esc(fmtN(p, 1)) + " %). Confira as medições ou um aditivo de quantidade.</div>" : "");
+        (p != null && p > 100.01 ? "<div class='diverge'>⚠️ Medido acima do contratado (" + esc(fmtN(p, 1)) + " %). Confira as medições ou um aditivo de quantidade.</div>" : "") +
+        grupo("Registrar medição") +
+        "<div class='acao'>" +
+        "<label for='qComp'>Competência (AAAA-MM) <span class='req'>*</span></label><input id='qComp' type='text' placeholder='2026-08' maxlength='7' />" +
+        "<label for='qQtd'>Qtd. medida <span class='req'>*</span></label><input id='qQtd' type='number' step='0.01' min='0.01' />" +
+        "<label for='qObs'>Observações (opcional)</label><textarea id='qObs'></textarea>" +
+        "<div class='hint'>Nasce como \"Aberta\". Sem bloqueio contra a Qtd. contratada — a barra acima só avisa.</div>" +
+        "<div class='acao-btns'><button id='qCriar'>Registrar medição</button></div>" +
+        "<div id='qMsg' class='acao-msg'></div>" +
+        "</div>";
       mostrarDrawer(f.Codigo_Item || "Item de contrato", String(f.Descricao || f.Title || "").slice(0, 80), null, "#8b949e", corpo, f);
+      $("qCriar").onclick = () => criarMedicao(o);
+    }
+    async function criarMedicao(o) {
+      if (gravando) return;
+      const msg = $("qMsg");
+      const f = o.fields || {};
+      const comp = $("qComp").value.trim(), qtdStr = $("qQtd").value, obs = $("qObs").value.trim();
+      if (!okComp(comp) || !comp) { msg.className = "acao-msg err"; msg.textContent = "Competência precisa estar no formato AAAA-MM."; return; }
+      const qtd = reqNum(qtdStr);
+      if (qtd == null || qtd <= 0) { msg.className = "acao-msg err"; msg.textContent = "Qtd. medida precisa ser um número > 0."; return; }
+      const campos = {
+        Contrato_ItemLookupId: Number(o.id), Competencia: comp, Qtd_Medida: qtd, Status_Medicao: "Aberta",
+        Chave_Medicao: o.id + "|" + comp, Title: (f.Codigo_Item || f.Title || o.id) + " — " + comp
+      };
+      if (obs) campos.Observacoes = obs;
+      try {
+        gravando = true; $("qCriar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        const criado = await EG.createItem("Medicoes_Quantitativas", campos);
+        const novo = await relerItem("Medicoes_Quantitativas", criado.id);
+        upsertLocal("med", medicoes, novo);
+        renderTudo(); abrirCtr(o);
+        setStatus("Medição registrada: " + comp + " — " + fmtN(qtd, 2) + ".");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("qCriar").disabled = false;
+      } finally { gravando = false; }
     }
     function abrirMed(o) {
       const f = o.fields || {};
@@ -905,7 +1106,41 @@
         linha("Observações", f.Observacoes) +
         linha("Título", f.Title) +
         "</dl>";
-      mostrarDrawer("Medição " + (f.Competencia || ""), f.Contrato_ItemLookupId != null ? ctrRotulo(f.Contrato_ItemLookupId) : "", f.Status_Medicao, cor(COR_MEDICAO, f.Status_Medicao), corpo, f);
+      const atual = f.Status_Medicao || "Aberta";
+      const idxAtual = STATUS_MEDICAO.indexOf(atual);
+      const seguintes = STATUS_MEDICAO.filter((s, i) => i > idxAtual);
+      const corpoFinal = corpo + (!seguintes.length ? "" :
+        grupo("Avançar status") +
+        "<div class='acao'>" +
+        "<label for='sDestino'>Novo status</label>" +
+        "<select id='sDestino'>" + seguintes.map(s => "<option value='" + esc(s) + "'>" + esc(s) + "</option>").join("") + "</select>" +
+        "<div class='hint'>Só avança (nunca regride). Esta tela não distingue papel de usuário — qualquer autenticado pode aprovar/faturar; lacuna registrada, não resolvida aqui.</div>" +
+        "<div class='acao-btns'><button id='sAplicar'>Aplicar</button></div>" +
+        "<div id='sMsg' class='acao-msg'></div>" +
+        "</div>");
+      mostrarDrawer("Medição " + (f.Competencia || ""), f.Contrato_ItemLookupId != null ? ctrRotulo(f.Contrato_ItemLookupId) : "", atual, cor(COR_MEDICAO, atual), corpoFinal, f);
+      if (seguintes.length) $("sAplicar").onclick = () => avancarMedicao(o);
+    }
+    async function avancarMedicao(o) {
+      if (gravando) return;
+      const msg = $("sMsg");
+      const f = o.fields || {};
+      const atual = f.Status_Medicao || "Aberta";
+      const destino = $("sDestino").value;
+      if (STATUS_MEDICAO.indexOf(destino) <= STATUS_MEDICAO.indexOf(atual)) {
+        msg.className = "acao-msg err"; msg.textContent = "Só é permitido avançar, nunca regredir."; return;
+      }
+      try {
+        gravando = true; $("sAplicar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        await EG.patchItemFields("Medicoes_Quantitativas", o.id, { Status_Medicao: destino });
+        const novo = await relerItem("Medicoes_Quantitativas", o.id);
+        upsertLocal("med", medicoes, novo);
+        renderTudo(); abrirMed(novo);
+        setStatus("Medição: " + atual + " → " + destino + ".");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("sAplicar").disabled = false;
+      } finally { gravando = false; }
     }
     function abrirLanc(o) {
       const f = o.fields || {};
@@ -921,6 +1156,48 @@
         "</dl>";
       mostrarDrawer(f.Title || (f.Tipo_Lancamento || "Lançamento"), (f.Categoria || "") + (f.Competencia ? " · " + f.Competencia : ""), f.Tipo_Lancamento, ct, corpo, f);
     }
+
+    /* ---- 6. criar lançamento de custo/receita (Projeto_Custos_Receitas) ---- */
+    function abrirNovoLancamento() {
+      const optsTipo = TIPO_LANC.map(t => "<option value='" + esc(t) + "'>" + esc(t) + "</option>").join("");
+      const optsCat = CATEGORIA.map(c => "<option value='" + esc(c) + "'>" + esc(c) + "</option>").join("");
+      const corpo = "<div class='acao'>" +
+        "<label for='lTitulo'>Título <span class='req'>*</span></label><input id='lTitulo' type='text' maxlength='255' />" +
+        "<label for='lTipo'>Tipo <span class='req'>*</span></label><select id='lTipo'>" + optsTipo + "</select>" +
+        "<label for='lCat'>Categoria <span class='req'>*</span></label><select id='lCat'>" + optsCat + "</select>" +
+        "<label for='lValor'>Valor <span class='req'>*</span></label><input id='lValor' type='number' step='0.01' min='0.01' />" +
+        "<label for='lComp'>Competência (AAAA-MM, opcional)</label><input id='lComp' type='text' placeholder='2026-08' maxlength='7' />" +
+        "<label for='lOrigem'>Origem (opcional)</label><input id='lOrigem' type='text' maxlength='255' />" +
+        "<div class='acao-btns'><button id='lCriar'>Criar lançamento</button></div>" +
+        "<div id='lMsg' class='acao-msg'></div>" +
+        "</div>";
+      mostrarDrawer("Novo lançamento", "Projeto_Custos_Receitas", null, "#8b949e", corpo);
+      $("lCriar").onclick = criarLancamento;
+    }
+    async function criarLancamento() {
+      if (gravando) return;
+      const msg = $("lMsg");
+      const titulo = $("lTitulo").value.trim(), tipo = $("lTipo").value, cat = $("lCat").value;
+      const valorStr = $("lValor").value, comp = $("lComp").value.trim(), origem = $("lOrigem").value.trim();
+      if (!titulo) { msg.className = "acao-msg err"; msg.textContent = "Título é obrigatório."; return; }
+      const valor = reqNum(valorStr);
+      if (valor == null || valor <= 0) { msg.className = "acao-msg err"; msg.textContent = "Valor precisa ser um número > 0."; return; }
+      if (!okComp(comp)) { msg.className = "acao-msg err"; msg.textContent = "Competência precisa estar no formato AAAA-MM (ou em branco)."; return; }
+      const campos = { Title: titulo, Tipo_Lancamento: tipo, Categoria: cat, Valor: valor, ProjetoLookupId: Number(projetoAtual) };
+      if (comp) campos.Competencia = comp;
+      if (origem) campos.Origem = origem;
+      try {
+        gravando = true; $("lCriar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        const criado = await EG.createItem("Projeto_Custos_Receitas", campos);
+        const novo = await relerItem("Projeto_Custos_Receitas", criado.id);
+        upsertLocal("lanc", lancamentos, novo);
+        renderTudo(); fechar();
+        setStatus("Lançamento criado: " + titulo + " (" + tipo + ").");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("lCriar").disabled = false;
+      } finally { gravando = false; }
+    }
     function abrirAdt(o) {
       const f = o.fields || {};
       const corpo = "<dl>" +
@@ -932,8 +1209,52 @@
         linha("Status", f.Status_Aditivo) +
         linha("Aprovado em", EG.fmtDate(f.Aprovado_Em)) +
         linha("Título", f.Title) +
-        "</dl>";
+        "</dl>" +
+        "<div class='bloqueado'>🔒 Aprovar/rejeitar exige motivo obrigatório (este aditivo altera valor/prazo " +
+        "contratual de verdade), e <code>Projeto_Aditivos</code> ainda não tem um campo para isso. Bloqueado " +
+        "até a coluna existir — permanece \"" + esc(f.Status_Aditivo || "Proposto") + "\".</div>";
       mostrarDrawer("Aditivo " + (ehNum(f.Numero_Aditivo) ? "nº " + fmtN(f.Numero_Aditivo) : ""), f.Tipo_Aditivo, f.Status_Aditivo, cor(COR_ADITIVO, f.Status_Aditivo), corpo, f);
+    }
+
+    /* ---- 7. criar aditivo (Projeto_Aditivos), nasce em "Proposto" ---- */
+    function abrirNovoAditivo() {
+      const proxNum = doProjeto(aditivos).reduce((mx, o) => Math.max(mx, num((o.fields || {}).Numero_Aditivo)), 0) + 1;
+      const optsTipo = TIPO_ADITIVO.map(t => "<option value='" + esc(t) + "'>" + esc(t) + "</option>").join("");
+      const corpo = "<div class='acao'>" +
+        "<label for='adNum'>Número <span class='req'>*</span></label><input id='adNum' type='number' step='1' min='1' value='" + esc(proxNum) + "' />" +
+        "<label for='adTipo'>Tipo <span class='req'>*</span></label><select id='adTipo'>" + optsTipo + "</select>" +
+        "<label for='adDesc'>Descrição <span class='req'>*</span></label><textarea id='adDesc'></textarea>" +
+        "<label for='adValor'>Δ valor (opcional, pode ser negativo)</label><input id='adValor' type='number' step='0.01' />" +
+        "<label for='adDias'>Δ prazo em dias (opcional, pode ser negativo)</label><input id='adDias' type='number' step='1' />" +
+        "<div class='hint'>Nasce como \"Proposto\". Aprovar/rejeitar está bloqueado (ver item 8).</div>" +
+        "<div class='acao-btns'><button id='adCriar'>Criar aditivo</button></div>" +
+        "<div id='adMsg' class='acao-msg'></div>" +
+        "</div>";
+      mostrarDrawer("Novo aditivo", "Projeto_Aditivos", null, "#8b949e", corpo);
+      $("adCriar").onclick = criarAditivo;
+    }
+    async function criarAditivo() {
+      if (gravando) return;
+      const msg = $("adMsg");
+      const numStr = $("adNum").value, tipo = $("adTipo").value, desc = $("adDesc").value.trim();
+      const valorStr = $("adValor").value, diasStr = $("adDias").value;
+      const numero = reqNum(numStr);
+      if (numero == null || numero <= 0 || Math.floor(numero) !== numero) { msg.className = "acao-msg err"; msg.textContent = "Número precisa ser um inteiro > 0."; return; }
+      if (!desc) { msg.className = "acao-msg err"; msg.textContent = "Descrição é obrigatória."; return; }
+      const campos = { ProjetoLookupId: Number(projetoAtual), Numero_Aditivo: numero, Tipo_Aditivo: tipo, Descricao: desc, Status_Aditivo: "Proposto", Title: "Aditivo nº " + numero };
+      if (valorStr !== "") { const v = reqNum(valorStr); if (v == null) { msg.className = "acao-msg err"; msg.textContent = "Δ valor inválido."; return; } campos.Valor_Delta = v; }
+      if (diasStr !== "") { const d = reqNum(diasStr); if (d == null) { msg.className = "acao-msg err"; msg.textContent = "Δ prazo inválido."; return; } campos.Dias_Delta = d; }
+      try {
+        gravando = true; $("adCriar").disabled = true;
+        msg.className = "acao-msg"; msg.textContent = "Gravando...";
+        const criado = await EG.createItem("Projeto_Aditivos", campos);
+        const novo = await relerItem("Projeto_Aditivos", criado.id);
+        upsertLocal("adt", aditivos, novo);
+        renderTudo(); fechar();
+        setStatus("Aditivo nº " + numero + " criado (Proposto).");
+      } catch (e) {
+        msg.className = "acao-msg err"; msg.textContent = "Falha ao gravar: " + e.message; $("adCriar").disabled = false;
+      } finally { gravando = false; }
     }
 
     const ABRIR = { eap: abrirEap, aloc: abrirAloc, mat: abrirMat, ctr: abrirCtr, med: abrirMed, lanc: abrirLanc, adt: abrirAdt };
@@ -946,6 +1267,9 @@
     });
     $("overlay").onclick = fechar;
     document.addEventListener("keydown", (e) => { if (e.key === "Escape") fechar(); });
+    $("btnNovaAloc").onclick = abrirNovaAlocacao;
+    $("btnNovoLanc").onclick = abrirNovoLancamento;
+    $("btnNovoAdt").onclick = abrirNovoAditivo;
 
     /* Exposto para exercitar a lógica sem login (dados falsos):
        PRJ.setDados(...); PRJ.forcarCarregado(); PRJ.montarSeletor(); PRJ.renderTudo(); */
@@ -954,108 +1278,188 @@
       arvoreEap, medidoPorItem, deltasAprovados, doProjeto,
       renderEap, renderAloc, renderMat, renderCtr, renderCxr, renderAdt,
       abrirEap, abrirAloc, abrirMat, abrirCtr, abrirMed, abrirLanc, abrirAdt,
+      abrirNovaAlocacao, criarAlocacao, salvarMaterial, criarMedicao, avancarMedicao,
+      abrirNovoLancamento, criarLancamento, abrirNovoAditivo, criarAditivo,
+      reqNum, okComp, upsertLocal,
       num, cel, celBRL, pct,
       setProjeto: (id) => { projetoAtual = String(id); renderTudo(); },
       forcarCarregado: (v) => { carregado = v !== false; }
     };
 
     /* =========================================================================
-       SUITE DE ASSERÇÃO (item 12) — PRJ.assertRegras(). A regra que esta tela
-       impõe é ser SOMENTE LEITURA. Isso é provado em duas frentes:
-       (a) ESTÁTICA — varredura do próprio <script> desta página atrás de
-           qualquer chamada de escrita (EG.patchItemFields/createItem/gpost/
-           gpatch, fetch com método de escrita, form submit);
-       (b) DINÂMICA — sentinelas no lugar dos escritores do EG enquanto TODO o
-           render é exercitado com dados falsos: se qualquer caminho de tela
-           tentar gravar, a sentinela registra e a asserção falha.
-       Mais as agregações que a tela impõe (aditivo só conta se APROVADO, e
-       nenhum item da EAP pode sumir da árvore).
+       SUITE DE ASSERÇÃO (item 12) — PRJ.assertRegras(), agora ASSÍNCRONA.
+       Esta tela deixou de ser 100% leitura (6 das 8 ações de escrita aprovadas
+       em Projetos §14 foram construídas). A suíte prova três frentes:
+       (a) BLOQUEIO — os itens 1 (Status_Item) e 8 (aprovar/rejeitar aditivo)
+           continuam sem NENHUM controle de escrita no drawer (só o aviso
+           .bloqueado), porque Projeto_EAP/Projeto_Aditivos não têm campo de
+           motivo ainda;
+       (b) ESCRITA — sentinelas no lugar de EG.createItem/patchItemFields/gget
+           provam, para cada uma das 6 ações construídas, que (i) entrada
+           inválida é recusada SEM chamar o EG, e (ii) entrada válida chama o
+           EG certo, com a lista e os campos certos, e o item local é
+           atualizado (upsertLocal) com o que o "servidor" (mock) devolveu;
+       (c) AGREGAÇÕES — as mesmas regras de antes (aditivo só conta se
+           APROVADO, EAP nunca some da árvore, ciclo não trava a aba).
        ========================================================================= */
-    window.PRJ.assertRegras = function () {
+    window.PRJ.assertRegras = async function () {
       const falhas = []; let total = 0;
       const ok = (cond, regra) => { total++; if (!cond) falhas.push(regra); };
 
-      /* ---------- (a) prova ESTÁTICA de somente-leitura ----------
-         Os nomes são montados por concatenação de propósito: assim o texto
-         literal do escritor não existe neste arquivo e a varredura não acusa
-         a si mesma. */
-      const fonte = Array.prototype.slice.call(document.querySelectorAll("script:not([src])"))
-        .map(s => s.textContent).join("\n");
-      ok(fonte.length > 1000, "varredura: não foi possível ler o próprio <script> da página (prova estática inválida)");
-      const escritores = ["patch" + "ItemFields", "create" + "Item", "gpo" + "st", "gpa" + "tch"];
-      escritores.forEach(nome => {
-        ok(!(new RegExp("EG\\s*\\.\\s*" + nome + "\\s*\\(").test(fonte)),
-          "somente-leitura: apareceu uma chamada de escrita EG." + nome + "() nesta tela");
-      });
-      ok(!(new RegExp("method\\s*:\\s*[\"'](POST|PUT|PATCH|DELETE)", "i").test(fonte)),
-        "somente-leitura: apareceu um fetch com método de escrita nesta tela");
-      ok(!(new RegExp("\\bfet" + "ch\\s*\\(").test(fonte)),
-        "somente-leitura: esta tela não pode chamar a API de rede diretamente — todo acesso passa pelo EG, e só de leitura");
-      ok(document.querySelectorAll("form").length === 0,
-        "somente-leitura: esta tela não pode ter <form> (não há nada a submeter)");
+      const fixture = () => PRJ.setDados(
+        [{ id: "1", fields: { Title: "Projeto A", Valor_Contrato: 1000, Prazo_Dias: 30 } }],
+        [{ id: "10", fields: { ProjetoLookupId: 1, Codigo_EAP: "1", Title: "Fase 1", Ordem: 1, Status_Item: "Planejado" } },
+         { id: "11", fields: { ProjetoLookupId: 1, Codigo_EAP: "1.1", Title: "Tarefa", Ordem: 1, EAP_PaiLookupId: 10 } },
+         { id: "12", fields: { ProjetoLookupId: 1, Codigo_EAP: "9", Title: "Órfã", Ordem: 2, EAP_PaiLookupId: 999 } }],
+        [{ id: "20", fields: { ProjetoLookupId: 1, TecnicoLookupId: 5, Horas_Previstas: 8, Papel: "Eletricista" } }],
+        [{ id: "30", fields: { ProjetoLookupId: 1, ProdutoLookupId: 7, Qtd_Prevista: 2 } }],
+        [{ id: "40", fields: { ProjetoLookupId: 1, Title: "Item 1", Codigo_Item: "C1", Qtd_Contratada: 10, Preco_Unitario: 100 } }],
+        [{ id: "50", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 4, Status_Medicao: "Aprovada" } },
+         { id: "51", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 1 } }],
+        [{ id: "60", fields: { ProjetoLookupId: 1, Valor: 500, Tipo_Lancamento: "Custo" } }],
+        [{ id: "70", fields: { ProjetoLookupId: 1, Status_Aditivo: "Aprovado", Valor_Delta: 200, Dias_Delta: 5, Numero_Aditivo: 1 } },
+         { id: "71", fields: { ProjetoLookupId: 1, Status_Aditivo: "Em análise", Valor_Delta: 999999, Dias_Delta: 999 } }],
+        [{ id: "5", fields: { Title: "Téc" } }],
+        [{ id: "7", fields: { Title: "Produto", Codigo_Interno: "P-7" } }]
+      );
+      fixture();
+      PRJ.forcarCarregado(true);
+      PRJ.montarSeletor();
+      PRJ.setProjeto("1");
+      PRJ.mostrarSec("eap"); PRJ.mostrarSec("ctr"); PRJ.mostrarSec("adt");
 
-      /* ---------- (b) prova DINÂMICA: sentinelas durante o render ---------- */
-      const originais = {};
-      const tentativas = [];
-      escritores.forEach(nome => {
-        originais[nome] = EG[nome];
-        EG[nome] = function () { tentativas.push(nome); return Promise.reject(new Error("escrita proibida nesta tela")); };
-      });
+      // ---------- (a) itens 1 e 8: bloqueados, sem controle de escrita ----------
+      PRJ.abrirEap({ id: "10", fields: { Status_Item: "Planejado", Title: "Fase 1", Codigo_EAP: "1" } });
+      ok(document.querySelectorAll("#drawer .bloqueado").length === 1 && document.querySelectorAll("#drawer .acao-btns").length === 0,
+        "item 1 BLOQUEADO: drawer de EAP mostra o aviso, mas não tem nenhum botão de escrita");
+      PRJ.abrirAdt({ id: "70", fields: { Status_Aditivo: "Proposto", Numero_Aditivo: 9, Tipo_Aditivo: "Valor" } });
+      ok(document.querySelectorAll("#drawer .bloqueado").length === 1 && document.querySelectorAll("#drawer .acao-btns").length === 0,
+        "item 8 BLOQUEADO: drawer de Aditivo mostra o aviso, mas não tem nenhum botão de aprovar/rejeitar");
+
+      // ---------- (b) sentinelas para as 6 ações de escrita ----------
+      const originais = { createItem: EG.createItem, patchItemFields: EG.patchItemFields, gget: EG.gget, resolveSite: EG.resolveSite };
+      const chamadas = { create: [], patch: [] };
+      let seq = 900;
+      const fixturePorId = {
+        "30": { ProjetoLookupId: 1, ProdutoLookupId: 7, Qtd_Prevista: 2 },
+        "50": { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 4, Status_Medicao: "Aprovada" }
+      };
+      EG.resolveSite = async () => "fake-site";
+      EG.createItem = async (lista, fields) => { const id = String(++seq); chamadas.create.push({ lista, id, fields: Object.assign({}, fields) }); return { id }; };
+      EG.patchItemFields = async (lista, id, fields) => { chamadas.patch.push({ lista, id: String(id), fields: Object.assign({}, fields) }); return {}; };
+      EG.gget = async (url) => {
+        const m = /items\/([^/?]+)\?expand=fields/.exec(url);
+        const id = m[1];
+        const doCreate = chamadas.create.find(c => c.id === id);
+        const doPatch = chamadas.patch.filter(c => c.id === id).pop();
+        const base = doCreate ? doCreate.fields : (fixturePorId[id] || {});
+        return { id, fields: Object.assign({}, base, doPatch ? doPatch.fields : {}), "@odata.etag": "W/\"1\"" };
+      };
       try {
-        PRJ.setDados(
-          [{ id: "1", fields: { Title: "Projeto A", Valor_Contrato: 1000, Prazo_Dias: 30 } }],
-          [{ id: "10", fields: { ProjetoLookupId: 1, Codigo_EAP: "1", Title: "Fase 1", Ordem: 1 } },
-           { id: "11", fields: { ProjetoLookupId: 1, Codigo_EAP: "1.1", Title: "Tarefa", Ordem: 1, EAP_PaiLookupId: 10 } },
-           { id: "12", fields: { ProjetoLookupId: 1, Codigo_EAP: "9", Title: "Órfã", Ordem: 2, EAP_PaiLookupId: 999 } }],
-          [{ id: "20", fields: { ProjetoLookupId: 1, TecnicoLookupId: 5, Horas_Previstas: 8 } }],
-          [{ id: "30", fields: { ProjetoLookupId: 1, ProdutoLookupId: 7, Qtd_Prevista: 2 } }],
-          [{ id: "40", fields: { ProjetoLookupId: 1, Title: "Item 1", Qtd_Contratada: 10, Preco_Unitario: 100 } }],
-          [{ id: "50", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 4, Status_Medicao: "Aprovada" } },
-           { id: "51", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Qtd_Medida: 1 } }],
-          [{ id: "60", fields: { ProjetoLookupId: 1, Valor: 500, Tipo: "Custo" } }],
-          [{ id: "70", fields: { ProjetoLookupId: 1, Status_Aditivo: "Aprovado", Valor_Delta: 200, Dias_Delta: 5 } },
-           { id: "71", fields: { ProjetoLookupId: 1, Status_Aditivo: "Em análise", Valor_Delta: 999999, Dias_Delta: 999 } }],
-          [{ id: "5", fields: { Title: "Téc" } }],
-          [{ id: "7", fields: { Title: "Produto", Codigo_Interno: "P-7" } }]
-        );
-        PRJ.forcarCarregado(true);
-        PRJ.montarSeletor();
-        PRJ.setProjeto("1");           // dispara renderTudo() inteiro
-        PRJ.mostrarSec("eap"); PRJ.mostrarSec("ctr"); PRJ.mostrarSec("adt");
-        ok(tentativas.length === 0,
-          "DEFEITO GRAVE: o render desta tela tentou GRAVAR (" + tentativas.join(", ") + ") — ela é somente leitura");
+        // item 2: criar alocação
+        PRJ.abrirNovaAlocacao();
+        $("nTec").value = "5"; $("nPapel").value = "Eletricista"; $("nEap").value = "";
+        $("nIni").value = "2026-08-20"; $("nFim").value = "2026-08-10";
+        await PRJ.criarAlocacao();
+        ok(chamadas.create.length === 0, "alocação: Fim antes do Início é recusado SEM chamar o EG");
+        $("nFim").value = "2026-08-25";
+        await PRJ.criarAlocacao();
+        const c2 = chamadas.create.find(c => c.lista === "Projeto_Alocacoes");
+        ok(!!c2 && c2.fields.TecnicoLookupId === 5 && c2.fields.Papel === "Eletricista" && c2.fields.ProjetoLookupId === 1,
+          "alocação: grava em Projeto_Alocacoes com TecnicoLookupId/Papel/ProjetoLookupId corretos");
+        ok(alocacoes.some(a => String(a.id) === c2.id && a.fields.Papel === "Eletricista"),
+          "alocação: item criado entra no estado local (upsertLocal) com os campos ecoados do servidor");
 
-        // ---------- regras de agregação ----------
-        const d = deltasAprovados();
-        ok(d.qtd === 1 && d.valor === 200 && d.dias === 5,
-          "aditivos: só o APROVADO ajusta contrato e prazo (o 'Em análise' não pode vazar)");
-        const m = medidoPorItem();
-        ok(m[40] && m[40].qtd === 5 && m[40].qtdePorStatus["(sem status)"] === 1,
-          "medições: somam por item de contrato e medição sem status vai para um balde próprio (não some)");
+        // item 3: editar material (sem bloqueio contra Qtd_Prevista)
+        PRJ.abrirMat({ id: "30", fields: fixturePorId["30"] });
+        $("mQtd").value = "-1"; $("mCusto").value = "";
+        await PRJ.salvarMaterial({ id: "30", fields: fixturePorId["30"] });
+        ok(chamadas.patch.length === 0, "material: Qtd. aplicada negativa é recusada SEM chamar o EG");
+        $("mQtd").value = "500"; $("mCusto").value = "";  // 500 > Qtd_Prevista=2 de propósito: NÃO deve bloquear
+        await PRJ.salvarMaterial({ id: "30", fields: fixturePorId["30"] });
+        const p3 = chamadas.patch.find(c => c.lista === "Projeto_Materiais");
+        ok(!!p3 && p3.fields.Qtd_Aplicada === 500,
+          "material: Qtd. aplicada MUITO acima do previsto é GRAVADA sem bloqueio (decisão explícita: sem trava no item 3)");
 
-        const a = arvoreEap();
-        ok(a.total === 3,
-          "EAP: o total tem de contar todos os itens do projeto");
-        ok(a.linhas.length === a.total,
-          "EAP: nenhum item pode SUMIR da árvore (pai de outro projeto vira raiz visível) — " +
-          a.linhas.length + " de " + a.total + " renderizados");
-        const orfa = a.linhas.find(l => String(l.o.id) === "12");
-        ok(orfa && orfa.nivel === 0,
-          "EAP: item com pai fora do projeto deve aparecer como RAIZ (dado inconsistente é exibido, não escondido)");
+        // item 4: criar medição (sem bloqueio contra Qtd_Contratada)
+        const ctrObj = { id: "40", fields: { Codigo_Item: "C1", Qtd_Contratada: 10, Preco_Unitario: 100 } };
+        PRJ.abrirCtr(ctrObj);
+        $("qComp").value = "2026-13"; $("qQtd").value = "5";
+        await PRJ.criarMedicao(ctrObj);
+        ok(chamadas.create.filter(c => c.lista === "Medicoes_Quantitativas").length === 0,
+          "medição: competência '2026-13' (mês inválido) é recusada SEM chamar o EG");
+        $("qComp").value = "2026-08"; $("qQtd").value = "999"; // 999 >> Qtd_Contratada=10 de propósito
+        await PRJ.criarMedicao(ctrObj);
+        const c4 = chamadas.create.find(c => c.lista === "Medicoes_Quantitativas");
+        ok(!!c4 && c4.fields.Qtd_Medida === 999 && c4.fields.Status_Medicao === "Aberta" && c4.fields.Contrato_ItemLookupId === 40,
+          "medição: nasce 'Aberta' e GRAVA mesmo muito acima do contratado (decisão explícita: sem trava no item 4)");
 
-        // ciclo não pode travar a aba nem engolir os itens
-        PRJ.setDados([{ id: "1", fields: { Title: "P" } }],
-          [{ id: "80", fields: { ProjetoLookupId: 1, Title: "A", EAP_PaiLookupId: 81 } },
-           { id: "81", fields: { ProjetoLookupId: 1, Title: "B", EAP_PaiLookupId: 80 } }],
-          [], [], [], [], [], [], [], []);
-        PRJ.setProjeto("1");
-        const c = arvoreEap();
-        ok(c.total === 2, "EAP: ciclo não pode travar a aba (o total continua correto)");
-        ok(c.linhas.length === 2,
-          "EAP: ciclo puro (A->B->A) engoliu os itens da árvore: " + c.linhas.length + " de " + c.total + " renderizados");
+        // item 5: avançar Status_Medicao (só avança)
+        PRJ.abrirMed({ id: "50", fields: fixturePorId["50"] });
+        ok(document.querySelectorAll("#drawer #sAplicar").length === 1, "medição: 'Aprovada' tem próximo estado ('Faturada') disponível para avançar");
+        $("sDestino").value = "Faturada";
+        await PRJ.avancarMedicao({ id: "50", fields: fixturePorId["50"] });
+        const p5 = chamadas.patch.find(c => c.lista === "Medicoes_Quantitativas" && c.id === "50");
+        ok(!!p5 && p5.fields.Status_Medicao === "Faturada", "medição: avança Aprovada → Faturada de verdade");
+        PRJ.abrirMed({ id: "50", fields: { ProjetoLookupId: 1, Contrato_ItemLookupId: 40, Status_Medicao: "Faturada" } });
+        ok(document.querySelectorAll("#drawer #sAplicar").length === 0, "medição: 'Faturada' é terminal — nenhum botão de avançar aparece");
+
+        // item 6: criar lançamento
+        PRJ.abrirNovoLancamento();
+        $("lTitulo").value = ""; $("lValor").value = "100";
+        await PRJ.criarLancamento();
+        ok(chamadas.create.filter(c => c.lista === "Projeto_Custos_Receitas").length === 0,
+          "lançamento: Título vazio é recusado SEM chamar o EG");
+        $("lTitulo").value = "Mão de obra semana 1"; $("lValor").value = "1500"; $("lComp").value = "2026-08";
+        await PRJ.criarLancamento();
+        const c6 = chamadas.create.find(c => c.lista === "Projeto_Custos_Receitas");
+        ok(!!c6 && c6.fields.Valor === 1500 && c6.fields.Title === "Mão de obra semana 1" && c6.fields.ProjetoLookupId === 1,
+          "lançamento: grava em Projeto_Custos_Receitas com Título/Valor/ProjetoLookupId corretos");
+
+        // item 7: criar aditivo (nasce Proposto)
+        PRJ.abrirNovoAditivo();
+        $("adNum").value = "1"; $("adDesc").value = "";
+        await PRJ.criarAditivo();
+        ok(chamadas.create.filter(c => c.lista === "Projeto_Aditivos").length === 0,
+          "aditivo: Descrição vazia é recusada SEM chamar o EG");
+        $("adDesc").value = "Aumento de escopo — 2 pontos de tomada extra"; $("adValor").value = "-50";
+        await PRJ.criarAditivo();
+        const c7 = chamadas.create.find(c => c.lista === "Projeto_Aditivos");
+        ok(!!c7 && c7.fields.Status_Aditivo === "Proposto" && c7.fields.Valor_Delta === -50,
+          "aditivo: nasce sempre 'Proposto' e aceita Δ valor negativo (redução de escopo)");
       } finally {
-        escritores.forEach(nome => { EG[nome] = originais[nome]; });
+        EG.createItem = originais.createItem; EG.patchItemFields = originais.patchItemFields;
+        EG.gget = originais.gget; EG.resolveSite = originais.resolveSite;
       }
+
+      // ---------- (c) agregações (mesmas regras de antes) ----------
+      fixture(); PRJ.setProjeto("1");
+      const d = deltasAprovados();
+      ok(d.qtd === 1 && d.valor === 200 && d.dias === 5,
+        "aditivos: só o APROVADO ajusta contrato e prazo (o 'Em análise' não pode vazar)");
+      const m = medidoPorItem();
+      ok(m[40] && m[40].qtd === 5 && m[40].qtdePorStatus["(sem status)"] === 1,
+        "medições: somam por item de contrato e medição sem status vai para um balde próprio (não some)");
+
+      const a = arvoreEap();
+      ok(a.total === 3, "EAP: o total tem de contar todos os itens do projeto");
+      ok(a.linhas.length === a.total,
+        "EAP: nenhum item pode SUMIR da árvore (pai de outro projeto vira raiz visível) — " +
+        a.linhas.length + " de " + a.total + " renderizados");
+      const orfa = a.linhas.find(l => String(l.o.id) === "12");
+      ok(orfa && orfa.nivel === 0,
+        "EAP: item com pai fora do projeto deve aparecer como RAIZ (dado inconsistente é exibido, não escondido)");
+
+      // ciclo não pode travar a aba nem engolir os itens
+      PRJ.setDados([{ id: "1", fields: { Title: "P" } }],
+        [{ id: "80", fields: { ProjetoLookupId: 1, Title: "A", EAP_PaiLookupId: 81 } },
+         { id: "81", fields: { ProjetoLookupId: 1, Title: "B", EAP_PaiLookupId: 80 } }],
+        [], [], [], [], [], [], [], []);
+      PRJ.setProjeto("1");
+      const c = arvoreEap();
+      ok(c.total === 2, "EAP: ciclo não pode travar a aba (o total continua correto)");
+      ok(c.linhas.length === 2,
+        "EAP: ciclo puro (A->B->A) engoliu os itens da árvore: " + c.linhas.length + " de " + c.total + " renderizados");
 
       // ---------- ausência nunca vira zero ----------
       ok(cel(null) === "—" && cel("") === "—" && celBRL("abc") === "—" && pct(null) === "—",
