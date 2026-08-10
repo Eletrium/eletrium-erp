@@ -81,10 +81,14 @@
       background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;
       padding: 7px 10px; font-size: .86rem; font-family: inherit;
     }
-    .ed input:focus, .ed select:focus, .ed textarea:focus { outline: 0; border-color: #1f6feb; }
+    .ed input:focus, .ed select:focus, .ed textarea:focus { outline: 0; border-color: var(--acao-clara); }
     .ed-btns { display: flex; gap: 8px; }
     .ed-msg { font-size: .8rem; color: #8b949e; min-height: 1em; }
     .ed-msg.err { color: #F85149; }
+    /* 2º canal (daltonismo): a mensagem de gravação só mudava de cor entre
+       "gravando/ok" (cinza) e "falhou" (vermelho). Glifo por CSS — o
+       textContent escrito pelo código continua idêntico. Mesmo padrão de os.html. */
+    .ed-msg.err::before { content: "✕ "; font-weight: 700; }
 
     /* ---- oferta versionada (item 5) --------------------------------------
        AMARELO denuncia, AZUL informa, VERDE confirma. Mesmos tokens visuais
@@ -340,19 +344,21 @@
     const ehAtiva = (f) => !ETAPAS_FINAIS.includes(f.Etapa_Pipeline);
 
     // célula da data da próxima ação: vencida = vermelho, hoje = laranja;
-    // proposta ATIVA sem data = "—" âmbar (cobrança visual de operação)
+    // proposta ATIVA sem data = âmbar (cobrança visual de operação)
+    // 2º CANAL: glifo + palavra por faixa de urgência, para não depender só
+    // da cor (mesmo padrão do Kanban em index.html/classeDataAcao).
     function celDataProxima(f) {
       const d = f.Data_Proxima_Acao;
       if (!d) {
         return ehAtiva(f)
-          ? `<td style="color:#D29922" title="sem próxima ação definida">—</td>`
+          ? `<td style="color:#D29922" title="sem próxima ação definida">⚠ sem data</td>`
           : `<td>—</td>`;
       }
       const chave = dataChave(d), hoje = hojeChave();
-      let cor = "", titulo = "";
-      if (chave && chave < hoje) { cor = "#F85149"; titulo = "próxima ação vencida"; }
-      else if (chave === hoje) { cor = "#F0883E"; titulo = "próxima ação é hoje"; }
-      return `<td${cor ? ` style="color:${cor}" title="${titulo}"` : ""}>${esc(EG.fmtDate(d) ?? "—")}</td>`;
+      let cor = "", titulo = "", marca = "";
+      if (chave && chave < hoje) { cor = "#F85149"; titulo = "próxima ação vencida"; marca = "⚠ "; }
+      else if (chave === hoje) { cor = "#F0883E"; titulo = "próxima ação é hoje"; marca = "⏰ "; }
+      return `<td${cor ? ` style="color:${cor}" title="${titulo}"` : ""}>${marca}${esc(EG.fmtDate(d) ?? "—")}</td>`;
     }
 
     function render(props) {
@@ -402,10 +408,8 @@
         <div class="drawer-body"><dl>${rows}</dl>
           ${blocoOferta(p)}
           ${blocoEdicao(f)}
-          <div><span class="raw-toggle" id="rt">ver campos crus (Graph)</span></div>
-          <pre id="rf" hidden style="margin-top:8px">${esc(JSON.stringify(f, null, 2))}</pre>
         </div>`;
-      $("dc").onclick = closeDrawer; $("rt").onclick = () => { const r = $("rf"); r.hidden = !r.hidden; };
+      $("dc").onclick = closeDrawer;
       ligarOferta(p);
       ligarEdicao(p);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
