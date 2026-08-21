@@ -1,221 +1,28 @@
 <!doctype html>
-<html lang="pt-BR">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Eletrium ERP — Indicação</title>
-  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
-  <script src="graph.js"></script>
-  <script src="crm-auditoria.js"></script>
-  <link rel="stylesheet" href="app.css" />
-  <style>
-    main { max-width: 900px; }
-    .card { background:#161b22; border:1px solid #30363d; border-radius:12px; padding:18px; margin-bottom:14px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px 14px; }
-    .full { grid-column:1/-1; }
-    @media(max-width:700px){ .grid{grid-template-columns:1fr}.full{grid-column:auto} }
-    label { display:block; font-size:.82rem; color:#8b949e; margin-bottom:5px; }
-    input, select, textarea { width:100%; box-sizing:border-box; padding:8px 10px; border-radius:7px; border:1px solid #30363d; background:#0d1117; color:#e6edf3; }
-    textarea { min-height:90px; resize:vertical; }
-    .req { color:#f85149; }
-    .hint { color:#8b949e; font-size:.78rem; line-height:1.45; margin-top:5px; }
-    .msg { border:1px solid #30363d; border-radius:8px; padding:10px 12px; margin-top:12px; font-size:.86rem; }
-    .msg:empty { display:none; }
-    .ok { border-color:#3fb95066; color:#3fb950; }
-    .warn { border-color:#d2992266; color:#e3b341; }
-    .err { border-color:#f8514966; color:#f85149; }
-    .schema { font-size:.78rem; color:#8b949e; }
-    .schema code { color:#c9d1d9; }
-    .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:16px; }
-  </style>
-</head>
-<body>
-  <header>
-    <h1>Eletrium ERP</h1>
-    <nav>
-      <a href="index.html">Kanban</a>
-      <a href="propostas.html">Propostas</a>
-      <a href="clientes.html">Clientes</a>
-      <a href="reaquecimento.html">Reaquecimento</a>
-      <a href="indicacao.html" class="active">Indicação</a>
-    </nav>
-    <span class="user" id="user"></span>
-    <button id="btnLogin">Entrar</button>
-    <button id="btnLogout" class="sec" disabled>Sair</button>
-  </header>
-
-  <div id="status">Não autenticado.</div>
-  <main>
-    <div class="card">
-      <h2>Registrar indicação</h2>
-      <p class="hint">A indicação entra primeiro na <strong>Fila_Auditoria_Leads</strong>. Esta tela não cria Cliente nem Proposta automaticamente.</p>
-      <div id="schema" class="schema">Faça login para validar o schema da fila.</div>
-    </div>
-
-    <form id="form" class="card" novalidate>
-      <div class="grid">
-        <div>
-          <label for="indicador">Quem indicou <span class="req">*</span></label>
-          <input id="indicador" maxlength="150" autocomplete="off" />
-        </div>
-        <div>
-          <label for="vinculo">Vínculo do indicador <span class="req">*</span></label>
-          <select id="vinculo">
-            <option value="">Selecione…</option>
-            <option>Cliente</option><option>Parceiro</option><option>Colaborador</option><option>Fornecedor</option><option>Outro</option>
-          </select>
-        </div>
-
-        <div>
-          <label for="empresa">Empresa / prospect <span class="req">*</span></label>
-          <input id="empresa" maxlength="180" autocomplete="organization" />
-        </div>
-        <div>
-          <label for="tipo">Tipo de pessoa</label>
-          <select id="tipo"><option value="">Não informado</option><option value="PJ">PJ</option><option value="PF">PF</option></select>
-        </div>
-
-        <div>
-          <label for="documento">CNPJ / CPF</label>
-          <input id="documento" maxlength="20" autocomplete="off" />
-        </div>
-        <div>
-          <label for="contato">Contato indicado <span class="req">*</span></label>
-          <input id="contato" maxlength="150" autocomplete="name" />
-        </div>
-
-        <div>
-          <label for="email">E-mail</label>
-          <input id="email" type="email" maxlength="180" autocomplete="email" />
-        </div>
-        <div>
-          <label for="telefone">Telefone / WhatsApp</label>
-          <input id="telefone" type="tel" maxlength="30" autocomplete="tel" />
-          <div class="hint">Informe ao menos e-mail ou telefone.</div>
-        </div>
-
-        <div class="full">
-          <label for="necessidade">Necessidade / oportunidade percebida</label>
-          <input id="necessidade" maxlength="240" />
-        </div>
-
-        <div>
-          <label for="permissaoContato">Indicador informou que podemos contatar?</label>
-          <select id="permissaoContato"><option value="Não informado">Não informado</option><option value="Sim">Sim</option><option value="Não">Não</option></select>
-        </div>
-        <div>
-          <label for="prioridade">Prioridade sugerida</label>
-          <select id="prioridade"><option>Normal</option><option>Alta</option><option>Baixa</option></select>
-        </div>
-
-        <div class="full">
-          <label for="obs">Observações</label>
-          <textarea id="obs" maxlength="2000"></textarea>
-        </div>
-      </div>
-
-      <div class="actions">
-        <button id="btnSalvar" type="submit" disabled>Registrar na auditoria</button>
-        <button id="btnLimpar" type="button" class="sec">Limpar</button>
-      </div>
-      <div id="msg" class="msg" aria-live="polite"></div>
-    </form>
-  </main>
-
+<html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Eletrium ERP — Indicação</title>
+<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script><script src="graph.js"></script><script src="crm-auditoria.js"></script><link rel="stylesheet" href="app.css">
+<style>main{max-width:900px}.card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:18px;margin-bottom:14px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px}.full{grid-column:1/-1}@media(max-width:700px){.grid{grid-template-columns:1fr}.full{grid-column:auto}}label{display:block;font-size:.82rem;color:#8b949e;margin-bottom:5px}input,select,textarea{width:100%;box-sizing:border-box;padding:8px 10px;border-radius:7px;border:1px solid #30363d;background:#0d1117;color:#e6edf3}textarea{min-height:90px}.req{color:#f85149}.hint,.schema{color:#8b949e;font-size:.78rem;line-height:1.45}.msg{border:1px solid #30363d;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:.86rem}.msg:empty{display:none}.ok{color:#3fb950;border-color:#3fb95066}.warn{color:#e3b341;border-color:#d2992266}.err{color:#f85149;border-color:#f8514966}.actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px}</style></head><body>
+<header><h1>Eletrium ERP</h1><nav><a href="index.html">Kanban</a><a href="propostas.html">Propostas</a><a href="clientes.html">Clientes</a><a href="auditoria-leads.html">Auditoria</a><a href="indicacao.html" class="active">Indicação</a></nav><span class="user" id="user"></span><button id="btnLogin">Entrar</button><button id="btnLogout" class="sec" disabled>Sair</button></header>
+<div id="status">Não autenticado.</div><main>
+<div class="card"><h2>Registrar indicação</h2><p class="hint">Cada indicação recebe um <strong>Indicacao_ID</strong> estável, entra como <strong>Status_Auditoria=Pendente</strong> e nunca cria proposta diretamente.</p><div id="schema" class="schema">Faça login para validar o schema.</div></div>
+<form id="form" class="card" novalidate><div class="grid">
+<div><label for="indicador">Quem indicou <span class="req">*</span></label><input id="indicador" maxlength="150"></div><div><label for="vinculo">Relação do indicador <span class="req">*</span></label><select id="vinculo"><option value="">Selecione…</option><option>Cliente</option><option>Parceiro</option><option>Colaborador</option><option>Fornecedor</option><option>Outro</option></select></div>
+<div><label for="empresa">Empresa / indicado <span class="req">*</span></label><input id="empresa" maxlength="180"></div><div><label for="tipo">Tipo de documento</label><select id="tipo"><option value="">Não informado</option><option value="PJ">CNPJ</option><option value="PF">CPF</option></select></div>
+<div><label for="documento">CNPJ / CPF</label><input id="documento" maxlength="20"></div><div><label for="contato">Contato disponível <span class="req">*</span></label><input id="contato" maxlength="150"></div>
+<div><label for="email">E-mail</label><input id="email" type="email" maxlength="180"></div><div><label for="telefone">Telefone / WhatsApp</label><input id="telefone" type="tel" maxlength="30"><div class="hint">Informe ao menos e-mail ou telefone.</div></div>
+<div class="full"><label for="necessidade">Contexto / necessidade <span class="req">*</span></label><input id="necessidade" maxlength="300"></div><div><label for="permissaoContato">Indicador informou que podemos contatar?</label><select id="permissaoContato"><option value="Não informado">Não informado</option><option>Sim</option><option>Não</option></select></div><div><label for="prioridade">Prioridade sugerida</label><select id="prioridade"><option>Normal</option><option>Alta</option><option>Baixa</option></select></div>
+<div class="full"><label for="obs">Observações</label><textarea id="obs" maxlength="2000"></textarea></div></div>
+<div class="actions"><button id="btnSalvar" type="submit" disabled>Registrar na auditoria</button><button id="btnLimpar" type="button" class="sec">Limpar</button></div><div id="msg" class="msg" aria-live="polite"></div></form></main>
 <script>
-  const $ = (id) => document.getElementById(id);
-  let schemaOk = false;
-
-  function setStatus(t, cls) { $("status").textContent = t; $("status").className = cls || ""; }
-  function msg(t, cls) { $("msg").textContent = t || ""; $("msg").className = "msg" + (cls ? " " + cls : ""); }
-
-  async function onIn() {
-    setStatus("Autenticado como " + EG.getAccount().username);
-    $("btnLogin").disabled = true; $("btnLogout").disabled = false;
-    try { const u = await EG.me(); $("user").textContent = "👤 " + u.nome; } catch { $("user").textContent = "👤 " + EG.getAccount().username; }
-    await validarSchema();
-  }
-
-  async function validarSchema() {
-    schemaOk = false; $("btnSalvar").disabled = true;
-    $("schema").textContent = "Validando Fila_Auditoria_Leads…";
-    try {
-      const s = await CRMAuditoria.inspecionarSchema();
-      if (!s.ok) {
-        $("schema").innerHTML = "❌ Schema incompatível. Faltam: <code>" + s.faltando.join("</code>, <code>") + "</code>. Gravação bloqueada.";
-        return;
-      }
-      schemaOk = true; $("btnSalvar").disabled = false;
-      $("schema").innerHTML = "✅ Schema mínimo presente. Dedupe server-side: <strong>" + (s.chaveDedupeServerSide ? "sim" : "não confirmado") + "</strong>.";
-    } catch (e) {
-      $("schema").textContent = "❌ Não foi possível validar a fila: " + e.message;
-    }
-  }
-
-  function dadosForm() {
-    return {
-      origem: "Indicação",
-      canal_origem: "Indicação",
-      razao_social_nome: $("empresa").value.trim(),
-      tipo_pessoa: $("tipo").value,
-      documento: $("documento").value.trim(),
-      contato_nome: $("contato").value.trim(),
-      email: $("email").value.trim(),
-      telefone: $("telefone").value.trim(),
-      necessidade: $("necessidade").value.trim(),
-      indicador_nome: $("indicador").value.trim(),
-      indicador_vinculo: $("vinculo").value,
-      permissao_contato_informada: $("permissaoContato").value,
-      prioridade_sugerida: $("prioridade").value,
-      observacoes: $("obs").value.trim(),
-      capturado_em: new Date().toISOString()
-    };
-  }
-
-  function validar(d) {
-    const erros = [];
-    if (!d.indicador_nome) erros.push("informe quem indicou");
-    if (!d.indicador_vinculo) erros.push("informe o vínculo do indicador");
-    if (!d.razao_social_nome) erros.push("informe a empresa/prospect");
-    if (!d.contato_nome) erros.push("informe o contato indicado");
-    if (!d.email && !d.telefone) erros.push("informe e-mail ou telefone");
-    if (d.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email)) erros.push("e-mail inválido");
-    return erros;
-  }
-
-  $("form").addEventListener("submit", async (ev) => {
-    ev.preventDefault(); msg("");
-    if (!schemaOk) { msg("A gravação está bloqueada até o schema da fila ser validado.", "err"); return; }
-    const d = dadosForm(); const erros = validar(d);
-    if (erros.length) { msg(erros.join(" · "), "err"); return; }
-    $("btnSalvar").disabled = true; msg("Registrando na auditoria…");
-    try {
-      const r = await CRMAuditoria.registrar(d, { meta: { produtor: "crm-d-indicacao" } });
-      if (r.duplicado) msg("Já existe registro equivalente na auditoria (item #" + r.item_id + "). Nenhuma duplicata foi criada.", "warn");
-      else { msg("Indicação registrada na auditoria (item #" + r.item_id + "). Nenhuma proposta foi criada automaticamente.", "ok"); $("form").reset(); }
-    } catch (e) { msg("Falha ao registrar: " + e.message, "err"); }
-    finally { $("btnSalvar").disabled = !schemaOk; }
-  });
-
-  $("btnLimpar").onclick = () => { $("form").reset(); msg(""); };
-  $("btnLogin").onclick = async () => { try { await EG.login(); await onIn(); } catch (e) { setStatus("Falha no login: " + e.message, "err"); } };
-  $("btnLogout").onclick = async () => { await EG.logout(); location.reload(); };
-
-  // Testes puros do contrato desta tela; não fazem rede.
-  window.EletriumIndicacao = {
-    validar,
-    dadosForm,
-    assertRegras() {
-      const falhas = []; let total = 0; const ok = (c,m) => { total++; if(!c) falhas.push(m); };
-      ok(validar({ indicador_nome:"A", indicador_vinculo:"Cliente", razao_social_nome:"Empresa", contato_nome:"B", email:"b@x.com", telefone:"" }).length === 0, "entrada mínima válida deve passar");
-      ok(validar({ indicador_nome:"", indicador_vinculo:"", razao_social_nome:"", contato_nome:"", email:"", telefone:"" }).length >= 5, "campos mínimos ausentes devem falhar");
-      ok(validar({ indicador_nome:"A", indicador_vinculo:"Cliente", razao_social_nome:"Empresa", contato_nome:"B", email:"", telefone:"31999999999" }).length === 0, "telefone sozinho deve satisfazer canal mínimo");
-      ok(validar({ indicador_nome:"A", indicador_vinculo:"Cliente", razao_social_nome:"Empresa", contato_nome:"B", email:"invalido", telefone:"" }).some(x=>/e-mail/.test(x)), "e-mail inválido deve ser recusado");
-      const r = { ok:!falhas.length,total,falhas }; console.log("EletriumIndicacao.assertRegras:", JSON.stringify(r,null,2)); return r;
-    }
-  };
-
-  (async function boot(){ const logged = await EG.init(); if(logged) await onIn(); })();
-</script>
-</body>
-</html>
+const $=id=>document.getElementById(id);let schemaOk=false,indicacaoAtualId=null;
+function novoId(){if(globalThis.crypto&&typeof crypto.randomUUID==='function')return 'IND-'+crypto.randomUUID();return 'IND-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10)}
+function setStatus(t,c){$('status').textContent=t;$('status').className=c||''}function msg(t,c){$('msg').textContent=t||'';$('msg').className='msg'+(c?' '+c:'')}
+async function validarSchema(){schemaOk=false;$('btnSalvar').disabled=true;$('schema').textContent='Validando Fila_Auditoria_Leads…';try{const s=await CRMAuditoria.inspecionarSchema();if(!s.ok){$('schema').textContent='❌ Faltam: '+s.faltando.join(', ');return}if(!s.submissionUnique){$('schema').textContent='⚠ Submission_ID existe, mas unicidade server-side não foi confirmada. Gravação bloqueada até o gate de identidade.';return}schemaOk=true;$('btnSalvar').disabled=false;$('schema').textContent='✅ Schema v1.1 presente e Submission_ID UNIQUE confirmado.'}catch(e){$('schema').textContent='❌ '+e.message}}
+async function onIn(){setStatus('Autenticado como '+EG.getAccount().username);$('btnLogin').disabled=true;$('btnLogout').disabled=false;try{const u=await EG.me();$('user').textContent='👤 '+u.nome}catch{$('user').textContent='👤 '+EG.getAccount().username}await validarSchema()}
+function dadosForm(){if(!indicacaoAtualId)indicacaoAtualId=novoId();const tipo=$('tipo').value;return{origem:'Indicação',submission_id:indicacaoAtualId,origem_id:indicacaoAtualId,indicacao_id:indicacaoAtualId,status_auditoria:'Pendente',razao_social_nome:$('empresa').value.trim(),tipo_pessoa:tipo,tipo_documento:tipo==='PJ'?'CNPJ':tipo==='PF'?'CPF':'',documento:$('documento').value.trim(),contato_nome:$('contato').value.trim(),email:$('email').value.trim(),telefone:$('telefone').value.trim(),necessidade:$('necessidade').value.trim(),indicado_por:$('indicador').value.trim(),relacao_indicador:$('vinculo').value,permissao_contato_informada:$('permissaoContato').value,prioridade_sugerida:$('prioridade').value,observacoes:$('obs').value.trim(),capturado_em:new Date().toISOString()}}
+function validar(d){const e=[];if(!d.indicado_por)e.push('informe quem indicou');if(!d.relacao_indicador)e.push('informe a relação do indicador');if(!d.razao_social_nome)e.push('informe a empresa/indicado');if(!d.contato_nome)e.push('informe o contato');if(!d.necessidade)e.push('informe o contexto');if(!d.email&&!d.telefone)e.push('informe e-mail ou telefone');if(d.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(d.email))e.push('e-mail inválido');return e}
+$('form').addEventListener('submit',async ev=>{ev.preventDefault();msg('');if(!schemaOk){msg('Gravação bloqueada até o gate de schema/identidade.','err');return}const d=dadosForm(),erros=validar(d);if(erros.length){msg(erros.join(' · '),'err');return}$('btnSalvar').disabled=true;msg('Registrando '+d.submission_id+'…');try{const r=await CRMAuditoria.registrar(d,{meta:{produtor:'crm-d-indicacao'}});msg((r.duplicado?'Retry reconhecido; indicação já existia':'Indicação registrada')+' — item #'+r.item_id+'. Nenhuma proposta foi criada. ',r.duplicado?'warn':'ok');$('form').reset();indicacaoAtualId=null}catch(e){msg('Falha: '+e.message+' — o Indicacao_ID foi preservado para retry.','err')}finally{$('btnSalvar').disabled=!schemaOk}});
+$('btnLimpar').onclick=()=>{$('form').reset();indicacaoAtualId=null;msg('')};$('btnLogin').onclick=async()=>{try{await EG.login();await onIn()}catch(e){setStatus('Falha no login: '+e.message,'err')}};$('btnLogout').onclick=async()=>{await EG.logout();location.reload()};
+window.EletriumIndicacao={novoId,validar,assertRegras(){const f=[];let total=0;const ok=(c,m)=>{total++;if(!c)f.push(m)};ok(/^IND-/.test(novoId()),'Indicacao_ID precisa ser explícito');ok(validar({indicado_por:'A',relacao_indicador:'Cliente',razao_social_nome:'Empresa',contato_nome:'B',necessidade:'SPDA',email:'b@x.com',telefone:''}).length===0,'entrada mínima válida');ok(validar({indicado_por:'',relacao_indicador:'',razao_social_nome:'',contato_nome:'',necessidade:'',email:'',telefone:''}).length>=6,'mínimos ausentes falham');const r={ok:!f.length,total,falhas:f};console.log('EletriumIndicacao.assertRegras:',JSON.stringify(r,null,2));return r}};
+(async()=>{const logged=await EG.init();if(logged)await onIn()})();
+</script></body></html>
