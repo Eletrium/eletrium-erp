@@ -1,0 +1,21 @@
+name: CRM Tests
+
+on:
+  pull_request:
+    branches:
+      - active-crm-v1.2-20260821
+  push:
+    branches:
+      - active-crm-v1.2-20260821
+      - 'crm-*'
+
+jobs:
+  crm-auditoria:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Test CRM audit core
+        run: node tests/crm/test-crm-auditoria.js
