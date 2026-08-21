@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Licitações</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <script src="crm-auditoria.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    main { max-width: 1400px; }
+    .toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+    .toolbar input[type=file] { max-width:330px; }
+    .meta { color:#8b949e; font-size:.8rem; margin:8px 0 14px; }
+    .wrap { overflow:auto; border:1px solid #30363d; border-radius:10px; }
+    table { width:100%; border-collapse:collapse; min-width:1050px; }
+    th,td { padding:9px 10px; border-bottom:1px solid #30363d; text-align:left; vertical-align:top; font-size:.82rem; }
+    th { background:#161b22; position:sticky; top:0; z-index:1; }
+    .obj { max-width:560px; line-height:1.4; }
+    .small { color:#8b949e; font-size:.76rem; }
+    .tag { display:inline-block; padding:2px 7px; border:1px solid #30363d; border-radius:999px; margin:2px 3px 0 0; font-size:.72rem; }
+    .score { font-weight:700; font-size:1rem; }
+    .msg { border:1px solid #30363d; border-radius:8px; padding:9px 11px; margin:10px 0; font-size:.84rem; }
+    .msg:empty { display:none; }
+    .ok { color:#3fb950; border-color:#3fb95066; }
+    .warn { color:#e3b341; border-color:#d2992266; }
+    .err { color:#f85149; border-color:#f8514966; }
+    tr.sent { opacity:.65; background:#3fb9500d; }
+    tr.dup { opacity:.65; background:#d299220d; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>Eletrium ERP</h1>
+  <nav>
+    <a href="index.html">Kanban</a><a href="propostas.html">Propostas</a><a href="clientes.html">Clientes</a>
+    <a href="licitacoes.html" class="active">Licitações</a><a href="reaquecimento.html">Reaquecimento</a>
+  </nav>
+  <span class="user" id="user"></span>
+  <button id="btnLogin">Entrar</button><button id="btnLogout" class="sec" disabled>Sair</button>
+</header>
+<div id="status">Não autenticado.</div>
+<main>
+  <h2>Radar PNCP → Auditoria</h2>
+  <p class="meta">A tela não cria proposta. Ela permite que um usuário autenticado selecione editais já aprovados pelo radar e os registre na <strong>Fila_Auditoria_Leads</strong>. A chave idempotente usa <code>numeroControlePNCP</code>.</p>
+
+  <div class="toolbar">
+    <button id="btnCarregar" class="sec" disabled>Carregar radar publicado</button>
+    <label class="sec" style="padding:7px 10px;border-radius:6px;cursor:pointer">Abrir JSON local <input id="arquivo" type="file" accept="application/json,.json" hidden></label>
+    <button id="btnTodos" class="sec" disabled>Selecionar todos</button>
+    <button id="btnNenhum" class="sec" disabled>Limpar seleção</button>
+    <button id="btnAuditar" disabled>Enviar selecionados à auditoria</button>
+  </div>
+  <div id="schema" class="meta">Faça login para validar o schema da auditoria.</div>
+  <div id="msg" class="msg" aria-live="polite"></div>
+  <div id="resumo" class="meta"></div>
+  <div class="wrap"><table>
+    <thead><tr><th></th><th>Score</th><th>Edital</th><th>Órgão / Local</th><th>Valor</th><th>Encerramento</th><th>PNCP</th><th>Auditoria</th></tr></thead>
+    <tbody id="tbody"><tr><td colspan="8" class="small">Nenhum radar carregado.</td></tr></tbody>
+  </table></div>
+</main>
+<script>
+  const $ = id => document.getElementById(id);
+  let store = null, editais = [], schemaOk = false, resultados = new Map();
+  const esc = v => String(v == null ? "" : v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const brl = v => v == null ? "—" : Number(v).toLocaleString("pt-BR",{style:"currency",currency:"BRL",maximumFractionDigits:0});
+  const dbr = s => !s ? "—" : String(s).slice(0,10).split("-").reverse().join("/");
+  function setStatus(t,c){ $("status").textContent=t; $("status").className=c||""; }
+  function msg(t,c){ $("msg").textContent=t||""; $("msg").className="msg"+(c?" "+c:""); }
+
+  function normalizarStore(j) {
+    if (!j || typeof j !== "object") throw new Error("JSON inválido: objeto raiz ausente");
+    if (!Array.isArray(j.editais)) throw new Error("JSON incompatível: campo 'editais' não é array");
+    const ruins = j.editais.filter(e => !e || !e.numeroControlePNCP);
+    if (ruins.length) throw new Error("JSON incompatível: " + ruins.length + " edital(is) sem numeroControlePNCP");
+    return j;
+  }
+
+  function leadDoEdital(e) {
+    return {
+      origem: "Licitações",
+      canal_origem: "PNCP",
+      origem_id: e.numeroControlePNCP,
+      titulo: "PNCP " + e.numeroControlePNCP,
+      razao_social_nome: e.orgao || "Órgão não informado",
+      link_origem: e.linkPncp || "",
+      objeto: e.objeto || "",
+      score_radar: e.score,
+      palavras_chave: e.palavrasChave || [],
+      alertas: e.alertas || [],
+      avaliacao_humana_pendente: e.avaliacaoHumanaPendente || [],
+      valor_total_estimado: e.valorTotalEstimado,
+      faixa_valor: e.faixaValor || "",
+      classificacao_uf: e.classificacaoUf || "",
+      uf: e.uf || "",
+      municipio: e.municipio || "",
+      data_encerramento_proposta: e.dataEncerramentoProposta || null,
+      primeiro_contato_radar_em: e.primeiroContatoEm || null,
+      ultimo_contato_radar_em: e.ultimoContatoEm || null,
+      capturado_em: new Date().toISOString()
+    };
+  }
+
+  function render() {
+    $("btnTodos").disabled = !editais.length; $("btnNenhum").disabled = !editais.length;
+    $("btnAuditar").disabled = !(schemaOk && editais.length);
+    $("resumo").textContent = store ? (editais.length + " edital(is) no radar · gerado em " + (store.geradoEm ? new Date(store.geradoEm).toLocaleString("pt-BR") : "data não informada")) : "";
+    if (!editais.length) { $("tbody").innerHTML='<tr><td colspan="8" class="small">Nenhum edital no radar.</td></tr>'; return; }
+    $("tbody").innerHTML = editais.map((e,i)=>{
+      const st = resultados.get(e.numeroControlePNCP); const cls=st?(st.duplicado?"dup":"sent"):"";
+      const tags=(e.palavrasChave||[]).slice(0,5).map(x=>'<span class="tag">'+esc(x)+'</span>').join("");
+      return '<tr class="'+cls+'" data-id="'+esc(e.numeroControlePNCP)+'">'+
+        '<td><input class="sel" type="checkbox" data-i="'+i+'" '+(st?'disabled':'')+'></td>'+ 
+        '<td class="score">'+esc(e.score==null?"—":e.score)+'</td>'+ 
+        '<td><div class="obj">'+esc(e.objeto||"—")+'</div>'+tags+'</td>'+ 
+        '<td>'+esc(e.orgao||"—")+'<div class="small">'+esc((e.municipio||"—")+"/"+(e.uf||"—"))+'</div></td>'+ 
+        '<td>'+esc(brl(e.valorTotalEstimado))+'<div class="small">'+esc(e.faixaValor||"")+'</div></td>'+ 
+        '<td>'+esc(dbr(e.dataEncerramentoProposta))+'</td>'+ 
+        '<td>'+(e.linkPncp?'<a href="'+esc(e.linkPncp)+'" target="_blank" rel="noopener">abrir</a>':'—')+'</td>'+ 
+        '<td class="small">'+(st?(st.duplicado?'já existia #':'enviado #')+esc(st.item_id||"—"):'pendente')+'</td></tr>';
+    }).join("");
+  }
+
+  async function aplicarStore(j) {
+    store = normalizarStore(j); editais = store.editais.slice(); resultados = new Map(); render(); msg("Radar carregado. Selecione os editais que devem entrar na auditoria.","ok");
+  }
+
+  async function carregarPublicado() {
+    msg("Carregando radar publicado…");
+    try {
+      const r=await fetch("pncp-radar-data/radar-editais.json",{cache:"no-store"});
+      if(!r.ok) throw new Error("HTTP "+r.status+" — use 'Abrir JSON local' se o radar ainda não estiver publicado junto do ERP");
+      await aplicarStore(await r.json());
+    } catch(e){ msg("Falha ao carregar radar publicado: "+e.message,"err"); }
+  }
+
+  async function validarSchema() {
+    schemaOk=false; $("btnAuditar").disabled=true; $("schema").textContent="Validando Fila_Auditoria_Leads…";
+    try { const s=await CRMAuditoria.inspecionarSchema(); if(!s.ok){ $("schema").textContent="❌ Faltam campos: "+s.faltando.join(", "); return; }
+      schemaOk=true; $("schema").textContent="✅ Schema mínimo presente. Dedupe server-side: "+(s.chaveDedupeServerSide?"sim":"não confirmado")+"."; render();
+    } catch(e){ $("schema").textContent="❌ Não foi possível validar: "+e.message; }
+  }
+
+  async function onIn(){ setStatus("Autenticado como "+EG.getAccount().username); $("btnLogin").disabled=true; $("btnLogout").disabled=false; $("btnCarregar").disabled=false;
+    try{const u=await EG.me(); $("user").textContent="👤 "+u.nome}catch{$("user").textContent="👤 "+EG.getAccount().username} await validarSchema(); }
+
+  $("btnCarregar").onclick=carregarPublicado;
+  $("arquivo").onchange=async ev=>{ const f=ev.target.files&&ev.target.files[0]; if(!f)return; try{ await aplicarStore(JSON.parse(await f.text())); }catch(e){msg("Arquivo inválido: "+e.message,"err");} finally{ev.target.value="";} };
+  $("btnTodos").onclick=()=>document.querySelectorAll(".sel:not(:disabled)").forEach(x=>x.checked=true);
+  $("btnNenhum").onclick=()=>document.querySelectorAll(".sel").forEach(x=>x.checked=false);
+
+  $("btnAuditar").onclick=async()=>{
+    if(!schemaOk){msg("Schema ainda não validado.","err");return;}
+    const idx=[...document.querySelectorAll(".sel:checked")].map(x=>Number(x.dataset.i));
+    if(!idx.length){msg("Selecione ao menos um edital.","warn");return;}
+    $("btnAuditar").disabled=true; let criados=0,dups=0,falhas=0;
+    for(const i of idx){ const e=editais[i]; msg("Enviando "+(criados+dups+falhas+1)+"/"+idx.length+" — "+e.numeroControlePNCP+"…");
+      try{ const r=await CRMAuditoria.registrar(leadDoEdital(e),{meta:{produtor:"crm-c-licitacoes"}}); resultados.set(e.numeroControlePNCP,r); if(r.duplicado)dups++;else criados++; render(); }
+      catch(err){ falhas++; resultados.set(e.numeroControlePNCP,{erro:err.message}); const tr=document.querySelector('tr[data-id="'+CSS.escape(e.numeroControlePNCP)+'"] td:last-child'); if(tr)tr.textContent="erro: "+err.message; }
+    }
+    msg("Concluído: "+criados+" novo(s), "+dups+" já existente(s), "+falhas+" falha(s)."+(falhas?" Revise as linhas com erro.":" Nenhuma proposta foi criada automaticamente."),falhas?"warn":"ok"); render();
+  };
+
+  $("btnLogin").onclick=async()=>{try{await EG.login();await onIn()}catch(e){setStatus("Falha no login: "+e.message,"err")}};
+  $("btnLogout").onclick=async()=>{await EG.logout();location.reload()};
+
+  window.EletriumLicitacoes={normalizarStore,leadDoEdital,assertRegras(){ const falhas=[];let total=0;const ok=(c,m)=>{total++;if(!c)falhas.push(m)};
+    const e={numeroControlePNCP:"123",orgao:"Prefeitura X",objeto:"SPDA",score:5,linkPncp:"https://pncp.gov.br/x"}; const l=leadDoEdital(e);
+    ok(l.origem==="Licitações"&&l.origem_id==="123","origem e numeroControlePNCP precisam ser preservados");
+    ok(l.razao_social_nome==="Prefeitura X"&&l.objeto==="SPDA","órgão e objeto precisam sobreviver ao envelope");
+    let rejeitou=false;try{normalizarStore({editais:[{objeto:"sem id"}]})}catch{rejeitou=true}ok(rejeitou,"edital sem numeroControlePNCP precisa ser recusado");
+    ok(normalizarStore({editais:[]}).editais.length===0,"store vazio válido precisa ser aceito"); const r={ok:!falhas.length,total,falhas};console.log("EletriumLicitacoes.assertRegras:",JSON.stringify(r,null,2));return r;}};
+  (async()=>{const logged=await EG.init();if(logged)await onIn()})();
+</script>
+</body>
+</html>
