@@ -1,99 +1,135 @@
-// crm-auditoria.js — núcleo compartilhado dos funis do CRM Eletrium.
-// Requer graph.js carregado antes e usa SOMENTE Microsoft Graph delegado via EG.
+// crm-auditoria.js — núcleo compartilhado da Fila_Auditoria_Leads.
+// Contrato: Roadmap CRM/Comercial v1.1. Requer graph.js (EG) carregado antes.
 //
-// Objetivos:
-// 1) nunca inventar schema da Fila_Auditoria_Leads: inspeciona as colunas reais;
-// 2) persistir o lead ANTES de qualquer IA/enriquecimento;
-// 3) oferecer dedupe rastreável entre os funis;
-// 4) nunca criar Proposta/Cliente automaticamente — promoção humana fica fora daqui.
-//
-// Compatibilidade: campos adicionais são usados somente se EXISTIREM na lista real.
+// Regras centrais:
+// - Submission_ID identifica a SUBMISSÃO e é a chave de idempotência do lead.
+// - ID_Origem identifica a entrada estável no funil (PNCP, indicação, etc.).
+// - CPF/CNPJ identifica a CONTA, nunca deduplica uma nova demanda/oportunidade.
+// - processamento, auditoria e promoção são estados ortogonais.
+// - este módulo NUNCA cria Cliente/Conta ou Proposta; promoção é outro fluxo.
 window.CRMAuditoria = (function () {
   "use strict";
 
   const LISTA = "Fila_Auditoria_Leads";
-  const VERSAO_ENVELOPE = 1;
+  const VERSAO_ENVELOPE = 2;
 
-  // Mínimo já documentado pelo Inbound versionado. Sem estes campos não há como
-  // preservar origem + dados crus sem inventar outro modelo: falhamos fechado.
-  const CAMPOS_OBRIGATORIOS = ["Origem_Lead", "Dados_Brutos", "RazaoSocial_Nome"];
-
-  const CAMPOS_OPCIONAIS = [
-    "Title", "Chave_Dedupe", "Data_Captura", "Data_Entrada", "Status_Auditoria",
-    "Score_PJPF", "Canal_Origem", "Link_Origem", "Origem_ID", "Contato_Nome",
-    "Email", "Telefone", "Documento", "Tipo_Pessoa", "Motivo_Descarte"
+  const CAMPOS_OBRIGATORIOS = [
+    "Submission_ID", "Origem_Lead", "ID_Origem", "Data_Recebimento",
+    "Status_Processamento", "Status_Auditoria", "Status_Promocao"
   ];
 
-  const norm = (v) => String(v == null ? "" : v).trim();
-  const normKey = (v) => norm(v).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-|-$/g, "");
-  const soDoc = (v) => norm(v).toUpperCase().replace(/[^0-9A-Z]/g, "");
+  // Compatibilidade + campos do roadmap. Só são escritos quando existem no schema real.
+  const CAMPOS_OPCIONAIS = [
+    "Title", "Dados_Brutos", "RazaoSocial_Nome", "Chave_Dedupe",
+    "Tipo_Documento", "Documento_Normalizado", "Modelo_Score", "Versao_Modelo_Score",
+    "Score_Cobertura", "Consentimento_Valor", "Consentimento_Data",
+    "Aviso_Privacidade_Versao", "Tentativas_Processamento", "Ultimo_Erro_Codigo",
+    "Ultimo_Erro_Detalhe", "Data_Proxima_Tentativa", "Revisor", "Data_Auditoria",
+    "Motivo_Rejeicao", "Proposta_Vinculada",
+    // Inbound
+    "UTM_Source", "UTM_Campaign", "URL_Origem",
+    // Outbound (quando vier do processador/staging, não do importador direto)
+    "Lote_Importacao_ID", "Linha_Origem_ID", "Fonte_Enriquecimento", "Data_Enriquecimento",
+    // Licitações
+    "PNCP_ID", "Link_Edital", "Valor_Estimado", "UF", "Tensao_kV",
+    "Avaliar_Consorcio", "Avaliar_Logistica", "Avaliacao_Humana_Pendente",
+    // Indicação
+    "Indicado_Por", "Relacao_Indicador", "Data_Agradecimento", "Resultado_Indicacao",
+    // campos legados úteis se existirem
+    "Contato_Nome", "Email", "Telefone", "Documento", "Tipo_Pessoa", "Canal_Origem", "Link_Origem"
+  ];
+
+  const norm = v => String(v == null ? "" : v).trim();
   const agoraIso = () => new Date().toISOString();
+  const normKey = v => norm(v).normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase().replace(/[^A-Z0-9._:-]+/g, "-").replace(/^-|-$/g, "");
+
+  function normalizarDocumento(tipo, valor) {
+    const t = norm(tipo).toUpperCase();
+    if (!valor) return "";
+    if (t === "CPF") return String(valor).replace(/\D/g, "");
+    if (t === "CNPJ") return String(valor).toUpperCase().replace(/[^0-9A-Z]/g, "");
+    return String(valor).toUpperCase().replace(/[^0-9A-Z]/g, "");
+  }
 
   function hashFNV1a(texto) {
-    // Hash NÃO criptográfico: serve só para chave curta/determinística de dedupe.
-    // Não é usado para autenticação, assinatura ou segredo.
     let h = 0x811c9dc5;
-    const s = String(texto || "");
-    for (let i = 0; i < s.length; i++) {
-      h ^= s.charCodeAt(i);
-      h = Math.imul(h, 0x01000193) >>> 0;
-    }
+    for (const ch of String(texto || "")) { h ^= ch.charCodeAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
     return h.toString(16).padStart(8, "0");
   }
 
-  function chaveDedupe(lead) {
-    const l = lead || {};
-    const origem = normKey(l.origem || l.origem_lead || "DESCONHECIDA");
-    const origemId = normKey(l.origem_id || l.source_id || "");
-    const doc = soDoc(l.documento || l.cnpj_cpf || "");
-    const email = norm(l.email).toLowerCase();
-    const tel = String(l.telefone || "").replace(/\D/g, "");
-    const empresa = normKey(l.razao_social_nome || l.empresa || l.nome || "");
-
-    // IDs estáveis da origem ganham prioridade (PNCP, linha de lote, etc.).
-    let identidade = origemId ? "ID:" + origemId : "";
-    if (!identidade && doc) identidade = "DOC:" + doc;
-    if (!identidade && email) identidade = "MAIL:" + email;
-    if (!identidade && tel) identidade = "TEL:" + tel;
-    if (!identidade && empresa) identidade = "NOME:" + empresa;
-    if (!identidade) throw new Error("não é possível gerar chave de dedupe: informe origem_id, documento, e-mail, telefone ou nome/empresa");
-
-    const base = origem + "|" + identidade;
-    return "CRM1-" + origem + "-" + hashFNV1a(base);
+  function stableStringify(v) {
+    if (v === null || typeof v !== "object") return JSON.stringify(v);
+    if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+    return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + stableStringify(v[k])).join(",") + "}";
   }
 
+  function identidade(lead) {
+    const l = lead || {};
+    const origem = norm(l.origem || l.origem_lead);
+    const submissionId = norm(l.submission_id || l.Submission_ID);
+    const origemId = norm(l.origem_id || l.ID_Origem || l.source_id);
+    if (!origem) throw new Error("Origem_Lead é obrigatória");
+    if (!submissionId) throw new Error("Submission_ID é obrigatório — não deduza por CNPJ/e-mail");
+    if (!origemId) throw new Error("ID_Origem é obrigatório — use a identidade estável do funil");
+    return { origem, submissionId, origemId };
+  }
+
+  // Chave auxiliar/legada; a garantia canônica é Submission_ID UNIQUE no SharePoint.
+  function chaveDedupe(lead) { return identidade(lead).submissionId; }
+
   function mapaColunas(colunas) {
-    const m = {};
-    (colunas || []).forEach(c => { if (c && c.name) m[c.name] = c; });
-    return m;
+    const m = {}; (colunas || []).forEach(c => { if (c && c.name) m[c.name] = c; }); return m;
+  }
+
+  function choicesDa(col) {
+    const a = col && col.choice && col.choice.choices;
+    return Array.isArray(a) ? a.map(String) : null;
   }
 
   async function inspecionarSchema() {
     const cols = await EG.listColumns(LISTA);
     const porNome = mapaColunas(cols);
     const faltando = CAMPOS_OBRIGATORIOS.filter(c => !porNome[c]);
-    const presentes = CAMPOS_OBRIGATORIOS.concat(CAMPOS_OPCIONAIS).filter((c, i, a) => a.indexOf(c) === i && porNome[c]);
-    const chave = porNome.Chave_Dedupe || null;
+    const presentes = CAMPOS_OBRIGATORIOS.concat(CAMPOS_OPCIONAIS)
+      .filter((c, i, a) => a.indexOf(c) === i && porNome[c]);
     return {
       ok: faltando.length === 0,
-      lista: LISTA,
-      faltando,
-      presentes,
-      porNome,
-      chaveDedupeServerSide: !!(chave && chave.enforceUniqueValues === true)
+      lista: LISTA, faltando, presentes, porNome,
+      submissionUnique: !!(porNome.Submission_ID && porNome.Submission_ID.enforceUniqueValues === true),
+      escolhas: {
+        Origem_Lead: choicesDa(porNome.Origem_Lead),
+        Status_Processamento: choicesDa(porNome.Status_Processamento),
+        Status_Auditoria: choicesDa(porNome.Status_Auditoria),
+        Status_Promocao: choicesDa(porNome.Status_Promocao)
+      }
     };
   }
 
-  function dadosBrutos(lead, chave, meta) {
+  function validarChoice(schema, campo, valor) {
+    if (valor == null || valor === "") return;
+    const choices = schema && schema.escolhas && schema.escolhas[campo];
+    if (!Array.isArray(choices)) throw new Error("não é possível validar Choice " + campo + " no schema real");
+    if (!choices.includes(String(valor))) throw new Error(campo + "='" + valor + "' não existe no SharePoint; choices: " + choices.join(" | "));
+  }
+
+  function payloadFingerprint(lead) {
     const l = Object.assign({}, lead || {});
-    delete l.__schema;
+    // timestamps de transporte não devem transformar um retry idêntico em conflito.
+    delete l.capturado_em; delete l.enviado_em; delete l.Data_Recebimento;
+    return hashFNV1a(stableStringify(l));
+  }
+
+  function dadosBrutos(lead, ids, meta) {
+    const l = Object.assign({}, lead || {}); delete l.__schema;
     return JSON.stringify({
       _crm: {
         envelope_version: VERSAO_ENVELOPE,
-        dedupe_key: chave,
-        origem: norm(l.origem || l.origem_lead || ""),
-        origem_id: norm(l.origem_id || l.source_id || "") || null,
-        capturado_em: agoraIso(),
+        submission_id: ids.submissionId,
+        origem: ids.origem,
+        origem_id: ids.origemId,
+        payload_fingerprint: payloadFingerprint(l),
+        capturado_em: norm(l.capturado_em || l.enviado_em || agoraIso()),
         produtor: norm((meta || {}).produtor || "eletrium-erp-web")
       },
       lead: l
@@ -102,104 +138,123 @@ window.CRMAuditoria = (function () {
 
   function parseDadosBrutos(v) {
     if (v == null || v === "") return null;
-    try { return typeof v === "string" ? JSON.parse(v) : v; }
-    catch { return null; }
+    try { return typeof v === "string" ? JSON.parse(v) : v; } catch { return null; }
   }
 
-  async function localizarDuplicado(chave, schema) {
-    // A lista é a fonte canônica. Enquanto não houver uma chave UNIQUE server-side,
-    // fazemos reconciliação por leitura antes do POST e deixamos isso explícito.
-    // A proteção forte contra corrida só existe quando Chave_Dedupe estiver com
-    // enforceUniqueValues=true no SharePoint.
+  async function localizarPorSubmission(submissionId) {
     const itens = await EG.listItems(LISTA);
-    for (const it of itens) {
-      const f = (it && it.fields) || {};
-      if (schema.porNome.Chave_Dedupe && norm(f.Chave_Dedupe) === chave) return it;
-      const bruto = parseDadosBrutos(f.Dados_Brutos);
-      if (bruto && bruto._crm && bruto._crm.dedupe_key === chave) return it;
+    return itens.find(it => norm(((it || {}).fields || {}).Submission_ID) === submissionId) || null;
+  }
+
+  function equivalenciaDuplicado(existing, lead) {
+    const f = (existing && existing.fields) || {};
+    const bruto = parseDadosBrutos(f.Dados_Brutos);
+    if (!(bruto && bruto._crm && bruto._crm.payload_fingerprint)) {
+      return { verificavel: false, equivalente: false, motivo: "registro existente sem fingerprint do envelope v2" };
     }
-    return null;
+    const esperado = payloadFingerprint(lead);
+    return {
+      verificavel: true,
+      equivalente: bruto._crm.payload_fingerprint === esperado,
+      motivo: bruto._crm.payload_fingerprint === esperado ? null : "mesmo Submission_ID com payload divergente"
+    };
   }
 
   function copiarSeExiste(fields, schema, campo, valor) {
-    if (!schema.porNome[campo]) return;
-    if (valor == null || valor === "") return;
+    if (!schema.porNome[campo] || valor == null || valor === "") return;
     fields[campo] = valor;
   }
 
-  function camposParaCriacao(lead, schema, chave, meta) {
-    const l = lead || {};
-    const origem = norm(l.origem || l.origem_lead);
-    const nome = norm(l.razao_social_nome || l.empresa || l.nome);
-    if (!origem) throw new Error("Origem_Lead é obrigatória");
-    if (!nome) throw new Error("RazaoSocial_Nome é obrigatório");
+  function camposParaCriacao(lead, schema, meta) {
+    const l = lead || {}; const ids = identidade(l);
+    validarChoice(schema, "Origem_Lead", ids.origem);
+    validarChoice(schema, "Status_Processamento", l.status_processamento);
+    validarChoice(schema, "Status_Auditoria", l.status_auditoria);
+    validarChoice(schema, "Status_Promocao", l.status_promocao);
+
+    const recebido = norm(l.data_recebimento || l.capturado_em || l.enviado_em || agoraIso());
+    const tipoDoc = norm(l.tipo_documento || (norm(l.tipo_pessoa).toUpperCase() === "PJ" ? "CNPJ" : norm(l.tipo_pessoa).toUpperCase() === "PF" ? "CPF" : ""));
+    const docNorm = normalizarDocumento(tipoDoc, l.documento_normalizado || l.documento || l.cnpj_cpf);
 
     const fields = {
-      Origem_Lead: origem,
-      RazaoSocial_Nome: nome,
-      Dados_Brutos: dadosBrutos(l, chave, meta)
+      Submission_ID: ids.submissionId,
+      Origem_Lead: ids.origem,
+      ID_Origem: ids.origemId,
+      Data_Recebimento: recebido
     };
 
-    copiarSeExiste(fields, schema, "Title", norm(l.titulo || nome));
-    copiarSeExiste(fields, schema, "Chave_Dedupe", chave);
-    copiarSeExiste(fields, schema, "Data_Captura", norm(l.capturado_em || agoraIso()));
-    copiarSeExiste(fields, schema, "Data_Entrada", norm(l.capturado_em || agoraIso()));
-    copiarSeExiste(fields, schema, "Canal_Origem", norm(l.canal_origem || origem));
-    copiarSeExiste(fields, schema, "Link_Origem", norm(l.link_origem || l.url || ""));
-    copiarSeExiste(fields, schema, "Origem_ID", norm(l.origem_id || l.source_id || ""));
-    copiarSeExiste(fields, schema, "Contato_Nome", norm(l.contato_nome || l.contato || ""));
+    copiarSeExiste(fields, schema, "Status_Processamento", l.status_processamento);
+    copiarSeExiste(fields, schema, "Status_Auditoria", l.status_auditoria);
+    copiarSeExiste(fields, schema, "Status_Promocao", l.status_promocao);
+    copiarSeExiste(fields, schema, "Title", norm(l.titulo || l.razao_social_nome || l.empresa || l.nome || ids.submissionId));
+    copiarSeExiste(fields, schema, "RazaoSocial_Nome", norm(l.razao_social_nome || l.empresa || l.nome));
+    copiarSeExiste(fields, schema, "Dados_Brutos", dadosBrutos(l, ids, meta));
+    copiarSeExiste(fields, schema, "Chave_Dedupe", ids.submissionId);
+    copiarSeExiste(fields, schema, "Tipo_Documento", tipoDoc);
+    copiarSeExiste(fields, schema, "Documento_Normalizado", docNorm);
+    copiarSeExiste(fields, schema, "Documento", docNorm);
+    copiarSeExiste(fields, schema, "Tipo_Pessoa", norm(l.tipo_pessoa));
+    copiarSeExiste(fields, schema, "Contato_Nome", norm(l.contato_nome || l.contato));
     copiarSeExiste(fields, schema, "Email", norm(l.email));
     copiarSeExiste(fields, schema, "Telefone", norm(l.telefone));
-    copiarSeExiste(fields, schema, "Documento", norm(l.documento || l.cnpj_cpf || ""));
-    copiarSeExiste(fields, schema, "Tipo_Pessoa", norm(l.tipo_pessoa));
-    if (schema.porNome.Score_PJPF && Number.isFinite(Number(l.score_pjpf))) fields.Score_PJPF = Number(l.score_pjpf);
-    copiarSeExiste(fields, schema, "Motivo_Descarte", norm(l.motivo_descarte));
-    // Status_Auditoria NÃO é inventado aqui. Só será escrito quando houver contrato
-    // formal dos choices reais; a ausência mantém o default configurado na lista.
+    copiarSeExiste(fields, schema, "Canal_Origem", norm(l.canal_origem || ids.origem));
+    copiarSeExiste(fields, schema, "Link_Origem", norm(l.link_origem || l.url));
+
+    // Campos específicos — só quando existem no schema real.
+    [
+      ["UTM_Source", l.utm_source], ["UTM_Campaign", l.utm_campaign], ["URL_Origem", l.url_origem || l.link_origem],
+      ["Aviso_Privacidade_Versao", l.aviso_privacidade_versao],
+      ["Lote_Importacao_ID", l.lote_importacao_id], ["Linha_Origem_ID", l.linha_origem_id],
+      ["Fonte_Enriquecimento", l.fonte_enriquecimento], ["Data_Enriquecimento", l.data_enriquecimento],
+      ["PNCP_ID", l.pncp_id], ["Link_Edital", l.link_edital || l.link_origem], ["Valor_Estimado", l.valor_estimado], ["UF", l.uf],
+      ["Tensao_kV", l.tensao_kv], ["Avaliar_Consorcio", l.avaliar_consorcio], ["Avaliar_Logistica", l.avaliar_logistica],
+      ["Avaliacao_Humana_Pendente", l.avaliacao_humana_pendente],
+      ["Indicado_Por", l.indicado_por || l.indicador_nome], ["Relacao_Indicador", l.relacao_indicador || l.indicador_vinculo],
+      ["Data_Agradecimento", l.data_agradecimento], ["Resultado_Indicacao", l.resultado_indicacao]
+    ].forEach(([campo, valor]) => copiarSeExiste(fields, schema, campo, valor));
+
+    if (schema.porNome.Consentimento_Valor && typeof l.consentimento === "boolean") fields.Consentimento_Valor = l.consentimento;
+    copiarSeExiste(fields, schema, "Consentimento_Data", l.consentimento_data || l.consentimento_em);
     return fields;
   }
 
   async function registrar(lead, opts) {
-    const o = opts || {};
+    const o = opts || {}; const ids = identidade(lead);
     const schema = await inspecionarSchema();
-    if (!schema.ok) {
-      const e = new Error("schema de " + LISTA + " incompatível; faltam: " + schema.faltando.join(", "));
-      e.schema = schema; e.failClosed = true; throw e;
+    if (!schema.ok) { const e = new Error("schema incompatível; faltam: " + schema.faltando.join(", ")); e.schema = schema; e.failClosed = true; throw e; }
+
+    const existente = await localizarPorSubmission(ids.submissionId);
+    if (existente) {
+      const eq = equivalenciaDuplicado(existente, lead);
+      if (!eq.verificavel || !eq.equivalente) {
+        const e = new Error(eq.motivo || "Submission_ID já existe e equivalência não pôde ser provada");
+        e.code = "SUBMISSION_CONFLICT"; e.existing = existente; e.failClosed = true; throw e;
+      }
+      return { ok: true, duplicado: true, criado: false, item: existente, item_id: existente.id, submission_id: ids.submissionId, schema };
     }
 
-    const chave = chaveDedupe(lead);
-    if (o.dedupe !== false) {
-      const dup = await localizarDuplicado(chave, schema);
-      if (dup) return { ok: true, duplicado: true, criado: false, item: dup, item_id: dup.id, dedupe_key: chave, schema };
-    }
-
-    const fields = camposParaCriacao(lead, schema, chave, o.meta);
+    const fields = camposParaCriacao(lead, schema, o.meta);
     const criado = await EG.createItem(LISTA, fields);
-    return { ok: true, duplicado: false, criado: true, item: criado, item_id: criado && criado.id, dedupe_key: chave, schema };
+    return { ok: true, duplicado: false, criado: true, item: criado, item_id: criado && criado.id, submission_id: ids.submissionId, schema };
   }
 
-  // Regras puras para harness/jsdom/console. Não acessa rede.
   function assertRegras() {
-    const falhas = []; let total = 0;
-    const ok = (cond, msg) => { total++; if (!cond) falhas.push(msg); };
-    const a = chaveDedupe({ origem: "Indicação", documento: "11.222.333/0001-81", razao_social_nome: "A" });
-    const b = chaveDedupe({ origem: "Indicação", documento: "11222333000181", razao_social_nome: "Outra grafia" });
-    const c = chaveDedupe({ origem: "Licitações", origem_id: "PNCP-123", razao_social_nome: "Órgão X" });
-    const d = chaveDedupe({ origem: "Licitações", origem_id: "PNCP-123", razao_social_nome: "Órgão renomeado" });
-    ok(a === b, "documento equivalente deve gerar a mesma chave dentro da mesma origem");
-    ok(c === d, "origem_id estável deve dominar nome mutável");
-    ok(a !== c, "origens/identidades distintas não podem colidir por construção do base string");
-    const env = parseDadosBrutos(dadosBrutos({ origem: "Indicação", razao_social_nome: "X", email: "x@y.com" }, "K", { produtor: "teste" }));
-    ok(env && env._crm && env._crm.dedupe_key === "K" && env.lead.email === "x@y.com", "envelope precisa preservar chave e payload cru");
-    ok(CAMPOS_OBRIGATORIOS.includes("Dados_Brutos") && CAMPOS_OBRIGATORIOS.includes("Origem_Lead"), "origem e dados crus são obrigatórios");
-    const r = { ok: !falhas.length, total, falhas };
-    console.log("CRMAuditoria.assertRegras:", JSON.stringify(r, null, 2));
-    return r;
+    const falhas=[]; let total=0; const ok=(c,m)=>{total++;if(!c)falhas.push(m)};
+    const a={origem:"Indicação",submission_id:"IND-1",origem_id:"IND-1",tipo_documento:"CNPJ",documento:"11.222.333/0001-81",razao_social_nome:"Empresa",contexto:"A"};
+    const b={...a,submission_id:"IND-2",origem_id:"IND-2",contexto:"B"};
+    ok(chaveDedupe(a)==="IND-1" && chaveDedupe(b)==="IND-2", "duas demandas do mesmo CNPJ precisam de Submission_ID distintos");
+    ok(normalizarDocumento("CNPJ","12.abc.345/01de-35")==="12ABC34501DE35", "CNPJ alfanumérico precisa ser preservado em maiúsculas");
+    ok(normalizarDocumento("CPF","529.982.247-25")==="52998224725", "CPF precisa virar 11 dígitos");
+    let bloqueou=false; try{chaveDedupe({origem:"Indicação",documento:"11222333000181"})}catch{bloqueou=true} ok(bloqueou,"CNPJ sozinho nunca pode virar identidade da submissão");
+    const ids=identidade(a); const env=parseDadosBrutos(dadosBrutos(a,ids,{produtor:"teste"}));
+    ok(env._crm.submission_id==="IND-1" && env._crm.envelope_version===2 && !!env._crm.payload_fingerprint,"envelope v2 precisa carregar identidade e fingerprint");
+    const r={ok:!falhas.length,total,falhas}; console.log("CRMAuditoria.assertRegras:",JSON.stringify(r,null,2)); return r;
   }
 
   return {
-    LISTA, VERSAO_ENVELOPE, CAMPOS_OBRIGATORIOS,
-    normKey, chaveDedupe, parseDadosBrutos, inspecionarSchema,
-    localizarDuplicado, camposParaCriacao, registrar, assertRegras
+    LISTA, VERSAO_ENVELOPE, CAMPOS_OBRIGATORIOS, CAMPOS_OPCIONAIS,
+    normKey, normalizarDocumento, identidade, chaveDedupe, payloadFingerprint,
+    parseDadosBrutos, inspecionarSchema, validarChoice, localizarPorSubmission,
+    equivalenciaDuplicado, camposParaCriacao, registrar, assertRegras
   };
 })();
