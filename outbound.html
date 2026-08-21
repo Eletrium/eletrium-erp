@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Eletrium ERP — Outbound</title>
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="graph.js"></script>
+  <script src="crm-auditoria.js"></script>
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    main{max-width:1400px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}.meta{font-size:.8rem;color:#8b949e;margin:7px 0}.wrap{overflow:auto;border:1px solid #30363d;border-radius:10px}table{width:100%;border-collapse:collapse;min-width:1100px}th,td{padding:8px 9px;border-bottom:1px solid #30363d;text-align:left;vertical-align:top;font-size:.8rem}th{background:#161b22;position:sticky;top:0}.bad{color:#f85149}.good{color:#3fb950}.warn{color:#e3b341}.msg{border:1px solid #30363d;border-radius:8px;padding:9px 11px;margin:10px 0;font-size:.84rem}.msg:empty{display:none}.msg.ok{color:#3fb950;border-color:#3fb95066}.msg.err{color:#f85149;border-color:#f8514966}.msg.warn{color:#e3b341;border-color:#d2992266}tr.sent{opacity:.65;background:#3fb9500d}tr.dup{opacity:.65;background:#d299220d}code{font-size:.78rem}.headmap{display:flex;gap:8px;flex-wrap:wrap}.headmap span{border:1px solid #30363d;border-radius:999px;padding:3px 8px;font-size:.72rem}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Eletrium ERP</h1>
+  <nav><a href="index.html">Kanban</a><a href="propostas.html">Propostas</a><a href="clientes.html">Clientes</a><a href="outbound.html" class="active">Outbound</a><a href="reaquecimento.html">Reaquecimento</a></nav>
+  <span class="user" id="user"></span><button id="btnLogin">Entrar</button><button id="btnLogout" class="sec" disabled>Sair</button>
+</header>
+<div id="status">Não autenticado.</div>
+<main>
+  <h2>Outbound — piloto controlado</h2>
+  <p class="meta">Importe no máximo <strong>20 registros</strong>. O piloto apenas persiste candidatos na <strong>Fila_Auditoria_Leads</strong>. Não há IA, enriquecimento, envio de e-mail/WhatsApp, cadência ou criação automática de proposta nesta etapa.</p>
+  <div class="toolbar">
+    <label class="sec" style="padding:7px 10px;border-radius:6px;cursor:pointer">Abrir CSV/TSV <input id="arquivo" type="file" accept=".csv,.tsv,text/csv,text/tab-separated-values" hidden></label>
+    <button id="btnTodos" class="sec" disabled>Selecionar válidos</button><button id="btnNenhum" class="sec" disabled>Limpar seleção</button><button id="btnAuditar" disabled>Registrar selecionados</button>
+  </div>
+  <div id="schema" class="meta">Faça login para validar o schema da auditoria.</div>
+  <div class="headmap meta">Cabeçalhos aceitos: <span>empresa</span><span>cnpj</span><span>contato</span><span>email</span><span>telefone</span><span>segmento</span><span>cidade</span><span>uf</span><span>origem_lista</span><span>observacoes</span><span>id</span></div>
+  <div id="msg" class="msg" aria-live="polite"></div><div id="resumo" class="meta"></div>
+  <div class="wrap"><table><thead><tr><th></th><th>#</th><th>Empresa</th><th>Documento</th><th>Contato</th><th>E-mail</th><th>Telefone</th><th>Segmento / Local</th><th>Validação</th><th>Auditoria</th></tr></thead><tbody id="tbody"><tr><td colspan="10" class="meta">Nenhum arquivo carregado.</td></tr></tbody></table></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);let linhas=[],schemaOk=false,resultados=new Map();
+function setStatus(t,c){$("status").textContent=t;$("status").className=c||""}function msg(t,c){$("msg").textContent=t||"";$("msg").className="msg"+(c?" "+c:"")}
+const esc=v=>String(v==null?"":v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const normHeader=s=>String(s||"").trim().toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
+
+function detectarSeparador(texto){const primeira=String(texto||"").split(/\r?\n/)[0]||"";const cand=[";","\t",","];let best=cand[0],n=-1;for(const s of cand){const c=(primeira.split(s).length-1);if(c>n){n=c;best=s}}return best}
+function parseLinha(linha,sep){const out=[];let cur="",q=false;for(let i=0;i<linha.length;i++){const ch=linha[i];if(ch==='"'){if(q&&linha[i+1]==='"'){cur+='"';i++}else q=!q}else if(ch===sep&&!q){out.push(cur);cur=""}else cur+=ch}out.push(cur);return out}
+function parseTabela(texto){const s=detectarSeparador(texto);const rows=String(texto||"").replace(/^\uFEFF/,"").split(/\r?\n/).filter(x=>x.trim()!=="").map(l=>parseLinha(l,s));if(rows.length<2)throw new Error("arquivo precisa de cabeçalho e ao menos uma linha");const headers=rows[0].map(normHeader);const dup=headers.filter((h,i)=>h&&headers.indexOf(h)!==i);if(dup.length)throw new Error("cabeçalho duplicado: "+[...new Set(dup)].join(", "));const objs=rows.slice(1).map((r,idx)=>{const o={__linha:idx+2};headers.forEach((h,i)=>{if(h)o[h]=String(r[i]||"").trim()});return o});return{separador:s,headers,linhas:objs}}
+
+function canon(r){return{linha:r.__linha,id:r.id||"",empresa:r.empresa||r.razao_social||r.razao_social_nome||"",documento:r.cnpj||r.cpf||r.documento||"",contato:r.contato||r.contato_nome||"",email:r.email||"",telefone:r.telefone||r.whatsapp||"",segmento:r.segmento||"",cidade:r.cidade||"",uf:r.uf||"",origem_lista:r.origem_lista||r.fonte||"Importação manual",observacoes:r.observacoes||r.obs||""}}
+function validar(r){const e=[];if(!r.empresa)e.push("empresa obrigatória");if(!r.documento&&!r.email&&!r.telefone)e.push("informe CNPJ/CPF, e-mail ou telefone para dedupe");if(r.email&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email))e.push("e-mail inválido");if(r.uf&&r.uf.length!==2)e.push("UF deve ter 2 letras");return e}
+function lead(r){return{origem:"Outbound",canal_origem:"Outbound",origem_id:r.id||"",razao_social_nome:r.empresa,documento:r.documento,contato_nome:r.contato,email:r.email,telefone:r.telefone,segmento:r.segmento,cidade:r.cidade,uf:r.uf,origem_lista:r.origem_lista,observacoes:r.observacoes,capturado_em:new Date().toISOString()}}
+
+function render(){$("btnTodos").disabled=!linhas.length;$("btnNenhum").disabled=!linhas.length;$("btnAuditar").disabled=!(schemaOk&&linhas.length);const validos=linhas.filter(x=>!x.erros.length).length;$("resumo").textContent=linhas.length?linhas.length+" registro(s) no piloto · "+validos+" válido(s) · "+(linhas.length-validos)+" inválido(s)":"";if(!linhas.length){$("tbody").innerHTML='<tr><td colspan="10" class="meta">Nenhum registro.</td></tr>';return}$("tbody").innerHTML=linhas.map((x,i)=>{const r=x.d,st=resultados.get(i),cls=st?(st.duplicado?"dup":"sent"):"",val=x.erros.length?'<span class="bad">'+esc(x.erros.join(" · "))+'</span>':'<span class="good">válido</span>';return '<tr class="'+cls+'"><td><input class="sel" data-i="'+i+'" type="checkbox" '+(x.erros.length||st?'disabled':'')+'></td><td>'+r.linha+'</td><td>'+esc(r.empresa)+'</td><td>'+esc(r.documento||'—')+'</td><td>'+esc(r.contato||'—')+'</td><td>'+esc(r.email||'—')+'</td><td>'+esc(r.telefone||'—')+'</td><td>'+esc(r.segmento||'—')+'<div class="meta">'+esc([r.cidade,r.uf].filter(Boolean).join('/'))+'</div></td><td>'+val+'</td><td class="meta">'+(st?(st.duplicado?'já existia #':'enviado #')+esc(st.item_id||'—'):'pendente')+'</td></tr>'}).join("")}
+
+async function validarSchema(){schemaOk=false;$("btnAuditar").disabled=true;$("schema").textContent="Validando Fila_Auditoria_Leads…";try{const s=await CRMAuditoria.inspecionarSchema();if(!s.ok){$("schema").textContent="❌ Faltam campos: "+s.faltando.join(", ");return}schemaOk=true;$("schema").textContent="✅ Schema mínimo presente. Dedupe server-side: "+(s.chaveDedupeServerSide?"sim":"não confirmado")+".";render()}catch(e){$("schema").textContent="❌ Não foi possível validar: "+e.message}}
+async function onIn(){setStatus("Autenticado como "+EG.getAccount().username);$("btnLogin").disabled=true;$("btnLogout").disabled=false;try{const u=await EG.me();$("user").textContent="👤 "+u.nome}catch{$("user").textContent="👤 "+EG.getAccount().username}await validarSchema()}
+
+$("arquivo").onchange=async ev=>{const f=ev.target.files&&ev.target.files[0];if(!f)return;try{const p=parseTabela(await f.text());if(p.linhas.length>20)throw new Error("piloto limitado a 20 registros; o arquivo contém "+p.linhas.length);linhas=p.linhas.map(r=>{const d=canon(r);return{d,erros:validar(d)}});resultados=new Map();render();msg("Arquivo carregado. Revise os registros e selecione somente os que devem entrar na auditoria.","ok")}catch(e){linhas=[];render();msg("Falha ao carregar: "+e.message,"err")}finally{ev.target.value=""}};
+$("btnTodos").onclick=()=>document.querySelectorAll('.sel:not(:disabled)').forEach(x=>x.checked=true);$("btnNenhum").onclick=()=>document.querySelectorAll('.sel').forEach(x=>x.checked=false);
+$("btnAuditar").onclick=async()=>{if(!schemaOk){msg("Schema ainda não validado.","err");return}const ids=[...document.querySelectorAll('.sel:checked')].map(x=>Number(x.dataset.i));if(!ids.length){msg("Selecione ao menos um registro válido.","warn");return}$("btnAuditar").disabled=true;let novos=0,dups=0,falhas=0;for(const i of ids){const r=linhas[i].d;msg("Persistindo "+(novos+dups+falhas+1)+"/"+ids.length+" — "+r.empresa+"…");try{const x=await CRMAuditoria.registrar(lead(r),{meta:{produtor:"crm-b-outbound-piloto"}});resultados.set(i,x);if(x.duplicado)dups++;else novos++;render()}catch(e){falhas++;resultados.set(i,{erro:e.message});}}msg("Concluído: "+novos+" novo(s), "+dups+" já existente(s), "+falhas+" falha(s). Nenhuma cadência ou proposta foi disparada.",falhas?"warn":"ok");render()};
+$("btnLogin").onclick=async()=>{try{await EG.login();await onIn()}catch(e){setStatus("Falha no login: "+e.message,"err")}};$("btnLogout").onclick=async()=>{await EG.logout();location.reload()};
+window.EletriumOutbound={detectarSeparador,parseLinha,parseTabela,canon,validar,lead,assertRegras(){const f=[];let total=0;const ok=(c,m)=>{total++;if(!c)f.push(m)};const p=parseTabela('empresa;cnpj;email\nACME;11.222.333/0001-81;vendas@acme.com\n');ok(p.linhas.length===1&&p.headers.includes('empresa'),'CSV simples precisa ser lido');const q=parseTabela('empresa,contato,email\n"ACME, Industrial",Maria,maria@acme.com');ok(q.linhas[0].empresa==='ACME, Industrial','CSV com vírgula em aspas precisa preservar campo');const d=canon({...q.linhas[0]});ok(validar(d).length===0,'linha com empresa e email válido precisa passar');ok(validar({empresa:'Sem canal',documento:'',email:'',telefone:''}).length>0,'linha sem chave de dedupe precisa falhar');const l=lead({...d,linha:2});ok(l.origem==='Outbound'&&l.razao_social_nome==='ACME, Industrial','lead precisa preservar origem e empresa');const r={ok:!f.length,total,falhas:f};console.log('EletriumOutbound.assertRegras:',JSON.stringify(r,null,2));return r;}};
+(async()=>{const logged=await EG.init();if(logged)await onIn()})();
+</script>
+</body>
+</html>
