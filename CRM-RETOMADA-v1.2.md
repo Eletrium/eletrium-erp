@@ -1,5 +1,8 @@
 # CRM Eletrium — Retomada v1.2
 
+> ⚠️ **DOCUMENTO DE CONTEXTO DA RETOMADA (21/08/2026).**
+> Para prioridade, ownership, sequência de implementação e fechamento de gates a partir de 24/08/2026, usar **`CRM-PLANO-CANONICO-EXECUCAO-v1.2-20260824.md`**. Em caso de divergência operacional, o plano canônico prevalece.
+
 Data: 21/08/2026
 Branch ativa: `active-crm-v1.2-20260821`
 Base: `master@1c80e626d349489e7f06148ad74fb8f86722d68c`
@@ -14,7 +17,7 @@ Retomar a construção do CRM em paralelo ao corredor de go-live do módulo de O
 - Promoção humana é o gate entre captação/triagem e pipeline comercial.
 - Pipeline de propostas: Lead Novo → Qualificação → Em Elaboração → Enviada → Em Negociação → Aguardando Decisão → Ganho → Perdido.
 - Reaquecimento é exceção: não entra automaticamente na Fila_Auditoria e não cria proposta; gera sinal/ação humana.
-- Persistência do lead vem antes de IA; classificação por IA não pode ficar no caminho crítico da captura.
+- Persistência do lead vem antes da IA; classificação por IA não pode ficar no caminho crítico da captura.
 - 429/5xx podem ter retry controlado; 401/403 não entram em loop.
 
 ## Delta real encontrado no repositório
