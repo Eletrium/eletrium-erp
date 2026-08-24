@@ -1,0 +1,26 @@
+{
+  "contractVersion": "1.0.0",
+  "entities": {
+    "Necessidades_Materiais": {
+      "required": ["Necessidade_ID", "Projeto_ID", "Item_ID", "Material_ID", "Origem_Material", "Quantidade_Planejada", "Snapshot_Versao", "Row_Version", "Status"],
+      "originEnum": ["ELETRIUM", "CLIENTE", "MISTA"]
+    },
+    "Reservas_Estoque": {
+      "appendOnly": true,
+      "required": ["Reserva_ID", "Necessidade_ID", "Material_ID", "Quantidade", "Tipo", "Documento_ID", "Documento_Versao", "Item_ID", "Idempotency_Key", "Correlation_ID", "Created_At"],
+      "typeEnum": ["RESERVA", "LIBERACAO", "CONSUMO", "COMPENSACAO"],
+      "unique": ["Idempotency_Key"]
+    },
+    "Movimentacoes_Estoque": {
+      "appendOnly": true,
+      "required": ["Movimento_ID", "Material_ID", "Tipo", "Quantidade", "Documento_ID", "Documento_Versao", "Item_ID", "Idempotency_Key", "Correlation_ID", "Created_At"],
+      "typeEnum": ["ENTRADA", "SAIDA", "AJUSTE", "DEVOLUCAO", "TRANSFERENCIA"],
+      "unique": ["Idempotency_Key"]
+    },
+    "Eventos_Integracao": {
+      "required": ["Evento_ID", "Entidade", "Entity_ID", "Sequence", "Idempotency_Key", "Correlation_ID", "Origem", "Destino", "Status", "Teto_Excedido", "Retry_Count", "Payload_Version", "Created_At", "Updated_At"],
+      "statusEnum": ["LOCAL_PENDING", "QUEUED", "SENDING", "RECEIVED", "SYNCED", "RECONCILED", "SYNC_ERROR", "CANCELLED"],
+      "retryCeilingRule": "status=SYNC_ERROR + Teto_Excedido=true; retry manual limpa teto e retorna a QUEUED preservando historico"
+    }
+  }
+}
