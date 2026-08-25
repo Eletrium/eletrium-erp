@@ -1,0 +1,24 @@
+{
+  "fixtureVersion": "1.0.0",
+  "syntheticOnly": true,
+  "proposalId": "prop-shadow-001",
+  "projectId": "proj-shadow-001",
+  "packageId": "pkg-shadow-001",
+  "necessityId": "nec-shadow-001",
+  "purchaseRequestId": "sc-shadow-001",
+  "orderId": "po-shadow-001",
+  "receiptId": "receipt-shadow-001",
+  "material": {
+    "materialId": "mat-shadow-001",
+    "itemId": "item-shadow-001",
+    "quantity": 4,
+    "unitPrice": 25,
+    "origin": "ELETRIUM"
+  },
+  "expected": {
+    "physicalAfterReceipt": 4,
+    "availableAfterReceipt": 4,
+    "openExceptionsAfterResolution": 0,
+    "duplicateLedgerEffects": 0
+  }
+}
