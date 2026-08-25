@@ -28,6 +28,11 @@ de conflito quando os contratos estiverem homologados.
 - painel de divergência Pedido × Recebimento × NF-e;
 - indicadores derivados, nunca botões de alteração direta de status.
 
+Os view-models e renderizadores de referência estão isolados em `suprimentos/ui/`.
+Eles escapam texto não confiável, bloqueiam ação quando há drift e oferecem somente
+releitura em conflito de versão. A inclusão na tela compartilhada continua proibida até
+a revisão do diff com CRM/OS.
+
 ## Arquivos compartilhados
 
 Antes da integração devem ser comparados:

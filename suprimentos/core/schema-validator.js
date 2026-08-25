@@ -21,6 +21,7 @@
     if (typeof value === 'number' && schema.minimum !== undefined && value < schema.minimum) fail('SCHEMA_MINIMUM', { path: path });
     if (typeof value === 'number' && schema.exclusiveMinimum !== undefined && value <= schema.exclusiveMinimum) fail('SCHEMA_EXCLUSIVE_MINIMUM', { path: path });
     if (Array.isArray(value) && schema.minItems && value.length < schema.minItems) fail('SCHEMA_MIN_ITEMS', { path: path });
+    if (Array.isArray(value) && schema.items) value.forEach(function (item, index) { validate(schema.items, item, path + '[' + index + ']'); });
     if (schema.type === 'object') {
       (schema.required || []).forEach(function (key) { if (value[key] === undefined || value[key] === null || value[key] === '') fail('SCHEMA_REQUIRED_FIELD', { path: path + '.' + key }); });
       Object.keys(schema.properties || {}).forEach(function (key) { if (value[key] !== undefined) validate(schema.properties[key], value[key], path + '.' + key); });

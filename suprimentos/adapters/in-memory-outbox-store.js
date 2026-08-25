@@ -18,6 +18,15 @@
           }
         }); return claimed;
       },
+      recoverExpired: async function (now) {
+        var time = new Date(now).getTime(), recovered = 0;
+        records.forEach(function (item) {
+          if (item.status === 'SENDING' && item.leaseUntil && new Date(item.leaseUntil).getTime() <= time) {
+            item.status = 'SYNC_ERROR'; item.lastError = 'WORKER_LEASE_EXPIRED'; item.nextAttemptAt = now;
+            item.leaseOwner = null; item.leaseUntil = null; recovered += 1;
+          }
+        }); return recovered;
+      },
       complete: async function (id, owner, receipt) { var item = records.find(function (x) { return x.eventId === id; }); if (!item || item.leaseOwner !== owner) throw new Error('LEASE_NOT_OWNED'); item.status = 'SYNCED'; item.receipt = copy(receipt); item.leaseOwner = null; item.leaseUntil = null; },
       retry: async function (id, owner, errorCode, nextAttemptAt) { var item = records.find(function (x) { return x.eventId === id; }); if (!item || item.leaseOwner !== owner) throw new Error('LEASE_NOT_OWNED'); item.status = 'SYNC_ERROR'; item.retryCount = Number(item.retryCount || 0) + 1; item.lastError = errorCode; item.nextAttemptAt = nextAttemptAt; item.leaseOwner = null; item.leaseUntil = null; },
       uncertain: async function (id, owner, errorCode) { var item = records.find(function (x) { return x.eventId === id; }); if (!item || item.leaseOwner !== owner) throw new Error('LEASE_NOT_OWNED'); item.status = 'RECONCILIATION_PENDING'; item.lastError = errorCode; item.leaseOwner = null; item.leaseUntil = null; },

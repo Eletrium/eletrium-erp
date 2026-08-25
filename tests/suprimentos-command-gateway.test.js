@@ -19,6 +19,6 @@ const observability = require('../suprimentos/core/observability');
   await assert.rejects(() => gateway.execute(Object.assign({}, envelope, { payload: { quantity: 3 } })), /IDEMPOTENCY_KEY_REUSED/);
   const telemetry = observer.snapshot();
   assert.strictEqual(telemetry.counters['command_completed:reserve'], 1);
-  assert.strictEqual(telemetry.failures, 1);
+  assert.strictEqual(telemetry.failures, 3);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(telemetry.events[0], 'payload'), false);
 })().then(() => console.log('suprimentos-command-gateway.test.js: OK — autorização, retry e telemetria'));

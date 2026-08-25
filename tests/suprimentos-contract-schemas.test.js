@@ -4,7 +4,7 @@ const validator = require('../suprimentos/core/schema-validator');
 const integration = require('../suprimentos/core/integration-contracts');
 
 (function validatesEnvelopeWithoutExtraVisualStatus() {
-  const envelope = { commandId: 'c1', operation: 'reserve', actorId: 'u1', correlationId: 'corr1', idempotencyKey: 'i1', schemaVersion: '1.0.0', payload: { documentId: 'd1', documentVersion: 1, expectedVersions: { m1: 0 }, items: [{}] } };
+  const envelope = { commandId: 'c1', operation: 'reserve', actorId: 'u1', correlationId: 'corr1', idempotencyKey: 'i1', schemaVersion: '1.0.0', payload: { documentId: 'd1', documentVersion: 1, expectedVersions: { m1: 0 }, items: [{ itemId: 'i1', materialId: 'm1', quantity: 1 }] } };
   assert.strictEqual(validator.validateCommand(schemas, envelope), true);
   assert.throws(() => validator.validateCommand(schemas, Object.assign({}, envelope, { visualStatus: 'verde' })), /SCHEMA_ADDITIONAL_PROPERTY/);
   assert.throws(() => validator.validateCommand(schemas, Object.assign({}, envelope, { schemaVersion: '2.0.0' })), /SCHEMA_CONST_INVALID/);

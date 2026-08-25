@@ -19,5 +19,7 @@
     document.getElementById('output').textContent = JSON.stringify({ projection: item, findings: audit.findings, repairPlan: audit.repairPlan }, null, 2);
   }
   document.getElementById('run').addEventListener('click', function () { render(false); });
-  document.getElementById('drift').addEventListener('click', function () { render(true); }); render(false);
+  document.getElementById('drift').addEventListener('click', function () { render(true); });
+  var queueModel = window.SuprimentosViewModels.exceptionQueue({ kpis: { open: 1, critical: 0, overdue: 0, syncOrReconciliation: 1 }, items: [{ exceptionId: 'SYN-EXC-001', category: 'RECONCILIACAO_PENDENTE', criticality: 'ALTA', recommendedAction: 'Revisar evento de integração' }] });
+  document.getElementById('queue').innerHTML = window.SuprimentosComponents.queueTable(queueModel); render(false);
 })();

@@ -14,6 +14,9 @@
     var observer = options.observer || { emit: function () {} };
     var prior = {};
     var clock = options.clock || function () { return Date.now(); };
+    var maxPayloadBytes = Number(options.maxPayloadBytes || 262144);
+    var rateLimiter = options.rateLimiter || function () { return true; };
+    var replayGuard = options.replayGuard || function () { return true; };
 
     async function execute(envelope) {
       envelope = envelope || {};
@@ -21,15 +24,19 @@
       required(envelope.actorId, 'ACTOR_ID_REQUIRED'); required(envelope.correlationId, 'CORRELATION_ID_REQUIRED');
       required(envelope.idempotencyKey, 'IDEMPOTENCY_KEY_REQUIRED'); required(envelope.schemaVersion, 'SCHEMA_VERSION_REQUIRED');
       if (!envelope.payload || typeof envelope.payload !== 'object' || Array.isArray(envelope.payload)) fail('PAYLOAD_REQUIRED');
+      var payloadBytes = stable(envelope.payload).length;
+      if (payloadBytes > maxPayloadBytes) { observer.emit('ERROR', 'command_rejected', Object.assign({}, envelope, { errorCode: 'PAYLOAD_TOO_LARGE' })); fail('PAYLOAD_TOO_LARGE', { bytes: payloadBytes, max: maxPayloadBytes }); }
       var handler = operations[envelope.operation];
-      if (typeof handler !== 'function') fail('OPERATION_NOT_REGISTERED', envelope.operation);
+      if (typeof handler !== 'function') { observer.emit('ERROR', 'command_rejected', Object.assign({}, envelope, { errorCode: 'OPERATION_NOT_REGISTERED' })); fail('OPERATION_NOT_REGISTERED', envelope.operation); }
       var fingerprint = stable(envelope);
       if (prior[envelope.idempotencyKey]) {
-        if (prior[envelope.idempotencyKey].fingerprint !== fingerprint) fail('IDEMPOTENCY_KEY_REUSED');
+        if (prior[envelope.idempotencyKey].fingerprint !== fingerprint) { observer.emit('ERROR', 'command_rejected', Object.assign({}, envelope, { errorCode: 'IDEMPOTENCY_KEY_REUSED' })); fail('IDEMPOTENCY_KEY_REUSED'); }
         observer.emit('INFO', 'command_replayed', Object.assign({}, envelope, { replayed: true }));
         return Object.assign({}, prior[envelope.idempotencyKey].result, { replayed: true });
       }
-      if (!await authorize({ actorId: envelope.actorId, operation: envelope.operation, schemaVersion: envelope.schemaVersion })) fail('COMMAND_FORBIDDEN');
+      if (!await rateLimiter({ actorId: envelope.actorId, operation: envelope.operation })) { observer.emit('ERROR', 'command_rejected', Object.assign({}, envelope, { errorCode: 'COMMAND_RATE_LIMITED' })); fail('COMMAND_RATE_LIMITED'); }
+      if (!await replayGuard(envelope)) { observer.emit('ERROR', 'command_rejected', Object.assign({}, envelope, { errorCode: 'COMMAND_REPLAY_REJECTED' })); fail('COMMAND_REPLAY_REJECTED'); }
+      if (!await authorize({ actorId: envelope.actorId, operation: envelope.operation, schemaVersion: envelope.schemaVersion })) { observer.emit('ERROR', 'command_rejected', Object.assign({}, envelope, { errorCode: 'COMMAND_FORBIDDEN' })); fail('COMMAND_FORBIDDEN'); }
       var started = clock();
       observer.emit('INFO', 'command_started', envelope);
       try {

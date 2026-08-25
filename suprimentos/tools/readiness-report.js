@@ -10,7 +10,10 @@ const required = [
   'suprimentos/contracts/entities.v1.json', 'suprimentos/contracts/sharepoint-lists.v1.json',
   'suprimentos/contracts/commands.v1.json', 'suprimentos/contracts/openapi.v1.yaml',
   'suprimentos/core/ledger.js', 'suprimentos/core/outbox-worker.js', 'suprimentos/core/runtime.js',
-  'suprimentos/adapters/sharepoint-repository.js', 'suprimentos/spec/RUNBOOK-IMPLANTACAO-RECONCILIACAO.md'
+  'suprimentos/adapters/sharepoint-repository.js', 'suprimentos/adapters/sharepoint-lease-store.js',
+  'suprimentos/ui/components.js', 'suprimentos/contracts/gates.v1.json',
+  'suprimentos/tools/homologation-evidence.js', 'suprimentos/tools/security-scan.js',
+  'suprimentos/spec/CHANGELOG-SUPRIMENTOS-RC1.md', 'suprimentos/spec/RUNBOOK-IMPLANTACAO-RECONCILIACAO.md'
 ];
 const checks = [
   { id: 'ARTIFACTS', ok: required.every(exists), details: required.filter((file) => !exists(file)) },

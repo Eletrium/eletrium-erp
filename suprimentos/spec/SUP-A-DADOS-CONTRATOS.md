@@ -141,5 +141,9 @@ versão incompatível e payload incompleto. `core/integration-contracts.js` mant
 Financeiro nas fronteiras corretas: a OS solicita consumo por IDs e o Financeiro recebe
 obrigação comprovada, sem acesso à projeção ou à máquina de estados de estoque.
 
+`contracts/gates.v1.json` vincula cada Gate A–H às suítes executáveis. O kit sintético
+`tools/verify-os-contract.js` permite que a trilha da OS valide seu payload sem importar
+nenhum código ou estado de Suprimentos.
+
 ## Não colisão
 Nenhuma alteração em `inbound.html`, `reaquecimento.html`, `os.html`, `outbox.js` ou fluxos de CRM/OS. A integração com OS será somente por contrato de IDs até a branch de OS ser liberada.

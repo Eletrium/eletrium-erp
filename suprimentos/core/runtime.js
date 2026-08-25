@@ -10,11 +10,13 @@
     var handlers = options.handlers || {}, observer = options.observer;
     var gateway = gatewayFactory.create({
       operations: handlers, observer: observer, clock: options.clock,
+      maxPayloadBytes: options.maxPayloadBytes, rateLimiter: options.rateLimiter, replayGuard: options.replayGuard,
       authorize: async function (request) { var identity = await options.identityProvider(request.actorId); return security.authorize(identity, request.operation); }
     });
     return {
       execute: async function (envelope) {
-        validator.validateCommand(options.contract, envelope);
+        try { validator.validateCommand(options.contract, envelope); }
+        catch (error) { if (observer && observer.emit) observer.emit('ERROR', 'schema_rejected', { operation: envelope && envelope.operation, actorId: envelope && envelope.actorId, correlationId: envelope && envelope.correlationId, commandId: envelope && envelope.commandId, errorCode: error.code || error.message }); throw error; }
         var flags = security.flags(options.flags);
         if (!flags.shadowMode && envelope.operation === 'publish' && !flags.sharePointWrites) fail('SHAREPOINT_WRITE_FLAG_CLOSED');
         return gateway.execute(envelope);

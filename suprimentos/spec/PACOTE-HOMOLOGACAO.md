@@ -4,12 +4,14 @@
 
 1. executar `node tests/run-suprimentos.js --json` e arquivar a saída;
 2. executar `node suprimentos/tools/readiness-report.js` e arquivar o relatório;
-3. capturar metadados do site SharePoint e executar o verificador de schema;
-4. arquivar fingerprints desejado/observado e plano dry-run;
-5. executar corrida de último saldo, fuzzing e reconstrução de 5.000 eventos;
-6. injetar 412, paginação quebrada, falha antes do commit, ACK perdido e efeito parcial;
-7. confirmar que nenhuma chamada Bom Controle ocorreu e que `productionEnabled=false`;
-8. comparar arquivos do PR com a lista protegida antes de qualquer integração.
+3. executar `node suprimentos/tools/homologation-evidence.js` para consolidar testes,
+   Gates e fingerprint do release candidate;
+4. capturar metadados do site SharePoint e executar o harness de homologação;
+5. arquivar fingerprints desejado/observado e plano dry-run;
+6. executar corrida de último saldo, fuzzing e reconstrução de 5.000 eventos;
+7. injetar 412, paginação quebrada, worker morto, falha antes do commit, ACK perdido e efeito parcial;
+8. confirmar que nenhuma chamada Bom Controle ocorreu e que `productionEnabled=false`;
+9. comparar arquivos do PR com a lista protegida antes de qualquer integração.
 
 ## Critérios humanos
 

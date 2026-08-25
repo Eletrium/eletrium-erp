@@ -122,6 +122,19 @@
         "Idempotency_Key": "Text:160:required",
         "Created_At": "DateTime:required"
       }
+    },
+    "Leases_Processamento": {
+      "concurrencyField": "Row_Version",
+      "unique": ["Lease_Key"],
+      "indexed": ["Lease_Key", "Owner_ID", "Lease_Until"],
+      "fields": {
+        "Lease_Key": "Text:160:required",
+        "Owner_ID": "Text:96:required",
+        "Lease_Until": "DateTime:required",
+        "Fencing_Token": "Integer:required",
+        "Row_Version": "Integer:required",
+        "Updated_At": "DateTime:required"
+      }
     }
   },
   "permissions": {
