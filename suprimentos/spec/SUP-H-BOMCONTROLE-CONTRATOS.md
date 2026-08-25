@@ -31,3 +31,14 @@ Toda integração passa por adapter próprio. Nenhuma tela ou regra de estoque c
 
 ## Homologação
 Manter chamadas reais desativadas até que o Gate 0 esteja fechado. Até lá, trabalhar com schemas, adapters e fixtures/mocks versionados.
+
+## Implementação segura
+
+- contrato versionado `bomcontrole-gate0.v1.json` mantém `productionEnabled=false`;
+- adapter exige credencial por provider de runtime, nunca valor persistido;
+- operações são validadas antes do transporte;
+- timeout após envio produz `PENDING_RECONCILIATION` e proíbe retry cego;
+- fixtures e testes usam somente transporte simulado;
+- checklist de evidências está em `SUP-H-GATE0-CHECKLIST.md`.
+
+Nenhuma chamada real ao Bom Controle foi executada.
