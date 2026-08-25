@@ -126,5 +126,12 @@ unicidade, paginação, escritor único e permissões. O provisionador
 alteração destrutiva de tipo e exige `allowLiveProvisioning` explícito para qualquer
 efeito externo. Nenhum recurso SharePoint foi criado nesta etapa.
 
+`suprimentos/core/sharepoint-schema-verifier.js` compara um snapshot de metadados do
+tenant com o contrato versionado, gera fingerprints reproduzíveis para a evidência de
+homologação e produz plano de migração dry-run. Ausência de campo/índice é tratada como
+migração aditiva; divergência de tipo, campo de concorrência ou política de escritor
+único bloqueia automação e exige revisão explícita. Permissões e append-only também são
+auditados, inclusive para impedir que CRM adquira escrita acidentalmente.
+
 ## Não colisão
 Nenhuma alteração em `inbound.html`, `reaquecimento.html`, `os.html`, `outbox.js` ou fluxos de CRM/OS. A integração com OS será somente por contrato de IDs até a branch de OS ser liberada.

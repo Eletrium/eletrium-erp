@@ -10,6 +10,10 @@ node tests/run-suprimentos.js --json
 O runner descobre todas as suítes `tests/suprimentos-*.test.js`, executa cada uma em
 processo isolado e falha se qualquer suíte retornar código diferente de zero.
 
+A demonstração navegável e totalmente local está em `suprimentos/demo-shadow.html`.
+Ela reconstrói saldo e simula divergência de projeção sem modificar
+`suprimentos.html` e sem qualquer chamada externa.
+
 ## Entrada
 
 - branch derivada de `active-suprimentos-v1.2.1-20260824`;

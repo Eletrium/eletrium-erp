@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Suprimentos — Piloto-sombra</title>
+  <style>
+    :root{font-family:Inter,system-ui,sans-serif;color:#172033;background:#f3f6fa}body{margin:0;padding:32px}.shell{max-width:980px;margin:auto}.banner{background:#172033;color:white;padding:20px 24px;border-radius:14px}.banner strong{color:#7ee0b5}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px;margin:20px 0}.card{background:white;border:1px solid #dce3ec;border-radius:12px;padding:18px}.value{font-size:28px;font-weight:750;margin-top:8px}button{background:#176b50;color:white;border:0;border-radius:8px;padding:10px 14px;font-weight:650;cursor:pointer}button.secondary{background:#e9eef5;color:#26364d}pre{white-space:pre-wrap;max-height:320px;overflow:auto;background:#0f1724;color:#d8e4f2;border-radius:10px;padding:16px}.ok{color:#16734f}.bad{color:#b42318}
+  </style>
+</head>
+<body><main class="shell"><section class="banner"><strong>AMBIENTE SINTÉTICO</strong><h1>Piloto-sombra de Suprimentos</h1><p>Sem SharePoint, CRM, OS ou Bom Controle. A projeção abaixo é sempre derivada do ledger.</p></section><section class="grid"><article class="card">Físico<div id="physical" class="value">—</div></article><article class="card">Reservado<div id="reserved" class="value">—</div></article><article class="card">Disponível<div id="available" class="value">—</div></article><article class="card">Reconciliação<div id="reconciliation" class="value">—</div></article></section><p><button id="run">Reconstruir do ledger</button> <button id="drift" class="secondary">Simular drift de projeção</button></p><pre id="output" aria-live="polite"></pre></main><script src="core/ledger.js"></script><script src="core/reconciliation.js"></script><script src="demo-shadow.js"></script></body>
+</html>

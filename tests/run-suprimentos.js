@@ -26,7 +26,7 @@ files.forEach((name) => {
 });
 
 const report = {
-  suite: 'Suprimentos A-F + piloto-sombra',
+  suite: 'Suprimentos A-G + piloto-sombra',
   startedAt,
   finishedAt: new Date().toISOString(),
   total: results.length,

@@ -1,0 +1,27 @@
+name: Suprimentos isolated CI
+on:
+  pull_request:
+    paths:
+      - 'suprimentos/**'
+      - 'tests/suprimentos-*.test.js'
+      - 'tests/run-suprimentos.js'
+      - '.github/workflows/suprimentos-ci.yml'
+  push:
+    branches: ['sup-*']
+    paths:
+      - 'suprimentos/**'
+      - 'tests/suprimentos-*.test.js'
+      - 'tests/run-suprimentos.js'
+      - '.github/workflows/suprimentos-ci.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: node tests/run-suprimentos.js

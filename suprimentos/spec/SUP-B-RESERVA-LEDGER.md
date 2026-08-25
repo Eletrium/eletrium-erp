@@ -87,5 +87,19 @@ reconciliação de projeção divergente.
 
 O adapter SharePoint real permanece não configurado; somente o contrato foi implementado.
 
+## Porta Graph e escritor único
+
+- `adapters/sharepoint-graph-client.js` implementa a porta HTTP injetável para Microsoft
+  Graph, obtém credencial exclusivamente por provider em runtime, percorre `nextLink`
+  integralmente e envia `If-Match` nas atualizações condicionais. Não contém URL de
+  tenant, segredo ou transporte produtivo;
+- `adapters/single-writer-coordinator.js` serializa comandos no processo do service
+  account e deixa explícito que SharePoint não oferece transação ACID entre listas;
+- antes do ledger, ETags são validados. Depois do primeiro append, qualquer falha gera
+  `LEDGER_PARTIAL_EFFECT` e erro `PERSISTENCE_PARTIAL_RECONCILIATION_REQUIRED`; registros
+  não são apagados e a reconciliação fica obrigatória e observável;
+- uma implantação horizontal ainda deve usar lease/fila externa de consumidor único.
+  O serializador em processo é a referência de semântica, não um lock distribuído.
+
 ## Não colisão
 Nenhuma alteração em código de CRM/OS. Persistência fica atrás de adapter próprio `suprimentos/*`; integração com telas atuais só ocorre após Gate A e revisão de conflito.
