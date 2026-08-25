@@ -38,5 +38,22 @@ Cabeçalho + itens. Cada item mantém Necessidade_ID, Projeto_ID, Material_ID, q
 ## Testes Gate D
 TS-33..40 devem cobrir criação, versionamento, mapa comparativo, aprovação/alçada, pedido, reprocessamento idempotente e exceções.
 
+## Implementação de referência
+
+`suprimentos/core/purchasing.js` implementa:
+
+- solicitação rastreável até `Projeto_ID + Necessidade_ID + Item_ID + Material_ID`;
+- rodada de cotação versionada com fornecedor por ID, evidência, validade, preço, frete,
+  impostos e prazo;
+- mapa comparativo determinístico por custo total entregue, prazo e fornecedor;
+- aprovação vinculada à versão da política/alçada e ao snapshot da rodada;
+- pedido imutável derivado exclusivamente da oferta aprovada, preservando
+  `Solicitacao_Compra_ID + Item_ID + Material_ID` para o matching de recebimento;
+- reprocessamento idempotente com rejeição de chave reutilizada para payload diferente;
+- nova rodada obrigatória para mudança pós-aprovação, preservando o snapshot anterior.
+
+TS-33 a TS-40 estão implementados em `tests/suprimentos-purchasing.test.js`. O núcleo não
+integra Financeiro, NF-e, Bom Controle, CRM ou OS e não realiza chamadas externas.
+
 ## Não colisão
 Compras trabalha somente com contratos de Projeto/Necessidade e não altera CRM, OS ou Financeiro. A integração fiscal permanece fora desta frente.
