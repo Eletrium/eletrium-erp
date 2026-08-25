@@ -41,5 +41,16 @@ Falta confirmada gera `Solicitacao_Compra_ID` vinculada à Necessidade_ID e ao i
 - TS-20: MISTA mantém parcelas de propriedade/custo separadas.
 - TS-21: falta gera solicitação de compra rastreável.
 
+## Implementação de referência
+
+`suprimentos/core/material-needs.js` implementa criação e revisão imutável da necessidade,
+separação de propriedade `ELETRIUM | CLIENTE | MISTA` e geração rastreável da solicitação
+de compra. A parcela do cliente nunca vira custo/estoque Eletrium; em origem mista, a
+compra é limitada à parcela de propriedade da Eletrium.
+
+Os testes TS-18 a TS-21 estão em `tests/suprimentos-material-needs.test.js`. `OS_ID`
+permanece opcional e puramente contratual; nenhuma máquina de estados ou arquivo de OS é
+lido ou alterado.
+
 ## Não colisão
 Não escrever em `os.html` nem alterar máquina de estados de OS. `OS_ID` é tratado como referência externa opcional até estabilização da trilha OS.
