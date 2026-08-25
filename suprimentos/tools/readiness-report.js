@@ -13,6 +13,9 @@ const required = [
   'suprimentos/adapters/sharepoint-repository.js', 'suprimentos/adapters/sharepoint-lease-store.js',
   'suprimentos/ui/components.js', 'suprimentos/contracts/gates.v1.json',
   'suprimentos/tools/homologation-evidence.js', 'suprimentos/tools/security-scan.js',
+  'suprimentos/tools/shared-conflict-audit.js', 'suprimentos/tools/performance-budget.js',
+  'suprimentos/tools/traceability-report.js', 'suprimentos/tools/mock-gateway-server.js',
+  'suprimentos/integration/legacy-ui-bridge.js', 'suprimentos/integration/suprimentos-html.proposed.patch',
   'suprimentos/spec/CHANGELOG-SUPRIMENTOS-RC1.md', 'suprimentos/spec/RUNBOOK-IMPLANTACAO-RECONCILIACAO.md'
 ];
 const checks = [

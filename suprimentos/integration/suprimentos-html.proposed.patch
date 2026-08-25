@@ -1,0 +1,25 @@
+diff --git a/suprimentos.html b/suprimentos.html
+--- a/suprimentos.html
++++ b/suprimentos.html
+@@ integration proposal only — DO NOT APPLY before CRM/OS conflict review @@
++  <script src="suprimentos/integration/legacy-ui-bridge.js"></script>
++  <!-- create SupplyBridge with the authenticated command-gateway transport -->
+
+-        await EG.gpatch(base + "/fields", { Estoque_Reservado: novoValor }, etag ? { "If-Match": etag } : undefined);
++        throw new Error("DIRECT_STOCK_PATCH_DISABLED_USE_SUPPLY_BRIDGE");
+
+-        aplicados = await reservarEstoqueItens(o.id);
++        const reservation = await SupplyBridge.reserve(buildCanonicalReservation(o, itensDoOrcamento(o.id)));
++        // Status_Orcamento may advance only after the gateway receipt is confirmed.
++        // If the status write fails, enqueue release/compensation; never PATCH the aggregate back.
+
+-        const criado = await EG.createItem("Solicitacoes_Compra", campos);
++        const criado = await SupplyBridge.createPurchaseRequest(buildPurchaseCommand(campos));
+
+-        try { await EG.patchItemFields("Cotacoes_Fornecedor", alvo.id, campos); }
++        try { await SupplyBridge.selectQuote(buildQuoteSelectionCommand(s, alvo, campos)); }
+
+This patch is deliberately incomplete and non-applicable until the following mappings are
+approved: ProdutoLookupId -> Material_ID, Orcamento item -> Item_ID/Necessidade_ID,
+authenticated gateway URL, actor identity, and the owner of Status_Orcamento. It records
+the exact direct-write seams that must be replaced without modifying the shared screen.
