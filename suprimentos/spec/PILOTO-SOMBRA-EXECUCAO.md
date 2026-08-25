@@ -5,6 +5,7 @@
 ```bash
 node tests/run-suprimentos.js
 node tests/run-suprimentos.js --json
+node suprimentos/tools/pilot-shadow-report.js
 ```
 
 O runner descobre todas as suítes `tests/suprimentos-*.test.js`, executa cada uma em
@@ -13,6 +14,11 @@ processo isolado e falha se qualquer suíte retornar código diferente de zero.
 A demonstração navegável e totalmente local está em `suprimentos/demo-shadow.html`.
 Ela reconstrói saldo e simula divergência de projeção sem modificar
 `suprimentos.html` e sem qualquer chamada externa.
+
+O relatório comparativo confronta, por `Material_ID`, estoque físico, reserva válida e
+disponibilidade do legado contra a projeção reconstruída. Cobertura incompleta ou qualquer
+delta acima da tolerância mantém o piloto em sombra; resultado verde apenas torna o lote
+elegível para aprovação humana, nunca promove automaticamente.
 
 O boundary executável combina JSON Schema, RBAC, gateway e handlers injetados em
 `core/runtime.js`. O outbox usa lease, backoff e política de efeito incerto; timeout
@@ -39,6 +45,8 @@ necessidades sem dados reais.
 - após commit/antes do ACK: retry devolve replay;
 - ETag 412: conflito visível;
 - paginação incompleta: commit proibido;
+- `nextLink` fora do domínio Microsoft Graph: leitura interrompida antes do reenvio do token;
+- limite de páginas/itens excedido: leitura interrompida e lote não promovido;
 - consumo escrito sem movimento: reconciliação crítica;
 - NF-e duplicada: rejeição explícita;
 - timeout Bom Controle: fora do piloto A-F e bloqueado pelo Gate 0.

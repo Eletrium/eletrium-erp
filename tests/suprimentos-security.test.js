@@ -14,4 +14,11 @@ const security = require('../suprimentos/core/security');
   assert.strictEqual(safe.Authorization, '[REDACTED]'); assert.strictEqual(safe.nested.clientSecret, '[REDACTED]'); assert.strictEqual(safe.nested.materialId, 'm1'); assert.strictEqual(safe.rows[0].cpf, '[REDACTED]');
 })();
 
+(function secretsInsideFreeTextAndErrorsAreRedacted() {
+  const message = security.redact('upstream failed: Bearer abcdefghijklmnop and api_key=super-secret-value');
+  assert.strictEqual(message, 'upstream failed: Bearer [REDACTED] and api_key=[REDACTED]');
+  const sanitized = security.sanitizeError({ code: 'UPSTREAM', message: 'password=hunter2-value', details: { cpf: '00000000000' }, effectUnknown: true });
+  assert.strictEqual(sanitized.message, 'password=[REDACTED]'); assert.strictEqual(sanitized.details.cpf, '[REDACTED]'); assert.strictEqual(sanitized.effectUnknown, true);
+})();
+
 console.log('suprimentos-security.test.js: OK — RBAC, flags e redaction');

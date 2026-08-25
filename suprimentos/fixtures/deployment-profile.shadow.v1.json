@@ -1,0 +1,8 @@
+{
+  "profileVersion": "1.0.0",
+  "mode": "SHADOW",
+  "syntheticOnly": true,
+  "externalWritesEnabled": false,
+  "bomControleProduction": false,
+  "uiIntegrationApproved": false
+}

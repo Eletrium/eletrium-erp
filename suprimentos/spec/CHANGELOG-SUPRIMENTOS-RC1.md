@@ -13,6 +13,20 @@
 - UI isolada, piloto-sombra, massa sintética, fuzzing e testes de caos;
 - Gate H fechado com adapter Bom Controle exclusivamente simulado.
 
+## Endurecimento pós-RC1
+
+- cliente Graph com retry apenas para leituras seguras, timeout explícito e escrita de
+  efeito incerto sem repetição cega;
+- validação do domínio de `@odata.nextLink`, detecção de ciclo e limites máximos de
+  páginas e registros;
+- piloto-sombra comparativo por material, com cobertura mínima e promoção automática
+  proibida em qualquer divergência;
+- indicadores operacionais que bloqueiam promoção por reconciliação pendente, leitura
+  incompleta, conflito não resolvido ou taxa de erro acima do limite;
+- preflight de implantação que rejeita segredo em perfil, escrita externa em sombra e
+  produção sem homologação/interface aprovadas;
+- evidência JSON arquivada pela CI isolada por 30 dias.
+
 ## Compatibilidade
 
 O RC1 não modifica CRM, máquina de estados da OS, `suprimentos.html` ou helpers

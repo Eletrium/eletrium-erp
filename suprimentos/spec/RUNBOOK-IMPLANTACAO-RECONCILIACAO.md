@@ -3,11 +3,13 @@
 ## Pré-implantação
 
 1. executar `node tests/run-suprimentos.js`;
-2. comparar o snapshot SharePoint com `sharepoint-lists.v1.json`;
-3. bloquear se houver drift de tipo, concorrência, escritor único ou permissão;
-4. ativar somente `shadowMode`; manter Bom Controle produtivo invariavelmente desligado;
-5. provisionar service account sem acesso de escrita para CRM;
-6. configurar lease/fila distribuída com um consumidor efetivo por partição de material.
+2. executar `node suprimentos/tools/deployment-preflight.js`; qualquer modo acima de
+   `SHADOW` exige um perfil externo com referências de evidência, nunca segredos em texto;
+3. comparar o snapshot SharePoint com `sharepoint-lists.v1.json`;
+4. bloquear se houver drift de tipo, concorrência, escritor único ou permissão;
+5. ativar somente `shadowMode`; manter Bom Controle produtivo invariavelmente desligado;
+6. provisionar service account sem acesso de escrita para CRM;
+7. configurar lease/fila distribuída com um consumidor efetivo por partição de material.
 
 ## Implantação progressiva
 

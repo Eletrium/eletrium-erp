@@ -4,12 +4,15 @@
     { "id": "SUP-LEDGER-001", "gate": "SUP-B", "implementation": "suprimentos/core/ledger.js", "tests": ["tests/suprimentos-ledger.test.js", "tests/suprimentos-ledger-model-check.test.js"] },
     { "id": "SUP-IDEMP-001", "gate": "SUP-B", "implementation": "suprimentos/core/command-gateway.js", "tests": ["tests/suprimentos-command-gateway.test.js"] },
     { "id": "SUP-ETAG-001", "gate": "SUP-B", "implementation": "suprimentos/adapters/sharepoint-repository.js", "tests": ["tests/suprimentos-repository-outbox.test.js"] },
+    { "id": "SUP-GRAPH-002", "gate": "SUP-B", "implementation": "suprimentos/adapters/sharepoint-graph-client.js", "tests": ["tests/suprimentos-graph-hardening.test.js"] },
     { "id": "SUP-LEASE-001", "gate": "SUP-B", "implementation": "suprimentos/adapters/sharepoint-lease-store.js", "tests": ["tests/suprimentos-sharepoint-lease.test.js"] },
     { "id": "SUP-RECON-001", "gate": "SUP-F", "implementation": "suprimentos/core/reconciliation.js", "tests": ["tests/suprimentos-adapters-faults.test.js"] },
     { "id": "SUP-OS-001", "gate": "SUP-C", "implementation": "suprimentos/core/integration-contracts.js", "tests": ["tests/suprimentos-boundary-e2e.test.js"] },
     { "id": "SUP-FIN-001", "gate": "SUP-E", "implementation": "suprimentos/core/integration-contracts.js", "tests": ["tests/suprimentos-contract-schemas.test.js"] },
     { "id": "SUP-SEC-001", "gate": "SUP-F", "implementation": "suprimentos/core/security.js", "tests": ["tests/suprimentos-security.test.js", "tests/suprimentos-security-scan.test.js"] },
     { "id": "SUP-UI-001", "gate": "SUP-G", "implementation": "suprimentos/ui/components.js", "tests": ["tests/suprimentos-ui-components.test.js"] },
+    { "id": "SUP-SHADOW-002", "gate": "SUP-G", "implementation": "suprimentos/core/shadow-pilot.js", "tests": ["tests/suprimentos-shadow-operability.test.js"] },
+    { "id": "SUP-DEPLOY-001", "gate": "SUP-G", "implementation": "suprimentos/core/deployment-gate.js", "tests": ["tests/suprimentos-deployment-gate.test.js"] },
     { "id": "SUP-H-001", "gate": "SUP-H", "implementation": "suprimentos/adapters/bomcontrole-adapter.js", "tests": ["tests/suprimentos-bomcontrole-gate0.test.js"] }
   ]
 }
