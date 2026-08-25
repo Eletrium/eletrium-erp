@@ -1,0 +1,20 @@
+{
+  "supplier": {
+    "Fornecedor_ID": "forn-shadow-1",
+    "Documento_Fiscal": "00000000000191",
+    "Snapshot_Versao": 1,
+    "Idempotency_Key": "bc-supplier-shadow-1",
+    "Correlation_ID": "corr-bc-shadow-1"
+  },
+  "payable": {
+    "Obrigacao_ID": "obr-shadow-1",
+    "Pedido_ID": "po-shadow-1",
+    "Recebimento_ID": "receipt-shadow-1",
+    "Fornecedor_ID": "forn-shadow-1",
+    "Valor_Aceito": 100,
+    "Vencimento": "2026-09-30",
+    "Snapshot_Versao": 1,
+    "Idempotency_Key": "bc-payable-shadow-1",
+    "Correlation_ID": "corr-bc-shadow-1"
+  }
+}
