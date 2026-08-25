@@ -1,0 +1,124 @@
+{
+  "schemaVersion": "1.0.0",
+  "writerPolicy": "SINGLE_WRITER_SERVICE_ACCOUNT",
+  "paginationPolicy": {
+    "pageSize": 200,
+    "requireCompleteTraversal": true,
+    "rejectMissingNextLink": true
+  },
+  "lists": {
+    "Necessidades_Materiais": {
+      "concurrencyField": "Row_Version",
+      "unique": ["Necessidade_ID"],
+      "indexed": ["Necessidade_ID", "Projeto_ID", "Material_ID", "Status", "Data_Necessaria"],
+      "fields": {
+        "Necessidade_ID": "Text:64:required",
+        "Projeto_ID": "Text:64:required",
+        "EAP_ID": "Text:64:optional",
+        "Pacote_ID": "Text:64:optional",
+        "OS_ID": "Text:64:optional",
+        "Item_ID": "Text:64:required",
+        "Material_ID": "Text:64:required",
+        "Origem_Material": "Choice:ELETRIUM|CLIENTE|MISTA:required",
+        "Quantidade_Planejada": "Number:required",
+        "Quantidade_Atendida": "Number:required",
+        "Snapshot_Versao": "Integer:required",
+        "Row_Version": "Integer:required",
+        "Status": "Text:32:required"
+      }
+    },
+    "Reservas_Estoque": {
+      "appendOnly": true,
+      "concurrencyField": "Row_Version",
+      "unique": ["Reserva_ID", "Idempotency_Key"],
+      "indexed": ["Reserva_ID", "Necessidade_ID", "Material_ID", "Documento_ID", "Idempotency_Key", "Correlation_ID"],
+      "fields": {
+        "Reserva_ID": "Text:96:required",
+        "Necessidade_ID": "Text:64:required",
+        "Material_ID": "Text:64:required",
+        "Quantidade": "Number:required",
+        "Tipo": "Choice:RESERVA|LIBERACAO|CONSUMO|COMPENSACAO:required",
+        "Documento_ID": "Text:64:required",
+        "Documento_Versao": "Integer:required",
+        "Item_ID": "Text:64:required",
+        "Idempotency_Key": "Text:160:required",
+        "Correlation_ID": "Text:96:required",
+        "Row_Version": "Integer:required",
+        "Created_At": "DateTime:required"
+      }
+    },
+    "Movimentacoes_Estoque": {
+      "appendOnly": true,
+      "unique": ["Movimento_ID", "Idempotency_Key"],
+      "indexed": ["Movimento_ID", "Material_ID", "Documento_ID", "Idempotency_Key", "Correlation_ID", "Created_At"],
+      "fields": {
+        "Movimento_ID": "Text:96:required",
+        "Material_ID": "Text:64:required",
+        "Tipo": "Choice:ENTRADA|SAIDA|AJUSTE|DEVOLUCAO|TRANSFERENCIA:required",
+        "Quantidade": "Number:required",
+        "Documento_ID": "Text:64:required",
+        "Documento_Versao": "Integer:required",
+        "Item_ID": "Text:64:required",
+        "Idempotency_Key": "Text:160:required",
+        "Correlation_ID": "Text:96:required",
+        "Created_At": "DateTime:required"
+      }
+    },
+    "Estoque_Projetado": {
+      "derived": true,
+      "concurrencyField": "Projection_Version",
+      "unique": ["Material_ID"],
+      "indexed": ["Material_ID", "Projection_Version", "Reconciled_At"],
+      "fields": {
+        "Material_ID": "Text:64:required",
+        "Estoque_Fisico": "Number:required",
+        "Reservado_Valido": "Number:required",
+        "Disponivel": "Number:required",
+        "Ultimo_Movimento_ID": "Text:96:optional",
+        "Projection_Version": "Integer:required",
+        "Reconciled_At": "DateTime:required"
+      }
+    },
+    "Eventos_Integracao": {
+      "concurrencyField": "Row_Version",
+      "unique": ["Evento_ID", "Idempotency_Key", "Entidade+Entity_ID+Sequence"],
+      "indexed": ["Evento_ID", "Entidade", "Entity_ID", "Status", "Idempotency_Key", "Correlation_ID", "Updated_At"],
+      "fields": {
+        "Evento_ID": "Text:96:required",
+        "Entidade": "Text:64:required",
+        "Entity_ID": "Text:96:required",
+        "Sequence": "Integer:required",
+        "Idempotency_Key": "Text:160:required",
+        "Correlation_ID": "Text:96:required",
+        "Status": "Text:32:required",
+        "Retry_Count": "Integer:required",
+        "Row_Version": "Integer:required",
+        "Created_At": "DateTime:required",
+        "Updated_At": "DateTime:required"
+      }
+    },
+    "Parametros_Alcadas": {
+      "appendOnly": true,
+      "unique": ["Parametro_ID", "Idempotency_Key", "Chave+Versao"],
+      "indexed": ["Parametro_ID", "Chave", "Versao", "Status", "Vigente_Desde"],
+      "fields": {
+        "Parametro_ID": "Text:64:required",
+        "Chave": "Text:96:required",
+        "Versao": "Integer:required",
+        "Valor": "Note:required",
+        "Vigente_Desde": "DateTime:required",
+        "Status": "Text:32:required",
+        "Idempotency_Key": "Text:160:required",
+        "Created_At": "DateTime:required"
+      }
+    }
+  },
+  "permissions": {
+    "SUPRIMENTOS_SERVICE": ["read", "append", "conditional_update_projection"],
+    "SUPRIMENTOS_OPERADOR": ["read", "submit_command"],
+    "SUPRIMENTOS_GESTOR": ["read", "approve", "manual_retry"],
+    "AUDITORIA": ["read"],
+    "CRM_SERVICE": [],
+    "OS_SERVICE": ["read_contract_ids", "submit_consumption_command"]
+  }
+}

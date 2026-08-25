@@ -118,5 +118,13 @@ contexto de decisões passadas.
 Os cinco testes estão implementados em `tests/suprimentos-contracts.test.js`. O Gate A
 fica tecnicamente fechado no núcleo; homologação de adapter continua fora deste PR.
 
+## Contrato físico SharePoint
+
+`suprimentos/contracts/sharepoint-lists.v1.json` define listas, colunas, índices,
+unicidade, paginação, escritor único e permissões. O provisionador
+`suprimentos/core/sharepoint-provisioning.js` opera em dry-run por padrão, bloqueia
+alteração destrutiva de tipo e exige `allowLiveProvisioning` explícito para qualquer
+efeito externo. Nenhum recurso SharePoint foi criado nesta etapa.
+
 ## Não colisão
 Nenhuma alteração em `inbound.html`, `reaquecimento.html`, `os.html`, `outbox.js` ou fluxos de CRM/OS. A integração com OS será somente por contrato de IDs até a branch de OS ser liberada.
