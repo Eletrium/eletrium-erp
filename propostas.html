@@ -107,6 +107,10 @@
     .hist .l .tag-inval { color: #e3b341; font-size: .74rem; }
     .hist .l .tag-vale { color: #7ee2a8; font-size: .74rem; }
     .motivo-off { color: #8b949e; font-size: .78rem; margin-top: 6px; }
+    /* Registrar Venda Ganha (item 12/CRM-3): confirmação de Tipo_Entrega —
+       nenhuma opção pré-marcada, escolha explícita sempre exigida. */
+    .vg-tipo-opcoes { display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0 4px; }
+    .vg-tipo-opcoes label { display: flex; align-items: center; gap: 6px; font-size: .86rem; color: #e6edf3; cursor: pointer; }
   </style>
 </head>
 <body>
@@ -407,10 +411,12 @@
         <div class="drawer-head"><div class="t">${esc(f.Title ?? "(sem número)")}</div><button class="x" id="dc">Fechar ✕</button></div>
         <div class="drawer-body"><dl>${rows}</dl>
           ${blocoOferta(p)}
+          ${blocoVendaGanha(p)}
           ${blocoEdicao(f)}
         </div>`;
       $("dc").onclick = closeDrawer;
       ligarOferta(p);
+      ligarVendaGanha(p);
       ligarEdicao(p);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
@@ -708,6 +714,232 @@
     }
 
     /* ==================================================================
+       REGISTRAR VENDA GANHA (comando RegistrarVendaGanha, desenho travado
+       pelo CRM-2 — máquina de estados + congelamento de dados). O comando
+       ainda NÃO existe no backend (Power Automate — ver relatório CRM-G2,
+       §20.6/§22.6): a lógica/validação/payload abaixo são reais e
+       testadas; só a CHAMADA (registrarVendaGanhaStub) é mockada. Todo
+       texto visível ao usuário rotula "STUB" — nunca finge uma gravação
+       que não aconteceu (princípio central da missão CRM).
+
+       Tipo_Entrega: Choice real já decidido pelo dono — OS_SIMPLES /
+       PROJETO / VENDA_MATERIAL. Nunca herança silenciosa: nenhuma opção
+       nasce pré-marcada, mesmo quando bate com a sugestão automática —
+       o botão de confirmar só libera com uma escolha explícita.
+
+       Valor_Final: pré-preenchido do VALOR DA OFERTA CONGELADA vigente
+       (Valor_Total_Congelado no ledger, não o ValorTotal mutável da
+       proposta — é o "congelamento de dados" que o CRM-2 travou).
+       Editável; se divergir do valor congelado, exige justificativa antes
+       de liberar o confirmar.
+       ================================================================== */
+    const TIPO_ENTREGA_SUGESTAO = {
+      "Fornecimento de Materiais": { tipo: "VENDA_MATERIAL", motivo: "é venda de material, sem serviço em campo." },
+      "Laudo Técnico": { tipo: "PROJETO", motivo: "é entrega de documento/projeto, não execução em campo." },
+      "Projeto Elétrico": { tipo: "PROJETO", motivo: "é entrega de documento/projeto, não execução em campo." }
+    };
+    function sugerirTipoEntrega(tipoServico) {
+      if (!tipoServico) return { tipo: "OS_SIMPLES", motivo: "Tipo de serviço da proposta não informado — default de segurança (a maioria do catálogo é OS de campo)." };
+      const sug = TIPO_ENTREGA_SUGESTAO[tipoServico];
+      if (sug) return { tipo: sug.tipo, motivo: "“" + tipoServico + "” " + sug.motivo };
+      return { tipo: "OS_SIMPLES", motivo: "“" + tipoServico + "” é execução em campo — OS simples." };
+    }
+
+    // valor da versão CONGELADA vigente (não o ValorTotal mutável) — referência
+    // pra checar divergência. null se não há oferta congelada vigente.
+    function valorOfertaCongelada(av) {
+      if (!av || !av.hashVigente || !Array.isArray(av.versoes)) return null;
+      const linha = av.versoes.find(v => OFERTA.txt((v.fields || {}).Hash_SHA256) === av.hashVigente);
+      const vt = linha && linha.fields && linha.fields.Valor_Total_Congelado;
+      return vt != null ? Number(vt) : null;
+    }
+
+    // comparação em CENTAVOS — evita falso positivo por ruído de ponto flutuante.
+    // sem valor congelado (proposta sem oferta congelada) não há o que divergir.
+    function valorDivergente(valorFinal, valorCongelado) {
+      if (valorCongelado == null) return false;
+      const a = Math.round(Number(valorFinal) * 100), b = Math.round(Number(valorCongelado) * 100);
+      return !isNaN(a) && a !== b;
+    }
+
+    const TIPOS_ENTREGA_VALIDOS = ["OS_SIMPLES", "PROJETO", "VENDA_MATERIAL"];
+
+    // validação pura dos 5 campos do comando + a justificativa condicional.
+    function validarVendaGanha(d) {
+      const faltando = [];
+      if (d.valor == null || d.valor === "" || isNaN(Number(d.valor)) || Number(d.valor) <= 0) faltando.push("Valor final (maior que zero)");
+      if (!d.escopo || !String(d.escopo).trim()) faltando.push("Escopo");
+      if (!d.condicoes || !String(d.condicoes).trim()) faltando.push("Condições");
+      if (!d.responsavel || !String(d.responsavel).trim()) faltando.push("Responsável");
+      if (!TIPOS_ENTREGA_VALIDOS.includes(d.tipoEntrega)) faltando.push("Tipo de entrega (confirme ou escolha)");
+      if (valorDivergente(d.valor, d.valorCongelado) && (!d.justificativaDivergencia || !String(d.justificativaDivergencia).trim()))
+        faltando.push("Justificativa da divergência de valor");
+      return { ok: faltando.length === 0, faltando: faltando };
+    }
+
+    // monta o payload do comando — função pura, testável sem rede/DOM.
+    // agora/quem SEMPRE vêm de fora (nunca new Date()/EG.getAccount() aqui dentro).
+    function montarPayloadVendaGanha(p, d, quem) {
+      const f = (p && p.fields) || {};
+      const av = (p && p._avaliar) || {};
+      const divergiu = valorDivergente(d.valor, d.valorCongelado);
+      return {
+        comando: "RegistrarVendaGanha",
+        proposta_id: p.id,
+        proposta_numero: f.Title ?? null,
+        cliente_id: f.ClienteLookupId ?? null,
+        cliente_nome: d.clienteNome ?? null,
+        oferta_versao: av.versaoVigente ?? null,
+        oferta_hash: av.hashVigente ?? null,
+        valor_final: Number(d.valor),
+        escopo_final: String(d.escopo).trim(),
+        condicoes_finais: String(d.condicoes).trim(),
+        responsavel: String(d.responsavel).trim(),
+        tipo_entrega: d.tipoEntrega,
+        tipo_entrega_sugerido_automaticamente: !!d.tipoEntregaAutoSugerido,
+        divergencia_valor: divergiu,
+        justificativa_divergencia_valor: divergiu ? String(d.justificativaDivergencia || "").trim() : null,
+        registrado_por: quem,
+        registrado_em: d.agora
+      };
+    }
+
+    // ---- CHAMADA MOCKADA (STUB) — comando real ainda não existe no backend ----
+    async function registrarVendaGanhaStub(payload) {
+      await new Promise((r) => setTimeout(r, 500)); // simula latência de rede
+      console.info("[venda-ganha][STUB] payload que seria enviado ao comando RegistrarVendaGanha:", payload);
+      return { ok: true, stub: true };
+    }
+
+    function blocoVendaGanha(p) {
+      const f = p.fields || {};
+      if (!ehAtiva(f)) return ""; // Ganho/Perdido: o comando não se aplica mais
+      const av = avaliar(p);
+      const sug = sugerirTipoEntrega(f.Tipo_Servico_Proposta);
+      const semOfertaCongelada = !av.hashVigente;
+
+      const opcoesEntrega = TIPOS_ENTREGA_VALIDOS.map((t) =>
+        `<label><input type="radio" name="vgTipoEntrega" value="${esc(t)}" /> ${esc(t)}</label>`
+      ).join("");
+
+      return `
+        <div class="grupo">Fechamento</div>
+        ${semOfertaCongelada
+          ? `<div class="publinfo">ℹ️ Sem oferta congelada vigente — registrar a venda é permitido, mas não há valor de referência pra checar divergência.</div>`
+          : ""}
+        <button id="vgToggle" class="sec" style="margin-top:8px">Registrar Venda Ganha</button>
+        <div id="vgForm" class="ed" hidden>
+          <div class="l" style="border:0;padding-top:0">
+            <span class="sha">cliente: ${esc(cliNome(f))}</span><br>
+            <span class="sha">proposta: ${esc(f.Title ?? "—")}</span><br>
+            <span class="sha">versão da oferta congelada: ${av.versaoVigente != null ? "v" + esc(av.versaoVigente) : "— (nenhuma congelada)"}</span>
+          </div>
+          <label>Valor final <input type="number" id="vgValor" step="0.01" min="0" /></label>
+          <div id="vgDivergenciaWrap" hidden>
+            <div class="diverge">⚠️ O valor final diverge do valor da oferta congelada. Justifique antes de confirmar.</div>
+            <label>Justificativa da divergência <textarea id="vgJustificativa" placeholder="ex.: desconto aprovado na negociação final"></textarea></label>
+          </div>
+          <label>Escopo <textarea id="vgEscopo"></textarea></label>
+          <label>Condições <textarea id="vgCondicoes"></textarea></label>
+          <label>Responsável <input type="text" id="vgResponsavel" maxlength="255" /></label>
+          <div class="grupo" style="margin-top:10px">Tipo de entrega — confirme ou escolha outro</div>
+          <div class="motivo-off">Sugestão automática: <b>${esc(sug.tipo)}</b> — ${esc(sug.motivo)}</div>
+          <div class="vg-tipo-opcoes">${opcoesEntrega}</div>
+          <div class="ed-btns" style="margin-top:12px">
+            <button id="vgConfirmar" disabled>Confirmar Venda Ganha</button>
+            <button id="vgCancelar" class="sec">Cancelar</button>
+          </div>
+          <div id="vgMsg" class="ed-msg"></div>
+          <div class="motivo-off" style="margin-top:6px">🧪 STUB — o comando RegistrarVendaGanha ainda não existe no backend. Nada é gravado de verdade; esta chamada valida o formulário e mostra o payload no console.</div>
+        </div>`;
+    }
+
+    function ligarVendaGanha(p) {
+      const tg = $("vgToggle"), form = $("vgForm");
+      if (!tg || !form) return;
+      const f = p.fields || {};
+      const av = avaliar(p);
+      const valorCongelado = valorOfertaCongelada(av);
+      const sug = sugerirTipoEntrega(f.Tipo_Servico_Proposta);
+
+      tg.onclick = () => { form.hidden = false; tg.hidden = true; };
+      $("vgCancelar").onclick = () => openDrawer(p); // descarta o rascunho, re-renderiza do estado em memória
+
+      $("vgValor").value = valorCongelado != null ? valorCongelado : (f.ValorTotal != null ? f.ValorTotal : "");
+      $("vgEscopo").value = f.Descricao || "";
+      $("vgCondicoes").value = [f.FormaPagamento, f.PrazoExecucao].filter(Boolean).join(" — ");
+      $("vgResponsavel").value = f.Responsavel_Principal || "";
+
+      const btnConfirmar = $("vgConfirmar");
+      const radios = Array.from(form.querySelectorAll('input[name="vgTipoEntrega"]'));
+
+      function atualizarEstadoConfirmar() {
+        const tipoEscolhido = (radios.find((r) => r.checked) || {}).value;
+        const valor = $("vgValor").value;
+        const valorValido = valor !== "" && !isNaN(Number(valor)) && Number(valor) > 0;
+        const divergiu = valorValido && valorDivergente(valor, valorCongelado);
+        $("vgDivergenciaWrap").hidden = !divergiu;
+        const dados = {
+          valor: valor, escopo: $("vgEscopo").value, condicoes: $("vgCondicoes").value,
+          responsavel: $("vgResponsavel").value, tipoEntrega: tipoEscolhido, valorCongelado: valorCongelado,
+          justificativaDivergencia: $("vgJustificativa") ? $("vgJustificativa").value : ""
+        };
+        btnConfirmar.disabled = !validarVendaGanha(dados).ok;
+      }
+
+      ["vgValor", "vgEscopo", "vgCondicoes", "vgResponsavel"].forEach((id) => $(id).addEventListener("input", atualizarEstadoConfirmar));
+      radios.forEach((r) => r.addEventListener("change", atualizarEstadoConfirmar));
+      // #vgJustificativa só existe no DOM quando a divergência aparece — delega no form.
+      form.addEventListener("input", (e) => { if (e.target && e.target.id === "vgJustificativa") atualizarEstadoConfirmar(); });
+      atualizarEstadoConfirmar();
+
+      btnConfirmar.onclick = () => confirmarVendaGanha(p, valorCongelado, sug);
+    }
+
+    let gravandoVendaGanha = false;
+    async function confirmarVendaGanha(p, valorCongelado, sug) {
+      if (gravandoVendaGanha) return;
+      const msg = $("vgMsg");
+      const radios = Array.from(document.querySelectorAll('input[name="vgTipoEntrega"]'));
+      const escolhido = radios.find((r) => r.checked);
+      const tipoEntrega = escolhido ? escolhido.value : null;
+      const dados = {
+        valor: $("vgValor").value,
+        escopo: $("vgEscopo").value,
+        condicoes: $("vgCondicoes").value,
+        responsavel: $("vgResponsavel").value,
+        tipoEntrega: tipoEntrega,
+        tipoEntregaAutoSugerido: !!(escolhido && escolhido.value === sug.tipo),
+        valorCongelado: valorCongelado,
+        justificativaDivergencia: $("vgJustificativa") ? $("vgJustificativa").value : "",
+        clienteNome: cliNome(p.fields || {}),
+        agora: new Date().toISOString()
+      };
+      const v = validarVendaGanha(dados);
+      if (!v.ok) { msg.className = "ed-msg err"; msg.textContent = "Faltando: " + v.faltando.join(", ") + "."; return; }
+
+      const btns = [$("vgConfirmar"), $("vgCancelar")];
+      try {
+        gravandoVendaGanha = true;
+        btns.forEach((b) => { if (b) b.disabled = true; });
+        $("vgConfirmar").textContent = "Confirmando (STUB)…";
+        msg.className = "ed-msg"; msg.textContent = "Validando e montando o payload...";
+        const av = avaliar(p);
+        const payload = montarPayloadVendaGanha({ id: p.id, fields: p.fields, _avaliar: av }, dados, quemSou());
+        await registrarVendaGanhaStub(payload);
+        msg.className = "ed-msg";
+        msg.textContent = "🧪 STUB: payload validado e pronto — nada foi gravado de verdade (o comando ainda não existe no backend). Payload completo no console.";
+      } catch (e) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Falha no stub (não deveria acontecer): " + e.message;
+      } finally {
+        gravandoVendaGanha = false;
+        btns.forEach((b) => { if (b) b.disabled = false; });
+        $("vgConfirmar").textContent = "Confirmar Venda Ganha";
+      }
+    }
+
+    /* ==================================================================
        EDIÇÃO DE OPERAÇÃO — uma das TRÊS escritas desta tela (as outras
        duas são congelarOferta e registrarAceite, acima). Nenhum dos campos
        editáveis aqui entra no hash da oferta: trocar responsável ou
@@ -866,7 +1098,9 @@
 
     /* Exposto para exercitar as regras sem login (a tela não tinha global). */
     window.PROP = { dataChave, hojeChave, ehAtiva, ETAPAS_FINAIS, normOrig, paraGraph,
-                    CAMPOS_EDIT, toDateInput, blocoEdicao, shaCurto };
+                    CAMPOS_EDIT, toDateInput, blocoEdicao, shaCurto,
+                    sugerirTipoEntrega, valorOfertaCongelada, valorDivergente, validarVendaGanha,
+                    montarPayloadVendaGanha, blocoVendaGanha, TIPOS_ENTREGA_VALIDOS };
 
     /* =========================================================================
        SUITE DE ASSERÇÃO (item 12) — PROP.assertRegras(). Regras protegidas:
@@ -950,6 +1184,87 @@
 
       ok(shaCurto("0123456789abcdef0123").indexOf("…") > 0 && !shaCurto("") && !shaCurto(null),
         "shaCurto: hash ausente não pode virar um '…' solto na tela (vazio é vazio)");
+
+      // ---- Registrar Venda Ganha (item 12/CRM-3, despacho 21/08) ----
+      // comando ainda não existe no backend: nada aqui pode fingir gravação real.
+      ok(sugerirTipoEntrega("Fornecimento de Materiais").tipo === "VENDA_MATERIAL",
+        "sugerirTipoEntrega: fornecimento de materiais sugere VENDA_MATERIAL");
+      ok(sugerirTipoEntrega("Laudo Técnico").tipo === "PROJETO" && sugerirTipoEntrega("Projeto Elétrico").tipo === "PROJETO",
+        "sugerirTipoEntrega: laudo/projeto sugerem PROJETO");
+      ok(sugerirTipoEntrega("SPDA").tipo === "OS_SIMPLES" && sugerirTipoEntrega("NR-10").tipo === "OS_SIMPLES",
+        "sugerirTipoEntrega: execução em campo (SPDA, NR-10, etc.) sugere OS_SIMPLES");
+      ok(sugerirTipoEntrega(null).tipo === "OS_SIMPLES" && sugerirTipoEntrega("").tipo === "OS_SIMPLES",
+        "sugerirTipoEntrega: sem tipo de serviço, default de segurança é OS_SIMPLES (nunca trava vazio)");
+
+      const avFake = (hashVigente, versoes) => ({ hashVigente: hashVigente, versoes: versoes || [] });
+      ok(valorOfertaCongelada(avFake(null, [])) === null,
+        "valorOfertaCongelada: sem oferta congelada vigente, não há valor de referência (null, não 0)");
+      ok(valorOfertaCongelada(avFake("h1", [{ fields: { Hash_SHA256: "h1", Valor_Total_Congelado: 45890 } }])) === 45890,
+        "valorOfertaCongelada: acha a linha do ledger que bate com o hash vigente e devolve o valor congelado");
+      ok(valorOfertaCongelada(avFake("h9", [{ fields: { Hash_SHA256: "h1", Valor_Total_Congelado: 45890 } }])) === null,
+        "valorOfertaCongelada: ponteiro fora do ledger (hash vigente não bate com nenhuma linha) devolve null, não adivinha");
+
+      ok(valorDivergente(1500.5, 1500.50) === false,
+        "valorDivergente: 1500.5 e 1500.50 são o MESMO valor — comparação em centavos, sem ruído de ponto flutuante");
+      ok(valorDivergente(1500.51, 1500.50) === true,
+        "valorDivergente: 1 centavo de diferença já conta como divergência");
+      ok(valorDivergente(99999, null) === false,
+        "valorDivergente: sem valor congelado (proposta sem oferta) não há o que divergir — nunca falso positivo");
+
+      const dVG = (over) => Object.assign({ valor: 45890, escopo: "x", condicoes: "y", responsavel: "z", tipoEntrega: "OS_SIMPLES", valorCongelado: 45890 }, over || {});
+      ok(validarVendaGanha(dVG()).ok === true,
+        "validarVendaGanha: os 5 campos preenchidos e sem divergência passam");
+      ok(validarVendaGanha({}).ok === false && validarVendaGanha({}).faltando.length === 5,
+        "validarVendaGanha: formulário vazio reporta os 5 campos obrigatórios (nenhum omitido)");
+      ok(validarVendaGanha(dVG({ valor: 0 })).ok === false,
+        "validarVendaGanha: valor final tem de ser MAIOR que zero — venda ganha de graça é dado sujo");
+      ok(validarVendaGanha(dVG({ tipoEntrega: "" })).faltando.indexOf("Tipo de entrega (confirme ou escolha)") > -1,
+        "validarVendaGanha: Tipo_Entrega vazio (nenhum radio marcado) É REPROVADO — nunca herança silenciosa da sugestão");
+      ok(validarVendaGanha(dVG({ tipoEntrega: "algo-inventado" })).ok === false,
+        "validarVendaGanha: Tipo_Entrega fora dos 3 valores reais é reprovado");
+      ok(validarVendaGanha(dVG({ valor: 40000 })).faltando.indexOf("Justificativa da divergência de valor") > -1,
+        "validarVendaGanha: valor divergente do congelado SEM justificativa é reprovado");
+      ok(validarVendaGanha(dVG({ valor: 40000, justificativaDivergencia: "desconto aprovado" })).ok === true,
+        "validarVendaGanha: valor divergente COM justificativa passa");
+
+      const payloadVG = montarPayloadVendaGanha(
+        { id: "abc123", fields: { Title: "PROP-1", ClienteLookupId: 42 }, _avaliar: { versaoVigente: 3, hashVigente: "deadbeef" } },
+        { clienteNome: "Cliente X", valor: "1500.5", escopo: " Instalação SPDA ", condicoes: " 30 dias ", responsavel: " Fulano ",
+          tipoEntrega: "OS_SIMPLES", tipoEntregaAutoSugerido: true, valorCongelado: 1500.5, agora: "2026-08-21T12:00:00.000Z" },
+        "fulano@eletrium.com.br"
+      );
+      ok(payloadVG.comando === "RegistrarVendaGanha" && payloadVG.proposta_id === "abc123",
+        "montarPayloadVendaGanha: identifica o comando e a proposta");
+      ok(payloadVG.oferta_versao === 3 && payloadVG.oferta_hash === "deadbeef",
+        "montarPayloadVendaGanha: carrega versão/hash vigente da oferta (congelamento de dados travado pelo CRM-2)");
+      ok(payloadVG.valor_final === 1500.5 && typeof payloadVG.valor_final === "number",
+        "montarPayloadVendaGanha: valor final vira number, não string do input");
+      ok(payloadVG.escopo_final === "Instalação SPDA" && payloadVG.condicoes_finais === "30 dias" && payloadVG.responsavel === "Fulano",
+        "montarPayloadVendaGanha: texto do formulário grava com trim");
+      ok(payloadVG.divergencia_valor === false && payloadVG.justificativa_divergencia_valor === null,
+        "montarPayloadVendaGanha: sem divergência, justificativa vai null (não string vazia)");
+      const payloadDivergente = montarPayloadVendaGanha(
+        { id: "abc123", fields: {}, _avaliar: {} },
+        { valor: "40000", escopo: "x", condicoes: "y", responsavel: "z", tipoEntrega: "OS_SIMPLES",
+          valorCongelado: 45890, justificativaDivergencia: " desconto aprovado ", agora: "2026-08-21T12:00:00.000Z" },
+        "fulano@eletrium.com.br"
+      );
+      ok(payloadDivergente.divergencia_valor === true && payloadDivergente.justificativa_divergencia_valor === "desconto aprovado",
+        "montarPayloadVendaGanha: divergência marcada e justificativa gravada com trim");
+
+      const bVGFechada = blocoVendaGanha({ fields: { Etapa_Pipeline: "Ganho" } });
+      const bVGPerdida = blocoVendaGanha({ fields: { Etapa_Pipeline: "Perdido" } });
+      ok(bVGFechada === "" && bVGPerdida === "",
+        "blocoVendaGanha: não aparece em proposta já fechada (Ganho/Perdido) — o comando não se aplica mais");
+      const bVGAtiva = blocoVendaGanha({ fields: { Etapa_Pipeline: "Qualificado" } });
+      ok(bVGAtiva.indexOf('name="vgTipoEntrega"') > -1 && (bVGAtiva.match(/type="radio"/g) || []).length === 3,
+        "blocoVendaGanha: proposta ativa mostra as 3 opções de Tipo_Entrega, nenhuma marcada por padrão (sem 'checked' no HTML)");
+      ok(bVGAtiva.indexOf("checked") === -1,
+        "blocoVendaGanha: nenhum radio nasce marcado — confirmação sempre explícita, mesmo quando bate com a sugestão");
+      ok(bVGAtiva.indexOf('id="vgConfirmar" disabled') > -1,
+        "blocoVendaGanha: botão de confirmar nasce desabilitado — só libera depois de validarVendaGanha passar (via ligarVendaGanha)");
+      ok(bVGAtiva.indexOf("STUB") > -1,
+        "blocoVendaGanha: rótulo STUB sempre visível — comando real ainda não existe no backend");
 
       const r = { ok: falhas.length === 0, total, falhas };
       console.log("PROP.assertRegras:", JSON.stringify(r, null, 2));
