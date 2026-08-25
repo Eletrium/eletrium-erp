@@ -22,6 +22,7 @@ const required = [
   'suprimentos/integration/legacy-ui-bridge.js', 'suprimentos/integration/suprimentos-html.proposed.patch',
   'suprimentos/integration/os-consumption-producer.js', 'suprimentos/adapters/sharepoint-live-port.js',
   'suprimentos/tools/sharepoint-live-readonly.js',
+  'suprimentos/fixtures/sharepoint-graph-explorer-readonly-batch.v1.json',
   'suprimentos/spec/CHANGELOG-SUPRIMENTOS-RC1.md', 'suprimentos/spec/RUNBOOK-IMPLANTACAO-RECONCILIACAO.md'
 ];
 const checks = [

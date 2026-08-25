@@ -1,0 +1,20 @@
+{
+  "requests": [
+    { "id": "site", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP?$select=id,displayName,webUrl" },
+    { "id": "lists", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists?$select=id,name,displayName" },
+    { "id": "columns-needs", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Necessidades_Materiais/columns?$top=200" },
+    { "id": "columns-reservations", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Reservas_Estoque/columns?$top=200" },
+    { "id": "columns-movements", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Movimentacoes_Estoque/columns?$top=200" },
+    { "id": "columns-projection", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Estoque_Projetado/columns?$top=200" },
+    { "id": "columns-integration", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Eventos_Integracao/columns?$top=200" },
+    { "id": "columns-parameters", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Parametros_Alcadas/columns?$top=200" },
+    { "id": "columns-leases", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Leases_Processamento/columns?$top=200" },
+    { "id": "access-needs", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Necessidades_Materiais/items?$top=1&$select=id" },
+    { "id": "access-reservations", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Reservas_Estoque/items?$top=1&$select=id" },
+    { "id": "access-movements", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Movimentacoes_Estoque/items?$top=1&$select=id" },
+    { "id": "access-projection", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Estoque_Projetado/items?$top=1&$select=id" },
+    { "id": "access-integration", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Eventos_Integracao/items?$top=1&$select=id" },
+    { "id": "access-parameters", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Parametros_Alcadas/items?$top=1&$select=id" },
+    { "id": "access-leases", "method": "GET", "url": "/sites/gwtecheletrica.sharepoint.com:/sites/EletriumERP:/lists/Leases_Processamento/items?$top=1&$select=id" }
+  ]
+}
