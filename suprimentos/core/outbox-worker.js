@@ -11,7 +11,8 @@
     var clock = options.clock || function () { return new Date().toISOString(); };
     function backoff(retry) { return Math.min(3600000, 1000 * Math.pow(2, retry)); }
     async function runOnce(limit) {
-      var now = clock(); var claimed = await store.claim(owner, now, Number(limit || 20), leaseMs); var results = [];
+      var now = clock(); if (typeof store.recoverExpired === 'function') await store.recoverExpired(now);
+      var claimed = await store.claim(owner, now, Number(limit || 20), leaseMs); var results = [];
       for (const event of claimed) {
         try {
           var receipt = await sender.send(event);

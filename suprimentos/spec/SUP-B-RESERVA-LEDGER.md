@@ -107,5 +107,10 @@ reconstrução. `core/outbox-worker.js` e `adapters/in-memory-outbox-store.js` d
 consumer com lease, backoff e limite de retry. Efeito externo incerto vai para
 `RECONCILIATION_PENDING`; não há retry cego depois de timeout de envio.
 
+`adapters/sharepoint-lease-store.js` implementa lease distribuído com ETag e fencing
+token; um worker antigo não pode liberar ou renovar o lease assumido por outro.
+`adapters/sharepoint-homologation.js` executa captura de schema e paginação em modo
+somente leitura, exigindo uma segunda trava explícita para o probe de escrita condicional.
+
 ## Não colisão
 Nenhuma alteração em código de CRM/OS. Persistência fica atrás de adapter próprio `suprimentos/*`; integração com telas atuais só ocorre após Gate A e revisão de conflito.
