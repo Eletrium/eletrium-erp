@@ -78,6 +78,27 @@ Projeção derivada e reconciliável; nunca fonte primária.
 - Payload_Version
 - Created_At / Updated_At
 
+### Parametros_Alcadas
+Contrato append-only e versionado para impedir que uma alteração de regra reescreva o
+contexto de decisões passadas.
+- Parametro_ID
+- Chave / Versao / Valor
+- Vigente_Desde / Status
+- Idempotency_Key
+- Created_At
+
+## Implementação de referência
+
+- `suprimentos/contracts/entities.v1.json` v1.1.0 contém as cinco entidades canônicas,
+  o contrato de parâmetros/alçadas, relações por IDs, restrições únicas e campos de
+  concorrência;
+- `suprimentos/core/contracts.js` valida campos obrigatórios e enums, aplica unicidade
+  simples/composta, executa atualização condicional por versão, lê paginação até o fim
+  ou gera erro explícito e compara projeções reconstruídas/persistidas;
+- o núcleo é UMD e não conhece interface, CRM, OS, SharePoint ou Bom Controle. O adapter
+  persistente futuro deve traduzir a atualização condicional para ETag/If-Match ou CAS
+  equivalente.
+
 ## Regras de integridade
 1. IDs, nunca descrições, formam relacionamentos.
 2. Idempotency_Key é obrigatória em toda escrita crítica.
@@ -93,6 +114,9 @@ Projeção derivada e reconciliável; nunca fonte primária.
 - SUP-DAT-003: detectar Row_Version obsoleta.
 - SUP-DAT-004: paginação retorna conjunto integral ou erro explícito.
 - SUP-DAT-005: projeção divergente é reconciliável a partir dos ledgers.
+
+Os cinco testes estão implementados em `tests/suprimentos-contracts.test.js`. O Gate A
+fica tecnicamente fechado no núcleo; homologação de adapter continua fora deste PR.
 
 ## Não colisão
 Nenhuma alteração em `inbound.html`, `reaquecimento.html`, `os.html`, `outbox.js` ou fluxos de CRM/OS. A integração com OS será somente por contrato de IDs até a branch de OS ser liberada.
