@@ -74,5 +74,18 @@ chamada produtiva foi introduzida nesta frente.
 Além dos gates formais, a suíte cobre `release()`, `consume()`, reconstrução integral e
 reconciliação de projeção divergente.
 
+## Adapters e falhas combinadas
+
+- `adapters/in-memory-ledger-store.js`: referência transacional e injeção controlada de
+  falhas antes/depois do commit e após escrita parcial;
+- `adapters/sharepoint-ledger-adapter.js`: porta injetável que exige leitura completa,
+  idempotência e `commitAtomic` com ETags;
+- `core/reconciliation.js`: detecta projeção divergente e consumo sem movimento, gera
+  plano de reparo e rascunhos de `RECONCILIACAO_PENDENTE`;
+- `tests/suprimentos-adapters-faults.test.js`: perda de ACK, ETag 412, paginação
+  incompleta e falha parcial sem silêncio.
+
+O adapter SharePoint real permanece não configurado; somente o contrato foi implementado.
+
 ## Não colisão
 Nenhuma alteração em código de CRM/OS. Persistência fica atrás de adapter próprio `suprimentos/*`; integração com telas atuais só ocorre após Gate A e revisão de conflito.
