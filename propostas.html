@@ -412,11 +412,13 @@
         <div class="drawer-body"><dl>${rows}</dl>
           ${blocoOferta(p)}
           ${blocoVendaGanha(p)}
+          ${blocoReabrirProposta(p)}
           ${blocoEdicao(f)}
         </div>`;
       $("dc").onclick = closeDrawer;
       ligarOferta(p);
       ligarVendaGanha(p);
+      ligarReabrirProposta(p);
       ligarEdicao(p);
       $("drawer").classList.add("open"); $("overlay").classList.add("open");
     }
@@ -940,6 +942,232 @@
     }
 
     /* ==================================================================
+       REABRIR PROPOSTA (comando ReabrirProposta, §25 do relatório G2 —
+       schema e fluxo TRAVADOS, ao contrário do Tipo_Entrega de Venda Ganha
+       que era palpite). Comando ainda NÃO existe no backend (Power Apps
+       V2) — mesmo padrão de STUB rotulado, lock explícito e funções puras
+       testadas do item 1.
+
+       Idempotency_Key: gerada na ABERTURA DO DIÁLOGO (não determinística —
+       a mesma Proposta pode ser reaberta mais de uma vez legitimamente,
+       cada abertura do diálogo é uma tentativa nova com chave própria).
+       Mantida durante toda a tentativa, incluindo o 2º round-trip do fluxo
+       de vínculo abaixo (mesma tentativa, mesma chave).
+
+       FLUXO EM 2 FASES (passo 6 da especificação): o frontend NÃO sabe de
+       antemão se a proposta tem vínculo confirmado em Venda_Ganha_Registros
+       — só o backend sabe. O primeiro submit pode voltar com
+       Codigo_Erro=CONFIRMACAO_PROJETO_VINCULADO_AUSENTE; só então o campo
+       de confirmação aparece e um segundo submit (MESMA Idempotency_Key)
+       é feito com Confirmacao_Projeto_Vinculado=true.
+
+       Responsavel NÃO é input do comando (vem do usuário autenticado no
+       backend) — por isso não entra no payload, diferente de Venda Ganha.
+       ================================================================== */
+    const ETAPAS_DESTINO_REABERTURA = ["Em Negociação", "Aguardando Decisão"];
+    const MOTIVOS_REABERTURA = ["Cliente cancelou após fechamento", "Erro de lançamento", "Nova rodada de negociação", "Outro"];
+    const exigeDetalheReabertura = (categoria) => categoria === "Outro";
+    // só Ganho/Perdido são reabríveis (passo 3 do fluxo) — nunca uma etapa ativa.
+    const etapaReabrivel = (etapa) => etapa === "Ganho" || etapa === "Perdido";
+
+    function gerarIdempotencyKeyReabertura() {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+      return "idem-reab-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+    }
+
+    // validação pura — cobre os passos 4/5/6 do fluxo do lado do cliente.
+    function validarReabrirProposta(d) {
+      const faltando = [];
+      if (!ETAPAS_DESTINO_REABERTURA.includes(d.etapaDestino)) faltando.push("Etapa de destino (confirme ou escolha)");
+      if (!MOTIVOS_REABERTURA.includes(d.categoria)) faltando.push("Motivo da reabertura");
+      if (exigeDetalheReabertura(d.categoria) && (!d.detalhe || !String(d.detalhe).trim()))
+        faltando.push("Detalhe do motivo (obrigatório para \"Outro\")");
+      if (d.exigeConfirmacaoVinculo && !d.confirmacaoVinculo)
+        faltando.push("Confirmação de vínculo com Projeto/OS");
+      return { ok: faltando.length === 0, faltando: faltando };
+    }
+
+    // monta o payload EXATO do comando (§25.2) — nomes literais da spec, não
+    // convenção neutra minha (diferente do payload de Venda Ganha).
+    function montarPayloadReabrirProposta(p, d, idempotencyKey) {
+      const payload = {
+        Proposta_ID: p.id,
+        Idempotency_Key: idempotencyKey,
+        Etapa_Destino: d.etapaDestino,
+        Motivo_Reabertura_Categoria: d.categoria
+      };
+      if (exigeDetalheReabertura(d.categoria)) payload.Motivo_Reabertura_Detalhe = String(d.detalhe || "").trim();
+      if (d.exigeConfirmacaoVinculo) payload.Confirmacao_Projeto_Vinculado = !!d.confirmacaoVinculo;
+      return payload;
+    }
+
+    // ---- CHAMADA MOCKADA (STUB) — comando real ainda não existe no backend ----
+    // Simula o passo 1 (idempotência: replay se a chave já existir) e o passo 6
+    // (vínculo de Projeto/OS — só propostas que estavam em "Ganho" passam por
+    // Venda_Ganha_Registros). Como o schema real não existe, a simulação
+    // assume "vínculo confirmado encontrado" toda vez que a etapa anterior é
+    // Ganho e a confirmação ainda não veio — isso FORÇA o fluxo de 2 fases a
+    // ser exercitado de verdade em vez de sempre ter sucesso de primeira.
+    let respostasIdempotentesStub = {};
+    async function reabrirPropostaStub(payload, fieldsAtuais) {
+      await new Promise((r) => setTimeout(r, 500)); // simula latência de rede
+      const key = payload.Idempotency_Key;
+      if (respostasIdempotentesStub[key]) {
+        console.info("[reabrir-proposta][STUB] replay idempotente reconhecido pra", key);
+        return Object.assign({}, respostasIdempotentesStub[key], { Foi_Replay_Idempotente: true });
+      }
+      console.info("[reabrir-proposta][STUB] payload que seria enviado ao comando ReabrirProposta:", payload);
+
+      const etapaAnterior = (fieldsAtuais || {}).Etapa_Pipeline;
+      if (etapaAnterior === "Ganho" && !payload.Confirmacao_Projeto_Vinculado) {
+        return {
+          Sucesso: false,
+          Codigo_Erro: "CONFIRMACAO_PROJETO_VINCULADO_AUSENTE",
+          Mensagem: "🧪 SIMULAÇÃO: esta proposta estava em Ganho — o STUB simula um vínculo de Projeto/OS confirmado em Venda_Ganha_Registros. Confirme explicitamente pra prosseguir."
+        }; // erro NUNCA é cacheado como resposta idempotente (não é o resultado final da tentativa)
+      }
+
+      const resp = {
+        Sucesso: true,
+        Proposta_Historico_ID: "stub-" + Math.random().toString(36).slice(2, 10),
+        Idempotency_Key: key,
+        Foi_Replay_Idempotente: false,
+        Etapa_Anterior: etapaAnterior,
+        Etapa_Nova: payload.Etapa_Destino,
+        Vinculo_Projeto_Confirmado: etapaAnterior === "Ganho" ? !!payload.Confirmacao_Projeto_Vinculado : false
+      };
+      respostasIdempotentesStub[key] = resp;
+      return resp;
+    }
+
+    function blocoReabrirProposta(p) {
+      const f = p.fields || {};
+      if (!etapaReabrivel(f.Etapa_Pipeline)) return ""; // só Ganho/Perdido — reabertura não se aplica
+
+      const opcoesEtapa = ETAPAS_DESTINO_REABERTURA.map((e) =>
+        `<label><input type="radio" name="reEtapaDestino" value="${esc(e)}" /> ${esc(e)}</label>`
+      ).join("");
+      const opcoesMotivo = ['<option value="">— selecione —</option>']
+        .concat(MOTIVOS_REABERTURA.map((m) => `<option value="${esc(m)}">${esc(m)}</option>`)).join("");
+
+      return `
+        <div class="grupo">Reabrir proposta</div>
+        <button id="reToggle" class="sec" style="margin-top:8px">Reabrir Proposta</button>
+        <div id="reForm" class="ed" hidden>
+          <div class="l" style="border:0;padding-top:0">
+            <span class="sha">proposta: ${esc(f.Title ?? "—")}</span><br>
+            <span class="sha">etapa atual: ${esc(f.Etapa_Pipeline ?? "—")}</span>
+          </div>
+          <div class="grupo" style="margin-top:10px">Etapa de destino — confirme, nunca a etapa inicial</div>
+          <div class="vg-tipo-opcoes">${opcoesEtapa}</div>
+          <label>Motivo da reabertura <select id="reMotivoCategoria">${opcoesMotivo}</select></label>
+          <div id="reDetalheWrap" hidden>
+            <label>Detalhe do motivo * <textarea id="reMotivoDetalhe" rows="2" placeholder="motivo &quot;Outro&quot; exige detalhe — obrigatório"></textarea></label>
+          </div>
+          <div id="reVinculoWrap" hidden>
+            <div class="diverge">⚠️ Esta proposta tem vínculo de Projeto/OS confirmado (Venda_Ganha_Registros). Reabrir NÃO desfaz esse vínculo automaticamente.</div>
+            <label><input type="checkbox" id="reConfirmacaoVinculo" /> Confirmo que entendo e quero reabrir mesmo assim</label>
+          </div>
+          <div class="ed-btns" style="margin-top:12px">
+            <button id="reConfirmar" disabled>Confirmar Reabertura</button>
+            <button id="reCancelar" class="sec">Cancelar</button>
+          </div>
+          <div id="reMsg" class="ed-msg"></div>
+          <div class="motivo-off" style="margin-top:6px">🧪 STUB — o comando ReabrirProposta (§25) ainda não existe no backend. Nada é gravado de verdade; esta chamada simula o fluxo de 9 passos da especificação.</div>
+        </div>`;
+    }
+
+    let reaberturaIdempotencyKey = null;      // gerada quando o diálogo abre, fixa durante toda a tentativa
+    let reaberturaExigeConfirmacaoVinculo = false; // true depois que um submit devolve CONFIRMACAO_PROJETO_VINCULADO_AUSENTE
+
+    function ligarReabrirProposta(p) {
+      const tg = $("reToggle"), form = $("reForm");
+      if (!tg || !form) return;
+
+      tg.onclick = () => {
+        // cada abertura do diálogo é uma TENTATIVA nova (§25.1: "não
+        // determinística, a mesma Proposta pode ser reaberta mais de uma
+        // vez legitimamente") — chave nova, estado de vínculo reseta.
+        reaberturaIdempotencyKey = gerarIdempotencyKeyReabertura();
+        reaberturaExigeConfirmacaoVinculo = false;
+        $("reVinculoWrap").hidden = true;
+        if ($("reConfirmacaoVinculo")) $("reConfirmacaoVinculo").checked = false;
+        form.hidden = false; tg.hidden = true;
+      };
+      $("reCancelar").onclick = () => openDrawer(p); // descarta o rascunho, re-renderiza do estado em memória
+
+      const btnConfirmar = $("reConfirmar");
+      const radios = Array.from(form.querySelectorAll('input[name="reEtapaDestino"]'));
+      const selectMotivo = $("reMotivoCategoria");
+
+      function dadosAtuais() {
+        return {
+          etapaDestino: (radios.find((r) => r.checked) || {}).value,
+          categoria: selectMotivo.value,
+          detalhe: $("reMotivoDetalhe") ? $("reMotivoDetalhe").value : "",
+          exigeConfirmacaoVinculo: reaberturaExigeConfirmacaoVinculo,
+          confirmacaoVinculo: $("reConfirmacaoVinculo") ? $("reConfirmacaoVinculo").checked : false
+        };
+      }
+      function atualizarEstado() {
+        const categoria = selectMotivo.value;
+        $("reDetalheWrap").hidden = !exigeDetalheReabertura(categoria);
+        btnConfirmar.disabled = !validarReabrirProposta(dadosAtuais()).ok;
+      }
+
+      radios.forEach((r) => r.addEventListener("change", atualizarEstado));
+      selectMotivo.addEventListener("change", atualizarEstado);
+      form.addEventListener("input", (e) => { if (e.target && e.target.id === "reMotivoDetalhe") atualizarEstado(); });
+      form.addEventListener("change", (e) => { if (e.target && e.target.id === "reConfirmacaoVinculo") atualizarEstado(); });
+      atualizarEstado();
+
+      btnConfirmar.onclick = () => confirmarReabrirProposta(p, dadosAtuais);
+    }
+
+    let gravandoReabertura = false;
+    async function confirmarReabrirProposta(p, dadosAtuais) {
+      if (gravandoReabertura) return;
+      const msg = $("reMsg");
+      const dados = dadosAtuais();
+      const v = validarReabrirProposta(dados);
+      if (!v.ok) { msg.className = "ed-msg err"; msg.textContent = "Faltando: " + v.faltando.join(", ") + "."; return; }
+
+      const btns = [$("reConfirmar"), $("reCancelar")];
+      try {
+        gravandoReabertura = true;
+        btns.forEach((b) => { if (b) b.disabled = true; });
+        $("reConfirmar").textContent = "Confirmando (STUB)…";
+        msg.className = "ed-msg"; msg.textContent = "Validando e montando o payload...";
+        const payload = montarPayloadReabrirProposta(p, dados, reaberturaIdempotencyKey);
+        const r = await reabrirPropostaStub(payload, p.fields);
+        if (r.Sucesso) {
+          msg.className = "ed-msg";
+          msg.textContent = "🧪 STUB: " + (r.Foi_Replay_Idempotente ? "replay idempotente reconhecido — " : "") +
+            "reabertura validada (" + r.Etapa_Anterior + " → " + r.Etapa_Nova + "). Nada foi gravado de verdade — o comando ainda não existe no backend.";
+        } else if (r.Codigo_Erro === "CONFIRMACAO_PROJETO_VINCULADO_AUSENTE") {
+          reaberturaExigeConfirmacaoVinculo = true;
+          $("reVinculoWrap").hidden = false;
+          msg.className = "ed-msg err";
+          msg.textContent = "⚠️ " + r.Mensagem + " Marque a confirmação abaixo e tente novamente.";
+        } else {
+          msg.className = "ed-msg err";
+          msg.textContent = "Falha (" + r.Codigo_Erro + "): " + r.Mensagem;
+        }
+      } catch (e) {
+        msg.className = "ed-msg err";
+        msg.textContent = "Falha no stub (não deveria acontecer): " + e.message;
+      } finally {
+        gravandoReabertura = false;
+        if ($("reCancelar")) $("reCancelar").disabled = false;
+        $("reConfirmar").textContent = "Confirmar Reabertura";
+        // reabilita o Confirmar só se o formulário validar de novo — pode
+        // continuar bloqueado se agora exige confirmação de vínculo que
+        // ainda não foi marcada (não reabilitar às cegas aqui).
+        if ($("reConfirmar")) $("reConfirmar").disabled = !validarReabrirProposta(dadosAtuais()).ok;
+      }
+    }
+
+    /* ==================================================================
        EDIÇÃO DE OPERAÇÃO — uma das TRÊS escritas desta tela (as outras
        duas são congelarOferta e registrarAceite, acima). Nenhum dos campos
        editáveis aqui entra no hash da oferta: trocar responsável ou
@@ -1100,7 +1328,10 @@
     window.PROP = { dataChave, hojeChave, ehAtiva, ETAPAS_FINAIS, normOrig, paraGraph,
                     CAMPOS_EDIT, toDateInput, blocoEdicao, shaCurto,
                     sugerirTipoEntrega, valorOfertaCongelada, valorDivergente, validarVendaGanha,
-                    montarPayloadVendaGanha, blocoVendaGanha, TIPOS_ENTREGA_VALIDOS };
+                    montarPayloadVendaGanha, blocoVendaGanha, TIPOS_ENTREGA_VALIDOS,
+                    etapaReabrivel, exigeDetalheReabertura, validarReabrirProposta,
+                    montarPayloadReabrirProposta, gerarIdempotencyKeyReabertura, blocoReabrirProposta,
+                    ETAPAS_DESTINO_REABERTURA, MOTIVOS_REABERTURA, reabrirPropostaStub };
 
     /* =========================================================================
        SUITE DE ASSERÇÃO (item 12) — PROP.assertRegras(). Regras protegidas:
@@ -1265,6 +1496,70 @@
         "blocoVendaGanha: botão de confirmar nasce desabilitado — só libera depois de validarVendaGanha passar (via ligarVendaGanha)");
       ok(bVGAtiva.indexOf("STUB") > -1,
         "blocoVendaGanha: rótulo STUB sempre visível — comando real ainda não existe no backend");
+
+      // ---- Reabrir Proposta (§25/CRM-3, despacho 21/08 — schema/fluxo TRAVADOS) ----
+      // comando ainda não existe no backend: nada aqui pode fingir gravação real.
+      ok(etapaReabrivel("Ganho") === true && etapaReabrivel("Perdido") === true,
+        "etapaReabrivel: só Ganho/Perdido são reabríveis (passo 3 do fluxo)");
+      ok(etapaReabrivel("Qualificado") === false && etapaReabrivel("") === false && etapaReabrivel(null) === false,
+        "etapaReabrivel: etapa ativa (ou vazia) nunca é reabrível — reabertura não se aplica");
+      ok(exigeDetalheReabertura("Outro") === true,
+        "exigeDetalheReabertura: só 'Outro' exige o detalhe do motivo");
+      ok(exigeDetalheReabertura("Erro de lançamento") === false && exigeDetalheReabertura("") === false,
+        "exigeDetalheReabertura: os outros 3 motivos (e vazio) não travam o campo extra");
+
+      const dRE = (over) => Object.assign({ etapaDestino: "Em Negociação", categoria: "Erro de lançamento", exigeConfirmacaoVinculo: false }, over || {});
+      ok(validarReabrirProposta(dRE()).ok === true,
+        "validarReabrirProposta: etapa de destino válida + motivo válido, sem vínculo pendente, passa");
+      ok(validarReabrirProposta({}).faltando.length === 2,
+        "validarReabrirProposta: formulário vazio reporta os 2 obrigatórios base (etapa destino + motivo)");
+      ok(validarReabrirProposta(dRE({ etapaDestino: "Lead Novo" })).ok === false,
+        "validarReabrirProposta: etapa de destino FORA das 2 permitidas é reprovada — nunca a etapa inicial (passo 4)");
+      ok(validarReabrirProposta(dRE({ categoria: "Outro" })).faltando.indexOf("Detalhe do motivo (obrigatório para \"Outro\")") > -1,
+        "validarReabrirProposta: categoria 'Outro' sem detalhe é reprovada");
+      ok(validarReabrirProposta(dRE({ categoria: "Outro", detalhe: "cliente pediu revisão" })).ok === true,
+        "validarReabrirProposta: categoria 'Outro' COM detalhe passa");
+      ok(validarReabrirProposta(dRE({ exigeConfirmacaoVinculo: true })).faltando.indexOf("Confirmação de vínculo com Projeto/OS") > -1,
+        "validarReabrirProposta: exige confirmação de vínculo quando marcado e ela não veio (passo 6)");
+      ok(validarReabrirProposta(dRE({ exigeConfirmacaoVinculo: true, confirmacaoVinculo: true })).ok === true,
+        "validarReabrirProposta: confirmação de vínculo marcada libera");
+
+      const payloadRE = montarPayloadReabrirProposta(
+        { id: "77" },
+        { etapaDestino: "Aguardando Decisão", categoria: "Outro", detalhe: " revisão de escopo ", exigeConfirmacaoVinculo: false },
+        "idem-key-teste"
+      );
+      ok(payloadRE.Proposta_ID === "77" && payloadRE.Idempotency_Key === "idem-key-teste" && payloadRE.Etapa_Destino === "Aguardando Decisão",
+        "montarPayloadReabrirProposta: identifica proposta/tentativa/destino com os nomes EXATOS da §25.2");
+      ok(payloadRE.Motivo_Reabertura_Detalhe === "revisão de escopo",
+        "montarPayloadReabrirProposta: detalhe do motivo grava com trim quando a categoria exige");
+      ok(!("Confirmacao_Projeto_Vinculado" in payloadRE),
+        "montarPayloadReabrirProposta: SEM Confirmacao_Projeto_Vinculado quando não é exigida — campo condicional de verdade");
+      ok(!("Responsavel" in payloadRE),
+        "montarPayloadReabrirProposta: Responsavel NUNCA entra no payload — vem do usuário autenticado no backend, não é input (§25.2)");
+      const payloadREVinculo = montarPayloadReabrirProposta(
+        { id: "77" }, { etapaDestino: "Em Negociação", categoria: "Erro de lançamento", exigeConfirmacaoVinculo: true, confirmacaoVinculo: true }, "idem-key-2"
+      );
+      ok(payloadREVinculo.Confirmacao_Projeto_Vinculado === true,
+        "montarPayloadReabrirProposta: Confirmacao_Projeto_Vinculado entra quando a 2ª fase do fluxo exigiu");
+
+      const k1RE = gerarIdempotencyKeyReabertura(), k2RE = gerarIdempotencyKeyReabertura();
+      ok(typeof k1RE === "string" && k1RE.length >= 16 && k1RE !== k2RE,
+        "gerarIdempotencyKeyReabertura: chave não-trivial e nunca colide entre duas aberturas de diálogo");
+
+      const bREFechada1 = blocoReabrirProposta({ fields: { Etapa_Pipeline: "Ganho" } });
+      const bREFechada2 = blocoReabrirProposta({ fields: { Etapa_Pipeline: "Perdido" } });
+      const bREAtiva = blocoReabrirProposta({ fields: { Etapa_Pipeline: "Qualificado" } });
+      ok(bREFechada1 !== "" && bREFechada2 !== "",
+        "blocoReabrirProposta: aparece em proposta Ganho OU Perdido — as únicas etapas reabríveis");
+      ok(bREAtiva === "",
+        "blocoReabrirProposta: NÃO aparece em proposta ativa — reabertura só faz sentido pra proposta fechada");
+      ok((bREFechada1.match(/name="reEtapaDestino"/g) || []).length === 2 && bREFechada1.indexOf("checked") === -1,
+        "blocoReabrirProposta: as 2 etapas de destino aparecem, nenhuma pré-marcada — escolha sempre explícita");
+      ok(bREFechada1.indexOf('id="reConfirmar" disabled') > -1,
+        "blocoReabrirProposta: botão de confirmar nasce desabilitado — só libera depois de validarReabrirProposta passar");
+      ok(bREFechada1.indexOf("STUB") > -1,
+        "blocoReabrirProposta: rótulo STUB sempre visível — comando real (§25) ainda não existe no backend");
 
       const r = { ok: falhas.length === 0, total, falhas };
       console.log("PROP.assertRegras:", JSON.stringify(r, null, 2));
