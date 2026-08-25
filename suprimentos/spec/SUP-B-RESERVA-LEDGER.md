@@ -28,6 +28,33 @@ PENDENTE | RESERVADO | PARCIAL | FALTA | CONSUMIDO | LIBERADO | CANCELADO
 - deriveAvailability(materialId)
 - reconcile(materialId)
 
+## Contrato implementado no núcleo
+
+`suprimentos/core/ledger.js` é UMD e não conhece tela, SharePoint, CRM, OS ou Bom Controle.
+Cada operação recebe um estado imutável e devolve `{ state, result, replayed }`.
+
+- `expectedVersions` é obrigatório por `Material_ID` tocado. O adapter persistente deve
+  mapear esse valor para `Row_Version`, ETag/If-Match ou CAS equivalente.
+- a verificação de idempotência ocorre antes da verificação de versão: retry do mesmo
+  comando devolve o resultado já confirmado, ainda que a versão tenha avançado;
+- reutilizar a mesma chave com payload diferente é erro explícito
+  `IDEMPOTENCY_KEY_REUSED`, nunca replay silencioso;
+- um comando multiproduto é pré-validado integralmente antes do commit;
+- `release()` acrescenta `LIBERACAO`, sem apagar `RESERVA`;
+- `consume()` acrescenta `CONSUMO` no ledger de reservas e `SAIDA` no ledger de
+  movimentações no mesmo commit lógico;
+- `compensate()` referencia os eventos originais por `compensatesEventId` e aplica o
+  delta inverso. Para desfazer consumo completo, o comando deve referenciar tanto o
+  evento `CONSUMO` quanto seu evento `SAIDA`;
+- `rebuildProjection()` recompõe físico, reservado, disponível, versão da projeção e
+  último movimento a partir do saldo de abertura imutável e dos ledgers;
+- `reconcile()` compara a projeção persistida com a reconstruída e retorna diferenças
+  explícitas por material/campo. Não corrige ou oculta divergência automaticamente.
+
+O estado em memória é a implementação de referência para testes. Em produção, o adapter
+deverá realizar o commit dos dois ledgers e da versão com escrita condicional. Nenhuma
+chamada produtiva foi introduzida nesta frente.
+
 ## Invariantes
 - saldo disponível nunca pode ficar negativo por corrida;
 - reserva não altera estoque físico;
@@ -43,6 +70,9 @@ PENDENTE | RESERVADO | PARCIAL | FALTA | CONSUMIDO | LIBERADO | CANCELADO
 - TS-14: retry idempotente.
 - TS-15: concorrência no último saldo.
 - TS-56: compensação de falha parcial preserva trilha.
+
+Além dos gates formais, a suíte cobre `release()`, `consume()`, reconstrução integral e
+reconciliação de projeção divergente.
 
 ## Não colisão
 Nenhuma alteração em código de CRM/OS. Persistência fica atrás de adapter próprio `suprimentos/*`; integração com telas atuais só ocorre após Gate A e revisão de conflito.
