@@ -181,6 +181,31 @@
     }
 
     // =========================================================================
+
+    /* ---- Idempotency_Key (item 12/CRM-3, despacho 21/08) -------------------
+       Prepara o frontend pro futuro comando "Criar Proposta" (CRM-G2) — ainda
+       não existe, hoje esta tela grava direto via EG.createItem legado, então
+       a chave NÃO entra no payload real ainda (a lista de SharePoint não tem
+       essa coluna; mandar um campo desconhecido quebraria a criação que
+       funciona hoje). Gerada e mantida do jeito que o comando vai exigir:
+         - gerada na ABERTURA da tela (aqui, no carregamento do módulo), não
+           no clique de "Criar" — assim um clique duplicado (duplo-clique,
+           rede lenta) chega ao comando com a MESMA chave;
+         - mantida em variável de módulo durante TODA a tentativa, inclusive
+           retries manuais após falha (criar() NUNCA regenera no catch);
+         - só regenera depois de uma criação BEM-SUCEDIDA — o formulário
+           limpa pra permitir criar um PRÓXIMO item sem recarregar a página,
+           e esse próximo item é uma tentativa NOVA (reusar a mesma chave
+           colidiria idempotência entre dois registros genuinamente diferentes). */
+    function gerarIdempotencyKey() {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+      // fallback defensivo (navegador antigo/contexto não-seguro) — único o
+      // bastante pra este propósito; não precisa ser criptográfico.
+      return "idem-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12);
+    }
+    let idempotencyKey = gerarIdempotencyKey();
+    const idempotencyKeyAtual = () => idempotencyKey;
+
     let tipo = "proposta", clientes = [], enviando = false;
 
     async function boot() { if (await EG.init()) await onIn(); }
@@ -416,6 +441,11 @@
       try {
         enviando = true; $("btnCriar").disabled = true;
         setStatus("Criando em " + lista + "...");
+        // Idempotency_Key desta tentativa — não vai no payload ainda (comando
+        // "Criar Proposta" não existe; ver comentário na declaração acima),
+        // só logada pra já dar pra conferir o comportamento (mesma chave em
+        // retries, chave nova só após sucesso) antes do comando existir.
+        console.info("[nova-proposta] Idempotency_Key desta tentativa (pronta pro comando Criar Proposta quando existir):", idempotencyKeyAtual());
         const novo = await EG.createItem(lista, f);
         const id = novo && novo.id;
         $("okBox").innerHTML = "✅ Criado em <strong>" + esc(lista) + "</strong> — ID <strong>" + esc(id) + "</strong>, "
@@ -430,6 +460,10 @@
         $("okBox").hidden = false;
         setStatus("OK — item " + id + " criado.");
         ["titulo", "descricao", "vServico", "vMateriais", "vMat", "vSrv", "obs"].forEach(k => { if ($(k)) $(k).value = ""; });
+        // sucesso: o formulário limpa pra permitir criar OUTRO item sem
+        // recarregar — isso é uma tentativa nova, precisa de chave nova
+        // (NUNCA regenerar no catch: retry de uma falha é a MESMA tentativa).
+        idempotencyKey = gerarIdempotencyKey();
       } catch (e) {
         setStatus("Falha ao criar: " + e.message, "err");
       } finally { enviando = false; $("btnCriar").disabled = false; }
@@ -437,7 +471,8 @@
 
     /* Exposto para exercitar as regras sem login (a tela não tinha global). */
     window.NPR = { derivarCanalProposta, derivarCanalOrcamento, pnn, obrigatoriosFaltando,
-                   DIRETO_TIPO_SERVICO, DIRETO_ORIGEM_DEMANDA };
+                   DIRETO_TIPO_SERVICO, DIRETO_ORIGEM_DEMANDA,
+                   gerarIdempotencyKey, idempotencyKeyAtual };
 
     /* =========================================================================
        SUITE DE ASSERÇÃO (item 12) — NPR.assertRegras(). Regras protegidas:
@@ -525,6 +560,15 @@
         "pnn: ZERO é valor legítimo e TEM de entrar (0 não é ausência)");
       ok(Object.values(f).every(v => v !== "" && v != null),
         "pnn: nenhum \"\" ou nulo pode sobrar no corpo da criação");
+
+      // ---- Idempotency_Key (item 12/CRM-3, despacho 21/08) ----
+      const k1 = gerarIdempotencyKey(), k2 = gerarIdempotencyKey();
+      ok(typeof k1 === "string" && k1.length >= 16,
+        "gerarIdempotencyKey: devolve string não-trivial (UUID ou fallback, nunca vazio/curto demais)");
+      ok(k1 !== k2,
+        "gerarIdempotencyKey: duas chamadas nunca colidem (senão duas tentativas diferentes dividiriam a mesma chave)");
+      ok(typeof idempotencyKeyAtual() === "string" && idempotencyKeyAtual().length >= 16,
+        "idempotencyKeyAtual: já existe uma chave válida desde a ABERTURA da tela — não é gerada só no clique de Criar");
 
       const r = { ok: falhas.length === 0, total, falhas };
       console.log("NPR.assertRegras:", JSON.stringify(r, null, 2));
