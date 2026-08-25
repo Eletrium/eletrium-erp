@@ -33,5 +33,18 @@ SEM_PEDIDO | QUANTIDADE | PRECO | ITEM | TRIBUTO | FRETE | DANIFICADO | NAO_CONF
 - aceite gera movimento de entrada idempotente;
 - reprocessamento não duplica estoque/custo.
 
+## Implementação de referência
+
+`suprimentos/core/receiving.js` implementa recebimento parcial, staging com unicidade de
+chave NF-e, matching Pedido × Recebimento × NF-e, bloqueio por divergência e promoção
+idempotente para eventos de entrada/custo. Quantidade rejeitada nunca compõe o movimento
+de entrada; NF-e sem pedido permanece em staging e não promove efeitos.
+O movimento preserva `Item_ID`, versão do pedido, correlação e chave idempotente para ser
+consumido diretamente pelo ledger de SUP-B.
+
+`tests/suprimentos-receiving.test.js` cobre todos os critérios do Gate E. O custo gerado
+é apenas evento interno vinculado à política versionada; não há chamada ao Financeiro ou
+ao Bom Controle.
+
 ## Não colisão
 Nenhuma chamada ao Bom Controle é ativada nesta frente. Integração fiscal externa só entra pelo Gate H após homologação.
