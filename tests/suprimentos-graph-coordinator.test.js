@@ -32,6 +32,7 @@ const coordinatorFactory = require('../suprimentos/adapters/single-writer-coordi
   const port = {
     findCommand: async () => null, readState: async () => ({ complete: true }),
     assertEtags: async () => trace.push('etag'),
+    claimCommand: async (result) => trace.push('claim:' + result.idempotencyKey),
     appendReservationEvents: async (events) => { trace.push('reservation:' + events[0].eventId); },
     appendMovementEvents: async () => trace.push('movement'),
     writeProjection: async (projection) => { trace.push('projection:' + Object.keys(projection)[0]); },
@@ -40,7 +41,7 @@ const coordinatorFactory = require('../suprimentos/adapters/single-writer-coordi
   };
   const coordinator = coordinatorFactory.create(port);
   await Promise.all([1, 2].map((n) => coordinator.commitAtomic({ expectedEtags: { m1: 'e' + n }, reservationEvents: [{ eventId: 'r' + n }], movementEvents: [], projection: { m1: {} }, commandResult: { idempotencyKey: 'k' + n, correlationId: 'c' + n } })));
-  assert.deepStrictEqual(trace, ['etag', 'reservation:r1', 'projection:m1', 'result:k1', 'etag', 'reservation:r2', 'projection:m1', 'result:k2']);
+  assert.deepStrictEqual(trace, ['etag', 'claim:k1', 'reservation:r1', 'projection:m1', 'result:k1', 'etag', 'claim:k2', 'reservation:r2', 'projection:m1', 'result:k2']);
   assert.strictEqual(integration.filter((item) => item.status === 'RECONCILED').length, 2);
 
   port.writeProjection = async () => { const error = new Error('network'); error.code = 'NETWORK_DOWN'; throw error; };

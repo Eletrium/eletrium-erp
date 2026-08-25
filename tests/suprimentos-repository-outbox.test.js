@@ -18,6 +18,7 @@ const workerFactory = require('../suprimentos/core/outbox-worker');
   await repo.appendReservationEvents([{ eventId: 'e1', materialId: 'm1', itemId: 'i1', documentId: 'd1', documentVersion: 1, idempotencyKey: 'new-key', correlationId: 'c1', quantity: 2, type: 'RESERVA', createdAt: '2026-08-25T00:00:00Z' }]);
   const replay = await repo.appendReservationEvents([{ eventId: 'e2', idempotencyKey: 'duplicate' }]);
   assert.strictEqual(appended[0].fields.Material_ID, 'm1'); assert.strictEqual(appended[0].fields.Reserva_ID, 'e1'); assert.strictEqual(replay[0].replayed, true);
+  assert.strictEqual(appended[0].fields.Row_Version, 1);
   await repo.writeProjection({ m1: { stockPhysical: 5, reservedValid: 2, available: 3, projectionVersion: 4, lastMovementId: null } }, { m1: 'etag-command' });
   assert.strictEqual(patched[0].etag, 'etag-command'); assert.strictEqual(patched[0].fields.Disponivel, 3);
 })();

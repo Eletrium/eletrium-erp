@@ -26,7 +26,9 @@
         var prior = await findByIdempotency(list, event.idempotencyKey);
         if (prior) { written.push({ replayed: true, item: prior }); continue; }
         var mapping = list === LISTS.reservations ? RESERVATION : list === LISTS.movements ? MOVEMENT : INTEGRATION;
-        written.push({ replayed: false, item: await graph.append(list, mapToFields(event, mapping)) });
+        var fields = mapToFields(event, mapping);
+        if (list === LISTS.reservations && fields.Row_Version === undefined) fields.Row_Version = 1;
+        written.push({ replayed: false, item: await graph.append(list, fields) });
       }
       return written;
     }
@@ -66,7 +68,8 @@
     async function findCommand(key) {
       var row = await findByIdempotency(LISTS.integration, key);
       if (!row) return null; var fields = fieldsOf(row);
-      return fields.Result_JSON ? JSON.parse(fields.Result_JSON) : null;
+      var metadata = fields.Payload_JSON ? JSON.parse(fields.Payload_JSON) : {};
+      return { result: fields.Result_JSON ? JSON.parse(fields.Result_JSON) : null, commandFingerprint: metadata.commandFingerprint || null, status: fields.Status || null };
     }
     async function assertEtags(etags) {
       for (const materialId of Object.keys(etags || {})) {
@@ -78,12 +81,35 @@
       }
       return true;
     }
-    async function saveCommandResult(result) {
-      return graph.append(LISTS.integration, mapToFields({ eventId: 'command:' + result.idempotencyKey, entity: 'SupplyCommand', entityId: result.idempotencyKey, sequence: 1, idempotencyKey: result.idempotencyKey, correlationId: result.correlationId, status: 'RECONCILED', retryCount: 0, resultJson: JSON.stringify(result), rowVersion: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }, INTEGRATION));
+    async function claimCommand(result, metadata) {
+      metadata = metadata || {};
+      if (!metadata.commandFingerprint) fail('COMMAND_FINGERPRINT_REQUIRED');
+      var prior = await findByIdempotency(LISTS.integration, result.idempotencyKey);
+      if (prior) {
+        var fields = fieldsOf(prior), payload = fields.Payload_JSON ? JSON.parse(fields.Payload_JSON) : {};
+        if (!payload.commandFingerprint) fail('IDEMPOTENCY_FINGERPRINT_MISSING', { idempotencyKey: result.idempotencyKey });
+        if (payload.commandFingerprint !== metadata.commandFingerprint) fail('IDEMPOTENCY_KEY_REUSED', { idempotencyKey: result.idempotencyKey });
+        if (!fields.Result_JSON) fail('COMMAND_RECONCILIATION_REQUIRED', { idempotencyKey: result.idempotencyKey, status: fields.Status });
+        return { replayed: true, result: JSON.parse(fields.Result_JSON) };
+      }
+      var now = new Date().toISOString();
+      return graph.append(LISTS.integration, mapToFields({ eventId: 'command:' + result.idempotencyKey, entity: 'SupplyCommand', entityId: result.idempotencyKey, sequence: 1, idempotencyKey: result.idempotencyKey, correlationId: result.correlationId, status: 'SENDING', retryCount: 0, payloadJson: JSON.stringify({ commandFingerprint: metadata.commandFingerprint }), rowVersion: 1, createdAt: now, updatedAt: now }, INTEGRATION));
+    }
+    async function saveCommandResult(result, metadata) {
+      metadata = metadata || {};
+      if (!metadata.commandFingerprint) fail('COMMAND_FINGERPRINT_REQUIRED');
+      var row = await findByIdempotency(LISTS.integration, result.idempotencyKey);
+      if (!row) fail('COMMAND_CLAIM_NOT_FOUND', { idempotencyKey: result.idempotencyKey });
+      var fields = fieldsOf(row), payload = fields.Payload_JSON ? JSON.parse(fields.Payload_JSON) : {};
+      if (!payload.commandFingerprint) fail('IDEMPOTENCY_FINGERPRINT_MISSING', { idempotencyKey: result.idempotencyKey });
+      if (payload.commandFingerprint !== metadata.commandFingerprint) fail('IDEMPOTENCY_KEY_REUSED', { idempotencyKey: result.idempotencyKey });
+      if (fields.Result_JSON) return { replayed: true, result: JSON.parse(fields.Result_JSON) };
+      return graph.conditionalUpdate(LISTS.integration, row.id, { Status: 'RECONCILED', Result_JSON: JSON.stringify(result), Row_Version: Number(fields.Row_Version || 0) + 1, Updated_At: new Date().toISOString() }, row.eTag || row['@odata.etag']);
     }
     return {
       lists: LISTS, findByIdempotency: findByIdempotency,
-      findCommand: findCommand, readState: readState, assertEtags: assertEtags, saveCommandResult: saveCommandResult,
+      findCommand: findCommand, readState: readState, assertEtags: assertEtags,
+      claimCommand: claimCommand, saveCommandResult: saveCommandResult,
       appendReservationEvents: function (events) { return appendEvents(LISTS.reservations, events); },
       appendMovementEvents: function (events) { return appendEvents(LISTS.movements, events); },
       writeProjection: writeProjection,

@@ -163,7 +163,7 @@
       eventId: key, type: type, documentId: command.documentId, documentVersion: command.documentVersion,
       itemId: item.itemId, necessityId: item.necessityId, materialId: item.materialId,
       quantity: Number(item.quantity), correlationId: command.correlationId, idempotencyKey: key,
-      createdAt: now || new Date().toISOString()
+      rowVersion: 1, createdAt: now || new Date().toISOString()
     };
   }
 
@@ -375,6 +375,7 @@
     RESERVATION_TYPES: RESERVATION_TYPES, MOVEMENT_TYPES: MOVEMENT_TYPES,
     available: available, validateReserve: validateReserve, buildReserveEvents: buildReserveEvents,
     applyReservationEvents: applyReservationEvents, rebuildProjection: rebuildProjection, createState: createState,
+    fingerprintCommand: stableStringify,
     deriveAvailability: deriveAvailability,
     execute: execute,
     reserve: function (state, command, now) { return execute(state, 'reserve', command, now); },
