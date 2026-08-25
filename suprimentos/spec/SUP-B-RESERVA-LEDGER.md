@@ -101,5 +101,11 @@ O adapter SharePoint real permanece não configurado; somente o contrato foi imp
 - uma implantação horizontal ainda deve usar lease/fila externa de consumidor único.
   O serializador em processo é a referência de semântica, não um lock distribuído.
 
+`adapters/sharepoint-repository.js` completa o mapeamento físico de reservas,
+movimentações, projeção e eventos de integração, preservando campos de compensação e
+reconstrução. `core/outbox-worker.js` e `adapters/in-memory-outbox-store.js` definem o
+consumer com lease, backoff e limite de retry. Efeito externo incerto vai para
+`RECONCILIATION_PENDING`; não há retry cego depois de timeout de envio.
+
 ## Não colisão
 Nenhuma alteração em código de CRM/OS. Persistência fica atrás de adapter próprio `suprimentos/*`; integração com telas atuais só ocorre após Gate A e revisão de conflito.

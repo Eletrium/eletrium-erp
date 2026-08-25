@@ -1,0 +1,34 @@
+{
+  "contractVersion": "1.0.0",
+  "productionEnabled": false,
+  "requiredGates": [
+    "environmentHomologated",
+    "realKeyValidated",
+    "schemasConfirmed",
+    "serviceAccountOwned",
+    "secretPolicyApproved",
+    "dlpApproved",
+    "retryPolicyApproved",
+    "idempotencyConfirmed",
+    "rollbackTested",
+    "reconciliationTested"
+  ],
+  "operations": {
+    "UPSERT_SUPPLIER": {
+      "required": ["Fornecedor_ID", "Documento_Fiscal", "Snapshot_Versao", "Idempotency_Key", "Correlation_ID"]
+    },
+    "CREATE_PAYABLE": {
+      "required": ["Obrigacao_ID", "Pedido_ID", "Recebimento_ID", "Fornecedor_ID", "Valor_Aceito", "Vencimento", "Snapshot_Versao", "Idempotency_Key", "Correlation_ID"]
+    },
+    "RECONCILE_STATUS": {
+      "required": ["Entidade", "Entity_ID", "BomControle_ID", "Expected_Status", "Idempotency_Key", "Correlation_ID"]
+    }
+  },
+  "timeoutAfterSendPolicy": "PENDING_RECONCILIATION",
+  "secretPolicy": {
+    "allowPlaintextInRepository": false,
+    "credentialSource": "runtime_provider",
+    "logHeaders": false,
+    "logPayloadFields": ["operation", "entityId", "correlationId", "payloadVersion"]
+  }
+}

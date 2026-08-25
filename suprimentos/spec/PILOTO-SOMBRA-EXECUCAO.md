@@ -14,6 +14,11 @@ A demonstração navegável e totalmente local está em `suprimentos/demo-shadow
 Ela reconstrói saldo e simula divergência de projeção sem modificar
 `suprimentos.html` e sem qualquer chamada externa.
 
+O boundary executável combina JSON Schema, RBAC, gateway e handlers injetados em
+`core/runtime.js`. O outbox usa lease, backoff e política de efeito incerto; timeout
+depois do envio nunca sofre retry cego. A massa sintética pode gerar até 100 mil
+necessidades sem dados reais.
+
 ## Entrada
 
 - branch derivada de `active-suprimentos-v1.2.1-20260824`;
