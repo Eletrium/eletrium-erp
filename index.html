@@ -154,6 +154,10 @@
       <p class="modal-sub" id="perdaSub"></p>
       <label for="perdaMotivo">Motivo da perda *</label>
       <div id="perdaMotivoWrap"></div>
+      <div id="perdaDescricaoWrap" hidden>
+        <label for="perdaDescricao">Descrição do motivo *</label>
+        <textarea id="perdaDescricao" rows="2" maxlength="1000" placeholder="motivo \"Outro\" exige descrição — obrigatório"></textarea>
+      </div>
       <label for="perdaConcorrente">Concorrente (opcional)</label>
       <input id="perdaConcorrente" type="text" maxlength="255" />
       <div class="modal-erro" id="perdaErro" hidden></div>
@@ -387,6 +391,8 @@
        (é o relógio do SLA) e NUNCA grava "" (campo vazio é omitido). */
     const movimentoNulo = (atual, nova) => !nova || nova === atual;
     const exigeMotivoPerda = (nova) => nova === "Perdido";
+    // "Outro" é o único motivo que não se explica sozinho — exige descrição própria.
+    const exigeDescricaoMotivo = (motivo) => motivo === "Outro";
     function corpoMovimento(novaEtapa, camposExtras) {
       const body = { Etapa_Pipeline: novaEtapa, Data_Entrada_Etapa: new Date().toISOString() };
       if (camposExtras) Object.keys(camposExtras).forEach(k => {
@@ -470,10 +476,21 @@
       marcarCard(p.id, "salvando", true);
       $("perdaSub").textContent = (p.fields.Title || p.id) + " — informe o motivo da perda para confirmar o movimento.";
       $("perdaMotivoWrap").innerHTML = motivoSelectHtml(p.fields.Motivo_Perda, "perdaMotivo");
+      $("perdaDescricao").value = p.fields.Descricao_Motivo_Perda || "";
       $("perdaConcorrente").value = p.fields.Concorrente || "";
       $("perdaErro").hidden = true;
       $("perdaBg").hidden = false;
-      const m = $("perdaMotivo"); if (m && m.focus) m.focus();
+      const m = $("perdaMotivo");
+      if (m) { m.addEventListener("change", atualizarDescricaoMotivoVisivel); m.focus && m.focus(); }
+      atualizarDescricaoMotivoVisivel();
+    }
+
+    // mostra/esconde "Descrição do motivo" conforme o select — só "Outro" exige.
+    function atualizarDescricaoMotivoVisivel() {
+      const m = $("perdaMotivo");
+      const wrap = $("perdaDescricaoWrap");
+      if (!m || !wrap) return;
+      wrap.hidden = !exigeDescricaoMotivo(m.value);
     }
 
     // comRollback=true (cancelar/Esc): o card volta à coluna de origem
@@ -494,13 +511,33 @@
       if (!perdaCtx) return;
       const motivo = ($("perdaMotivo").value || "").trim();
       if (!motivo) { $("perdaErro").textContent = "Informe o motivo da perda (ou cancele o movimento)."; $("perdaErro").hidden = false; return; }
+      const descricao = $("perdaDescricao").value.trim();
+      if (exigeDescricaoMotivo(motivo) && !descricao) {
+        $("perdaErro").textContent = "Motivo \"Outro\" exige a descrição do motivo.";
+        $("perdaErro").hidden = false;
+        $("perdaDescricao").focus();
+        return;
+      }
       const ctx = perdaCtx; perdaCtx = null;
       const concorrente = $("perdaConcorrente").value.trim();
-      $("perdaBg").hidden = true;
-      // desfaz o otimista local — gravarMovimento refaz (otimista + PATCH + rollback se falhar)
-      ctx.p.fields.Etapa_Pipeline = ctx.etapaAnterior;
-      // Motivo_Perda/Concorrente: dono da escrita = esta tela (F5); "" é omitido do PATCH
-      await gravarMovimento(ctx.p, "Perdido", ctx.etapaAnterior, { Motivo_Perda: motivo, Concorrente: concorrente });
+      // lock explícito: botões travados durante a chamada, liberados no finally
+      // (mesmo padrão de indConfirmar) — o modal só fecha depois, sucesso ou
+      // falha; falha já é comunicada no board (rollback + pulso vermelho +
+      // status bar), então reabrir o modal de novo não agrega nada aqui.
+      const btnOk = $("perdaConfirmar"), btnCancel = $("perdaCancelar");
+      btnOk.disabled = true; btnCancel.disabled = true; btnOk.textContent = "Confirmando…";
+      try {
+        // desfaz o otimista local — gravarMovimento refaz (otimista + PATCH + rollback se falhar)
+        ctx.p.fields.Etapa_Pipeline = ctx.etapaAnterior;
+        // Motivo_Perda/Concorrente/Descricao_Motivo_Perda: dono da escrita = esta tela (F5);
+        // "" é omitido do PATCH (corpoMovimento já filtra vazio/null)
+        const camposExtras = { Motivo_Perda: motivo, Concorrente: concorrente };
+        if (exigeDescricaoMotivo(motivo)) camposExtras.Descricao_Motivo_Perda = descricao;
+        await gravarMovimento(ctx.p, "Perdido", ctx.etapaAnterior, camposExtras);
+      } finally {
+        btnOk.disabled = false; btnCancel.disabled = false; btnOk.textContent = "Confirmar perda";
+        $("perdaBg").hidden = true;
+      }
     };
 
     // ===================== DRAWER DE DETALHE =====================
@@ -703,8 +740,8 @@
     };
 
     /* Exposto para exercitar as regras sem login (a tela não tinha global). */
-    window.IDX = { classeDataAcao, opDataInput, movimentoNulo, exigeMotivoPerda, corpoMovimento,
-                   ETAPAS_FECHADAS, esc };
+    window.IDX = { classeDataAcao, opDataInput, movimentoNulo, exigeMotivoPerda, exigeDescricaoMotivo,
+                   corpoMovimento, ETAPAS_FECHADAS, esc };
 
     /* =========================================================================
        SUITE DE ASSERÇÃO (item 12) — IDX.assertRegras(). Regras protegidas:
@@ -726,6 +763,11 @@
         "'Perdido' tem de exigir motivo (mini-modal antes de gravar)");
       ok(exigeMotivoPerda("Ganho") === false && exigeMotivoPerda("Lead Novo") === false,
         "só 'Perdido' exige motivo — as demais etapas movem por arrasto direto");
+      ok(exigeDescricaoMotivo("Outro") === true,
+        "motivo 'Outro' tem de exigir descrição própria (senão o motivo real não fica registrado)");
+      ok(exigeDescricaoMotivo("Preço") === false && exigeDescricaoMotivo("Concorrência") === false &&
+         exigeDescricaoMotivo("") === false && exigeDescricaoMotivo(null) === false,
+        "só 'Outro' exige descrição — os demais motivos (e vazio) não travam o campo extra");
       ok(movimentoNulo("Ganho", "Ganho") === true,
         "arrastar para a MESMA coluna não é movimento (não pode gerar PATCH)");
       ok(movimentoNulo("Ganho", "") === true && movimentoNulo("Ganho", null) === true &&
