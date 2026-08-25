@@ -133,5 +133,13 @@ migração aditiva; divergência de tipo, campo de concorrência ou política de
 único bloqueia automação e exige revisão explícita. Permissões e append-only também são
 auditados, inclusive para impedir que CRM adquira escrita acidentalmente.
 
+## Contratos de fronteira executáveis
+
+`contracts/commands.v1.json` e `contracts/openapi.v1.yaml` versionam o envelope do
+gateway e as operações públicas. `core/schema-validator.js` rejeita campos inesperados,
+versão incompatível e payload incompleto. `core/integration-contracts.js` mantém OS e
+Financeiro nas fronteiras corretas: a OS solicita consumo por IDs e o Financeiro recebe
+obrigação comprovada, sem acesso à projeção ou à máquina de estados de estoque.
+
 ## Não colisão
 Nenhuma alteração em `inbound.html`, `reaquecimento.html`, `os.html`, `outbox.js` ou fluxos de CRM/OS. A integração com OS será somente por contrato de IDs até a branch de OS ser liberada.

@@ -43,6 +43,9 @@
         "Item_ID": "Text:64:required",
         "Idempotency_Key": "Text:160:required",
         "Correlation_ID": "Text:96:required",
+        "Position_Key": "Text:256:required",
+        "Compensates_Event_ID": "Text:160:optional",
+        "Reservation_Delta": "Number:optional",
         "Row_Version": "Integer:required",
         "Created_At": "DateTime:required"
       }
@@ -61,6 +64,9 @@
         "Item_ID": "Text:64:required",
         "Idempotency_Key": "Text:160:required",
         "Correlation_ID": "Text:96:required",
+        "Compensates_Event_ID": "Text:160:optional",
+        "Physical_Delta": "Number:optional",
+        "Reservation_Event_ID": "Text:160:optional",
         "Created_At": "DateTime:required"
       }
     },
@@ -92,6 +98,11 @@
         "Correlation_ID": "Text:96:required",
         "Status": "Text:32:required",
         "Retry_Count": "Integer:required",
+        "Payload_JSON": "Note:optional",
+        "Result_JSON": "Note:optional",
+        "Error_Code": "Text:96:optional",
+        "Lease_Owner": "Text:96:optional",
+        "Lease_Until": "DateTime:optional",
         "Row_Version": "Integer:required",
         "Created_At": "DateTime:required",
         "Updated_At": "DateTime:required"
