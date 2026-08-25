@@ -5,6 +5,8 @@
 - contrato OS: `contracts/commands.v1.json`, operação `os.consume.v1`;
 - fixture: `fixtures/os-consumer-contract.v1.json`;
 - verificação: `node suprimentos/tools/verify-os-contract.js <payload.json>`;
+- builder pronto: `integration/os-consumption-producer.js`, que monta o envelope e
+  bloqueia retry com chave ou payload alterados;
 - fronteira: OS envia IDs, versão, itens, ETag lógico e idempotência; não importa core
   de Suprimentos e Suprimentos não lê a máquina de estados da OS.
 
@@ -33,6 +35,7 @@ node tests/run-suprimentos.js
 node suprimentos/tools/homologation-evidence.js
 ```
 
-O Claude não precisa reconstruir ledger, Graph, retry, UI ou reconciliação. Sua tarefa
-remanescente é adaptar o produtor do comando na OS e devolver o payload para o teste de
-compatibilidade.
+Na branch `active-field-v2.1-20260824` inspecionada em 25/08/2026 não existe produtor de
+consumo de material; há somente a ação visual “Buscar material”. O Claude não precisa
+reconstruir ledger, Graph, retry, UI ou reconciliação: basta alimentar o builder com os
+IDs relacionais e persistir o envelope no outbox da OS.

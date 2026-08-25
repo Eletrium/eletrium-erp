@@ -26,6 +26,11 @@
 - preflight de implantação que rejeita segredo em perfil, escrita externa em sombra e
   produção sem homologação/interface aprovadas;
 - evidência JSON arquivada pela CI isolada por 30 dias.
+- runner Microsoft Graph real em modo somente leitura, com descoberta do site/listas,
+  captura de colunas e travessia integral; política e permissões não são presumidas sem
+  referência externa de evidência;
+- builder contratual `os.consume.v1` pronto, incluindo fingerprint e rejeição de retry
+  com chave ou payload alterados.
 
 ## Compatibilidade
 

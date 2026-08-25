@@ -20,6 +20,8 @@ const required = [
   'suprimentos/core/shadow-pilot.js', 'suprimentos/core/operational-health.js',
   'suprimentos/core/deployment-gate.js',
   'suprimentos/integration/legacy-ui-bridge.js', 'suprimentos/integration/suprimentos-html.proposed.patch',
+  'suprimentos/integration/os-consumption-producer.js', 'suprimentos/adapters/sharepoint-live-port.js',
+  'suprimentos/tools/sharepoint-live-readonly.js',
   'suprimentos/spec/CHANGELOG-SUPRIMENTOS-RC1.md', 'suprimentos/spec/RUNBOOK-IMPLANTACAO-RECONCILIACAO.md'
 ];
 const checks = [

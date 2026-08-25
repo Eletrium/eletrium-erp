@@ -7,6 +7,10 @@
 3. executar `node suprimentos/tools/homologation-evidence.js` para consolidar testes,
    Gates e fingerprint do release candidate;
 4. capturar metadados do site SharePoint e executar o harness de homologação;
+   - runner somente leitura: `SUPRIMENTOS_GRAPH_ACCESS_TOKEN=<runtime> node suprimentos/tools/sharepoint-live-readonly.js`;
+   - o token deve existir apenas no ambiente do processo e nunca no perfil, log ou repositório;
+   - permissões, escritor único e políticas append-only só entram no snapshot quando o
+     perfil indicar `policyAttestation=true` e trouxer `policy.evidenceRef` verificável;
 5. arquivar fingerprints desejado/observado e plano dry-run;
 6. executar corrida de último saldo, fuzzing e reconstrução de 5.000 eventos;
 7. injetar 412, paginação quebrada, worker morto, falha antes do commit, ACK perdido e efeito parcial;
