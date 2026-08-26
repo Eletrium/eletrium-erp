@@ -48,6 +48,16 @@ const coordinatorFactory = require('../suprimentos/adapters/single-writer-coordi
   const failing = coordinatorFactory.create(port);
   await assert.rejects(() => failing.commitAtomic({ expectedEtags: { m1: 'e3' }, reservationEvents: [{ eventId: 'r3' }], movementEvents: [], projection: { m1: {} }, commandResult: { idempotencyKey: 'k3', correlationId: 'c3' } }), (error) => error.code === 'PERSISTENCE_PARTIAL_RECONCILIATION_REQUIRED' && error.details.effectCommitted);
   assert.ok(integration.some((item) => item.type === 'LEDGER_PARTIAL_EFFECT' && item.reconciliationRequired));
+
+  const uncertainPort = Object.assign({}, port, {
+    writeProjection: async () => [],
+    appendReservationEvents: async () => { const error = new Error('unknown'); error.code = 'GRAPH_WRITE_EFFECT_UNKNOWN'; error.effectUnknown = true; throw error; }
+  });
+  const uncertain = coordinatorFactory.create(uncertainPort);
+  await assert.rejects(
+    () => uncertain.commitAtomic({ expectedEtags: { m1: 'e4' }, reservationEvents: [{ eventId: 'r4' }], movementEvents: [], projection: { m1: {} }, commandResult: { idempotencyKey: 'k4', correlationId: 'c4' } }),
+    (error) => error.code === 'PERSISTENCE_PARTIAL_RECONCILIATION_REQUIRED' && error.details.effectUnknown === true && error.details.effectCommitted === false
+  );
 })();
 
 setImmediate(() => console.log('suprimentos-graph-coordinator.test.js: OK — Graph, ETag e escritor único'));

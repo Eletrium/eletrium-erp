@@ -67,7 +67,15 @@
         if (isRead(input.method) && [429, 502, 503, 504].indexOf(response.status) !== -1 && attempt < maxReadRetries) {
           await sleep(retryDelay(response, attempt)); attempt += 1; continue;
         }
-        if (response.status < 200 || response.status >= 300) fail('GRAPH_REQUEST_FAILED', { status: response.status, body: response.body });
+        if (response.status < 200 || response.status >= 300) {
+          if (!isRead(input.method) && response.status >= 500) {
+            var uncertain = new Error('GRAPH_WRITE_EFFECT_UNKNOWN');
+            uncertain.code = 'GRAPH_WRITE_EFFECT_UNKNOWN'; uncertain.effectUnknown = true;
+            uncertain.details = { status: response.status, body: response.body };
+            throw uncertain;
+          }
+          fail('GRAPH_REQUEST_FAILED', { status: response.status, body: response.body });
+        }
         return response.body || {};
       }
     }

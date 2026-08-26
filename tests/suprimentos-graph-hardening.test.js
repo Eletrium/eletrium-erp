@@ -45,4 +45,11 @@ function client(overrides) {
   assert.strictEqual(calls, 1);
 })();
 
+(async function writeServerErrorIsAlsoAnUncertainEffect() {
+  let calls = 0;
+  const graph = client({ transport: { request: async () => { calls += 1; return { status: 503, body: { error: 'after-commit-unknown' } }; } } });
+  await assert.rejects(() => graph.append('X', { A: 1 }), (error) => error.code === 'GRAPH_WRITE_EFFECT_UNKNOWN' && error.effectUnknown === true && error.details.status === 503);
+  assert.strictEqual(calls, 1);
+})();
+
 setTimeout(() => console.log('suprimentos-graph-hardening.test.js: OK — retry de leitura, paginação segura, limites e escrita incerta'), 15);

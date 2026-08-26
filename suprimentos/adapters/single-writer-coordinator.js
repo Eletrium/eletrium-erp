@@ -33,9 +33,11 @@
           if (error && (error.status === 412 || error.code === 'ETAG_CONFLICT')) {
             if (!ledgerStarted) fail('ETAG_CONFLICT', error.details);
           }
-          if (ledgerStarted) {
-            await port.recordIntegrationEvent({ type: 'LEDGER_PARTIAL_EFFECT', correlationId: correlationId, status: 'SYNC_ERROR', errorCode: error.code || error.message, reconciliationRequired: true });
-            fail('PERSISTENCE_PARTIAL_RECONCILIATION_REQUIRED', { correlationId: correlationId, cause: error.code || error.message, effectCommitted: true });
+          if (ledgerStarted || (error && error.effectUnknown)) {
+            var markerError = null;
+            try { await port.recordIntegrationEvent({ type: 'LEDGER_PARTIAL_EFFECT', correlationId: correlationId, status: 'SYNC_ERROR', errorCode: error.code || error.message, reconciliationRequired: true }); }
+            catch (auditError) { markerError = auditError.code || auditError.message; }
+            fail('PERSISTENCE_PARTIAL_RECONCILIATION_REQUIRED', { correlationId: correlationId, cause: error.code || error.message, effectCommitted: ledgerStarted, effectUnknown: Boolean(error && error.effectUnknown), auditMarkerError: markerError });
           }
           throw error;
         }

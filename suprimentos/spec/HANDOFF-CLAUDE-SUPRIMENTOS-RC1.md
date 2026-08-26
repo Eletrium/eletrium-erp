@@ -37,5 +37,15 @@ node suprimentos/tools/homologation-evidence.js
 
 Na branch `active-field-v2.1-20260824` inspecionada em 25/08/2026 não existe produtor de
 consumo de material; há somente a ação visual “Buscar material”. O Claude não precisa
-reconstruir ledger, Graph, retry, UI ou reconciliação: basta alimentar o builder com os
-IDs relacionais e persistir o envelope no outbox da OS.
+reconstruir ledger, Graph, retry, UI, reconciliação, recuperação de comandos, arquivo de
+eventos ou compatibilidade contratual: basta alimentar o builder com os IDs relacionais
+e persistir o envelope no outbox da OS.
+
+## Trabalho que permanece fora do Claude
+
+- homologar Graph/SharePoint com credencial real e anexar a evidência;
+- executar Gate 0 do Bom Controle com service account, DLP, segredos e schemas aprovados;
+- revisar o delta proposto da interface antes de editar qualquer arquivo compartilhado.
+
+Essas atividades são gates operacionais/externos. Não exigem nova implementação do core
+de Suprimentos e não autorizam merge ou chamada produtiva por conta própria.

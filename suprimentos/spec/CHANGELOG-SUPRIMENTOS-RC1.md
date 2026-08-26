@@ -31,11 +31,22 @@
   referência externa de evidência;
 - builder contratual `os.consume.v1` pronto, incluindo fingerprint e rejeição de retry
   com chave ou payload alterados.
+- fingerprint canônico persistido para cada comando crítico, com rejeição explícita de
+  colisão de chave, payload divergente e registro idempotente legado incompleto;
+- claim `SENDING` antes de qualquer efeito e classificação determinística de comandos
+  interrompidos, sem retomada automática de efeito desconhecido;
+- arquivo append-only com SHA-256 e validação da projeção reconstruída antes de qualquer
+  restauração;
+- compatibilidade regressiva automatizada da superfície pública de comandos;
+- guard de CI para os seis arquivos compartilhados protegidos e ensaio sintético de
+  recuperação executável.
 
 ## Compatibilidade
 
 O RC1 não modifica CRM, máquina de estados da OS, `suprimentos.html` ou helpers
 compartilhados. O contrato público é `1.0.0`; mudança incompatível exige versão major.
+O snapshot da superfície pública é validado em CI e bloqueia remoção de operação/campo,
+novo campo obrigatório ou alteração de tipo sem nova versão major.
 
 ## Promoção
 

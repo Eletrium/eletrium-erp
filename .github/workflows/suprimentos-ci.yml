@@ -21,10 +21,19 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: node tests/run-suprimentos.js
+      - name: Guardar fronteira CRM/OS/Suprimentos
+        env:
+          SUPRIMENTOS_BASE_REF: origin/active-suprimentos-v1.2.1-20260824
+        run: node suprimentos/tools/protected-path-guard.js
+      - run: node suprimentos/tools/security-scan.js
+      - run: node suprimentos/tools/contract-compatibility.js
+      - run: node suprimentos/tools/recovery-drill.js
       - run: node suprimentos/tools/homologation-evidence.js > suprimentos-evidence.json
       - uses: actions/upload-artifact@v4
         with:

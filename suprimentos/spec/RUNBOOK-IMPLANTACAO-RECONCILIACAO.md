@@ -1,5 +1,17 @@
 # Runbook — implantação, reconciliação e rollback
 
+## Ensaio local de recuperação
+
+Execute `node suprimentos/tools/recovery-drill.js`. O ensaio usa exclusivamente dados
+sintéticos, cria um arquivo lógico com checksum SHA-256, valida a projeção reconstruída e
+só restaura quando checksum e projeção são consistentes. Arquivo corrompido ou projeção
+adulterada interrompe o restore com `ARCHIVE_RESTORE_BLOCKED`.
+
+Comandos persistidos em `SENDING` são classificados por `core/command-recovery.js`.
+Nenhuma classificação permite mutação automática: intenção órfã exige aprovação do
+operador e CAS; efeito parcial exige reconciliação e conclusão ou compensação; ausência
+de fingerprint coloca o registro em quarentena.
+
 ## Pré-implantação
 
 1. executar `node tests/run-suprimentos.js`;

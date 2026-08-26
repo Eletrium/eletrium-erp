@@ -23,11 +23,16 @@
     async function appendEvents(list, events) {
       var written = [];
       for (const event of events || []) {
-        var prior = await findByIdempotency(list, event.idempotencyKey);
-        if (prior) { written.push({ replayed: true, item: prior }); continue; }
         var mapping = list === LISTS.reservations ? RESERVATION : list === LISTS.movements ? MOVEMENT : INTEGRATION;
         var fields = mapToFields(event, mapping);
         if (list === LISTS.reservations && fields.Row_Version === undefined) fields.Row_Version = 1;
+        var prior = await findByIdempotency(list, event.idempotencyKey);
+        if (prior) {
+          var priorFields = fieldsOf(prior) || {};
+          var changed = Object.keys(fields).filter(function (field) { return JSON.stringify(priorFields[field]) !== JSON.stringify(fields[field]); });
+          if (changed.length) fail('IDEMPOTENCY_EVENT_PAYLOAD_MISMATCH', { list: list, idempotencyKey: event.idempotencyKey, fields: changed });
+          written.push({ replayed: true, item: prior }); continue;
+        }
         written.push({ replayed: false, item: await graph.append(list, fields) });
       }
       return written;

@@ -1,13 +1,13 @@
 {
   "version": "1.0.0",
   "gates": {
-    "SUP-A": ["suprimentos-contracts.test.js", "suprimentos-sharepoint-schema.test.js", "suprimentos-contract-schemas.test.js"],
-    "SUP-B": ["suprimentos-ledger.test.js", "suprimentos-ledger-model-check.test.js", "suprimentos-ledger-mutation.test.js", "suprimentos-adapters-faults.test.js", "suprimentos-repository-outbox.test.js", "suprimentos-sharepoint-idempotency.test.js", "suprimentos-sharepoint-lease.test.js", "suprimentos-sharepoint-homologation.test.js", "suprimentos-performance-budget.test.js", "suprimentos-graph-hardening.test.js", "suprimentos-sharepoint-live-port.test.js", "suprimentos-graph-explorer-pack.test.js"],
+    "SUP-A": ["suprimentos-contracts.test.js", "suprimentos-sharepoint-schema.test.js", "suprimentos-contract-schemas.test.js", "suprimentos-contract-compatibility.test.js"],
+    "SUP-B": ["suprimentos-ledger.test.js", "suprimentos-ledger-model-check.test.js", "suprimentos-ledger-mutation.test.js", "suprimentos-ledger-archive.test.js", "suprimentos-adapters-faults.test.js", "suprimentos-repository-outbox.test.js", "suprimentos-sharepoint-idempotency.test.js", "suprimentos-command-recovery.test.js", "suprimentos-sharepoint-lease.test.js", "suprimentos-sharepoint-homologation.test.js", "suprimentos-performance-budget.test.js", "suprimentos-graph-hardening.test.js", "suprimentos-sharepoint-live-port.test.js", "suprimentos-graph-explorer-pack.test.js"],
     "SUP-C": ["suprimentos-material-needs.test.js", "suprimentos-boundary-e2e.test.js", "suprimentos-os-producer.test.js"],
     "SUP-D": ["suprimentos-purchasing.test.js"],
     "SUP-E": ["suprimentos-receiving.test.js"],
     "SUP-F": ["suprimentos-exceptions.test.js", "suprimentos-security.test.js"],
-    "SUP-G": ["suprimentos-integration-shadow.test.js", "suprimentos-load-concurrency.test.js", "suprimentos-ledger-fuzz.test.js", "suprimentos-ui-components.test.js", "suprimentos-shared-conflict-bridge.test.js", "suprimentos-mock-migration.test.js", "suprimentos-traceability-accessibility.test.js", "suprimentos-shadow-operability.test.js", "suprimentos-deployment-gate.test.js"],
+    "SUP-G": ["suprimentos-integration-shadow.test.js", "suprimentos-load-concurrency.test.js", "suprimentos-ledger-fuzz.test.js", "suprimentos-ui-components.test.js", "suprimentos-shared-conflict-bridge.test.js", "suprimentos-change-boundary.test.js", "suprimentos-mock-migration.test.js", "suprimentos-traceability-accessibility.test.js", "suprimentos-shadow-operability.test.js", "suprimentos-deployment-gate.test.js"],
     "SUP-H": ["suprimentos-bomcontrole-gate0.test.js"]
   }
 }
