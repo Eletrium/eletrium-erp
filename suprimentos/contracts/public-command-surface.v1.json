@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "envelope": {
+    "required": ["commandId", "operation", "actorId", "correlationId", "idempotencyKey", "schemaVersion", "payload"],
+    "types": {
+      "commandId": "string", "operation": "string", "actorId": "string",
+      "correlationId": "string", "idempotencyKey": "string", "schemaVersion": "string", "payload": "object"
+    }
+  },
+  "operations": {
+    "reserve": {
+      "required": ["documentId", "documentVersion", "expectedVersions", "items"],
+      "types": { "documentId": "string", "documentVersion": "integer", "expectedVersions": "object", "items": "array" },
+      "itemRequired": ["itemId", "materialId", "quantity"],
+      "itemTypes": { "itemId": "string", "materialId": "string", "quantity": "number" }
+    },
+    "os.consume.v1": {
+      "required": ["proposalId", "projectId", "packageId", "osId", "necessityId", "documentVersion", "expectedVersions", "items"],
+      "types": { "proposalId": "string", "projectId": "string", "packageId": "string", "osId": "string", "necessityId": "string", "documentVersion": "integer", "expectedVersions": "object", "items": "array" },
+      "itemRequired": ["itemId", "materialId", "quantity", "reservationDocumentId", "reservationDocumentVersion", "reservationItemId"],
+      "itemTypes": { "itemId": "string", "materialId": "string", "quantity": "number", "reservationDocumentId": "string", "reservationDocumentVersion": "integer", "reservationItemId": "string" }
+    },
+    "finance.obligation.v1": {
+      "required": ["obligationId", "supplierId", "orderId", "invoiceId", "currency", "amount", "dueDate", "evidenceId"],
+      "types": { "obligationId": "string", "supplierId": "string", "orderId": "string", "invoiceId": "string", "currency": "string", "amount": "number", "dueDate": "string", "evidenceId": "string" }
+    }
+  }
+}

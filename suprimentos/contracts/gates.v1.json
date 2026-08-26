@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "gates": {
-    "SUP-A": ["suprimentos-contracts.test.js", "suprimentos-sharepoint-schema.test.js", "suprimentos-contract-schemas.test.js"],
+    "SUP-A": ["suprimentos-contracts.test.js", "suprimentos-sharepoint-schema.test.js", "suprimentos-contract-schemas.test.js", "suprimentos-contract-compatibility.test.js"],
     "SUP-B": ["suprimentos-ledger.test.js", "suprimentos-adapters-faults.test.js", "suprimentos-repository-outbox.test.js", "suprimentos-sharepoint-lease.test.js", "suprimentos-sharepoint-homologation.test.js"],
     "SUP-C": ["suprimentos-material-needs.test.js", "suprimentos-boundary-e2e.test.js"],
     "SUP-D": ["suprimentos-purchasing.test.js"],
