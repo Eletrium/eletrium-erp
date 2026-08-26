@@ -1,0 +1,79 @@
+{
+  "contractVersion": "1.1.0",
+  "idFields": [
+    "Necessidade_ID", "Projeto_ID", "EAP_ID", "Pacote_ID", "OS_ID", "Item_ID",
+    "Material_ID", "Reserva_ID", "Movimento_ID", "Origem_ID", "Destino_ID",
+    "Documento_ID", "Evento_ID", "Entity_ID", "Parametro_ID"
+  ],
+  "entities": {
+    "Necessidades_Materiais": {
+      "required": [
+        "Necessidade_ID", "Projeto_ID", "Item_ID", "Material_ID", "Origem_Material",
+        "Quantidade_Planejada", "Quantidade_Atendida", "Unidade", "Data_Necessaria",
+        "Criticidade", "Snapshot_Versao", "Row_Version", "Status", "Created_At", "Updated_At"
+      ],
+      "relations": ["Projeto_ID", "EAP_ID", "Pacote_ID", "OS_ID", "Item_ID", "Material_ID"],
+      "originEnum": ["ELETRIUM", "CLIENTE", "MISTA"],
+      "unique": ["Necessidade_ID"],
+      "optimisticConcurrency": "Row_Version"
+    },
+    "Reservas_Estoque": {
+      "appendOnly": true,
+      "required": [
+        "Reserva_ID", "Necessidade_ID", "Material_ID", "Quantidade", "Tipo",
+        "Documento_ID", "Documento_Versao", "Item_ID", "Idempotency_Key",
+        "Correlation_ID", "Row_Version", "Created_At"
+      ],
+      "relations": ["Necessidade_ID", "Material_ID", "Documento_ID", "Item_ID"],
+      "typeEnum": ["RESERVA", "LIBERACAO", "CONSUMO", "COMPENSACAO"],
+      "unique": ["Reserva_ID", "Idempotency_Key"],
+      "optimisticConcurrency": "Row_Version"
+    },
+    "Movimentacoes_Estoque": {
+      "appendOnly": true,
+      "required": [
+        "Movimento_ID", "Material_ID", "Tipo", "Quantidade", "Documento_ID",
+        "Documento_Versao", "Item_ID", "Idempotency_Key", "Correlation_ID", "Created_At"
+      ],
+      "relations": ["Material_ID", "Origem_ID", "Destino_ID", "Documento_ID", "Item_ID"],
+      "typeEnum": ["ENTRADA", "SAIDA", "AJUSTE", "DEVOLUCAO", "TRANSFERENCIA"],
+      "unique": ["Movimento_ID", "Idempotency_Key"]
+    },
+    "Estoque_Projetado": {
+      "derived": true,
+      "sourceOfTruth": false,
+      "required": [
+        "Material_ID", "Estoque_Fisico", "Reservado_Valido", "Disponivel",
+        "Projection_Version", "Reconciled_At"
+      ],
+      "relations": ["Material_ID", "Ultimo_Movimento_ID"],
+      "unique": ["Material_ID"],
+      "optimisticConcurrency": "Projection_Version"
+    },
+    "Eventos_Integracao": {
+      "required": [
+        "Evento_ID", "Entidade", "Entity_ID", "Sequence", "Idempotency_Key",
+        "Correlation_ID", "Origem", "Destino", "Status", "Teto_Excedido",
+        "Retry_Count", "Payload_Version", "Row_Version", "Created_At", "Updated_At"
+      ],
+      "relations": ["Evento_ID", "Entity_ID"],
+      "statusEnum": [
+        "LOCAL_PENDING", "QUEUED", "SENDING", "RECEIVED", "SYNCED",
+        "RECONCILED", "SYNC_ERROR", "CANCELLED"
+      ],
+      "unique": ["Evento_ID", "Idempotency_Key", "Entidade+Entity_ID+Sequence"],
+      "optimisticConcurrency": "Row_Version",
+      "retryCeilingRule": "status=SYNC_ERROR + Teto_Excedido=true; retry manual limpa teto e retorna a QUEUED preservando historico"
+    },
+    "Parametros_Alcadas": {
+      "appendOnly": true,
+      "required": [
+        "Parametro_ID", "Chave", "Versao", "Valor", "Vigente_Desde",
+        "Status", "Idempotency_Key", "Created_At"
+      ],
+      "relations": ["Parametro_ID"],
+      "unique": ["Parametro_ID", "Idempotency_Key", "Chave+Versao"],
+      "correctionRule": "nova versao; nunca sobrescrever versao vigente"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+'use strict';
+const childProcess = require('child_process');
+const path = require('path');
+const root = path.resolve(__dirname, '../..');
+function run(args) { const result = childProcess.spawnSync(process.execPath, args, { cwd: root, encoding: 'utf8' }); if (result.status !== 0) throw new Error(result.stderr || result.stdout); return JSON.parse(result.stdout); }
+try {
+  const tests = run(['tests/run-suprimentos.js', '--json']);
+  const readiness = run(['suprimentos/tools/readiness-report.js']);
+  const gates = run(['suprimentos/tools/gate-report.js']);
+  const security = run(['suprimentos/tools/security-scan.js']);
+  const performance = run(['suprimentos/tools/performance-budget.js']);
+  const traceability = run(['suprimentos/tools/traceability-report.js']);
+  const sharedConflictAudit = run(['suprimentos/tools/shared-conflict-audit.js']);
+  const pilotShadow = run(['suprimentos/tools/pilot-shadow-report.js']);
+  const deploymentPreflight = run(['suprimentos/tools/deployment-preflight.js']);
+  const release = run(['suprimentos/tools/release-manifest.js']);
+  console.log(JSON.stringify({ evidenceVersion: '1.3.0', generatedAt: new Date().toISOString(), pass: tests.failed === 0 && readiness.readyForEnvironmentHomologation && gates.complete && security.passed && performance.passed && traceability.complete && pilotShadow.pass && deploymentPreflight.pass, tests: { total: tests.total, passed: tests.passed, failed: tests.failed }, readiness, gates, security, performance, traceability: { complete: traceability.complete, requirements: traceability.requirements }, pilotShadow, deploymentPreflight, sharedConflictAudit, release: { release: release.release, files: release.files, aggregateSha256: release.aggregateSha256 } }, null, 2));
+} catch (error) { console.error(JSON.stringify({ pass: false, error: error.message })); process.exitCode = 1; }

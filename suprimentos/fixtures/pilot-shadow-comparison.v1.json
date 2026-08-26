@@ -1,0 +1,13 @@
+{
+  "fixtureVersion": "1.0.0",
+  "syntheticOnly": true,
+  "criteria": { "tolerance": 0, "minimumCoverage": 1 },
+  "legacy": [
+    { "materialId": "SYN-MAT-1", "stockPhysical": 12, "reservedValid": 4, "available": 8 },
+    { "materialId": "SYN-MAT-2", "stockPhysical": 7, "reservedValid": 2, "available": 5 }
+  ],
+  "ledger": [
+    { "materialId": "SYN-MAT-1", "stockPhysical": 12, "reservedValid": 4, "available": 8 },
+    { "materialId": "SYN-MAT-2", "stockPhysical": 7, "reservedValid": 2, "available": 5 }
+  ]
+}

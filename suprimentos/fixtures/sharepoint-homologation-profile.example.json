@@ -1,0 +1,17 @@
+{
+  "profileVersion": "1.0.0",
+  "environment": "homologacao",
+  "siteHost": "gwtecheletrica.sharepoint.com",
+  "sitePath": "/sites/EletriumERP",
+  "readOnly": true,
+  "policyAttestation": false,
+  "targetLists": [
+    "Necessidades_Materiais",
+    "Reservas_Estoque",
+    "Movimentacoes_Estoque",
+    "Estoque_Projetado",
+    "Eventos_Integracao",
+    "Parametros_Alcadas",
+    "Leases_Processamento"
+  ]
+}
