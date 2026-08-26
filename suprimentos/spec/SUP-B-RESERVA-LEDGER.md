@@ -71,6 +71,15 @@ chamada produtiva foi introduzida nesta frente.
 - TS-15: concorrência no último saldo.
 - TS-56: compensação de falha parcial preserva trilha.
 
+O resultado idempotente persistido em `Eventos_Integracao` inclui o fingerprint canônico
+do comando em `Payload_JSON`. O adapter só aceita replay quando chave e fingerprint
+coincidem; registros legados sem fingerprint e reutilização da chave com outro conteúdo
+falham de forma explícita, sem executar ou devolver sucesso silencioso.
+Antes do primeiro append, o coordenador grava uma intenção `SENDING` com esse fingerprint.
+Se o processo cair antes de concluir, o próximo retry é bloqueado como
+`COMMAND_RECONCILIATION_REQUIRED`; somente a reconciliação pode decidir compensar ou
+concluir o comando interrompido.
+
 Além dos gates formais, a suíte cobre `release()`, `consume()`, reconstrução integral e
 reconciliação de projeção divergente.
 
