@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "contractVersion": "1.0.0",
+  "envelope": {
+    "type": "object",
+    "required": ["commandId", "operation", "actorId", "correlationId", "idempotencyKey", "schemaVersion", "payload"],
+    "properties": {
+      "commandId": { "type": "string", "minLength": 1 },
+      "operation": { "type": "string", "minLength": 1 },
+      "actorId": { "type": "string", "minLength": 1 },
+      "correlationId": { "type": "string", "minLength": 1 },
+      "idempotencyKey": { "type": "string", "minLength": 1 },
+      "schemaVersion": { "type": "string", "const": "1.0.0" },
+      "payload": { "type": "object" }
+    },
+    "additionalProperties": false
+  },
+  "operations": {
+    "reserve": {
+      "type": "object",
+      "required": ["documentId", "documentVersion", "expectedVersions", "items"],
+      "properties": {
+        "documentId": { "type": "string", "minLength": 1 },
+        "documentVersion": { "type": "integer", "minimum": 1 },
+        "expectedVersions": { "type": "object" },
+        "items": { "type": "array", "minItems": 1, "items": {
+          "type": "object", "required": ["itemId", "materialId", "quantity"],
+          "properties": { "itemId": { "type": "string", "minLength": 1 }, "materialId": { "type": "string", "minLength": 1 }, "quantity": { "type": "number", "exclusiveMinimum": 0 } }
+        } }
+      }
+    },
+    "os.consume.v1": {
+      "type": "object",
+      "required": ["proposalId", "projectId", "packageId", "osId", "necessityId", "documentVersion", "expectedVersions", "items"],
+      "properties": {
+        "proposalId": { "type": "string", "minLength": 1 },
+        "projectId": { "type": "string", "minLength": 1 },
+        "packageId": { "type": "string", "minLength": 1 },
+        "osId": { "type": "string", "minLength": 1 },
+        "necessityId": { "type": "string", "minLength": 1 },
+        "documentVersion": { "type": "integer", "minimum": 1 },
+        "expectedVersions": { "type": "object" },
+        "items": { "type": "array", "minItems": 1, "items": {
+          "type": "object", "required": ["itemId", "materialId", "quantity", "reservationDocumentId", "reservationDocumentVersion", "reservationItemId"],
+          "properties": {
+            "itemId": { "type": "string", "minLength": 1 }, "materialId": { "type": "string", "minLength": 1 }, "quantity": { "type": "number", "exclusiveMinimum": 0 },
+            "reservationDocumentId": { "type": "string", "minLength": 1 }, "reservationDocumentVersion": { "type": "integer", "minimum": 1 }, "reservationItemId": { "type": "string", "minLength": 1 }
+          }
+        } }
+      }
+    },
+    "finance.obligation.v1": {
+      "type": "object",
+      "required": ["obligationId", "supplierId", "orderId", "invoiceId", "currency", "amount", "dueDate", "evidenceId"],
+      "properties": {
+        "obligationId": { "type": "string", "minLength": 1 },
+        "supplierId": { "type": "string", "minLength": 1 },
+        "orderId": { "type": "string", "minLength": 1 },
+        "invoiceId": { "type": "string", "minLength": 1 },
+        "currency": { "type": "string", "enum": ["BRL"] },
+        "amount": { "type": "number", "exclusiveMinimum": 0 },
+        "dueDate": { "type": "string", "minLength": 1 },
+        "evidenceId": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

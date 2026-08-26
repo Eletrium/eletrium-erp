@@ -1,0 +1,57 @@
+openapi: 3.1.0
+info:
+  title: Eletrium ERP - Suprimentos Command Gateway
+  version: 1.0.0
+servers: []
+paths:
+  /v1/suprimentos/commands:
+    post:
+      operationId: submitSupplyCommand
+      security:
+        - serviceToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CommandEnvelope'
+      responses:
+        '202':
+          description: Comando aceito ou replay idempotente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommandResult'
+        '400': { description: Contrato inválido }
+        '403': { description: Operação não autorizada }
+        '409': { description: Row Version, ETag ou idempotência em conflito }
+        '422': { description: Regra de domínio rejeitou o comando }
+        '503': { description: Persistência indisponível; efeito nunca presumido }
+components:
+  securitySchemes:
+    serviceToken:
+      type: http
+      scheme: bearer
+  schemas:
+    CommandEnvelope:
+      type: object
+      additionalProperties: false
+      required: [commandId, operation, actorId, correlationId, idempotencyKey, schemaVersion, payload]
+      properties:
+        commandId: { type: string, minLength: 1 }
+        operation: { type: string, enum: [reserve, release, consume, compensate, receive, os.consume.v1] }
+        actorId: { type: string, minLength: 1 }
+        correlationId: { type: string, minLength: 1 }
+        idempotencyKey: { type: string, minLength: 1 }
+        schemaVersion: { type: string, const: 1.0.0 }
+        payload: { type: object }
+    CommandResult:
+      type: object
+      required: [ok, commandId, correlationId, operation, replayed]
+      properties:
+        ok: { type: boolean }
+        commandId: { type: string }
+        correlationId: { type: string }
+        operation: { type: string }
+        replayed: { type: boolean }
+        value: { type: object }

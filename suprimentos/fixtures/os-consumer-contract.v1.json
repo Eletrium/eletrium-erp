@@ -1,0 +1,25 @@
+{
+  "commandId": "os-contract-synthetic-1",
+  "operation": "os.consume.v1",
+  "actorId": "os-service-homologation",
+  "correlationId": "corr-os-contract-1",
+  "idempotencyKey": "idem-os-contract-1",
+  "schemaVersion": "1.0.0",
+  "payload": {
+    "proposalId": "SYN-PROP-1",
+    "projectId": "SYN-PROJ-1",
+    "packageId": "SYN-PKG-1",
+    "osId": "SYN-OS-1",
+    "necessityId": "SYN-NEC-1",
+    "documentVersion": 1,
+    "expectedVersions": { "SYN-MAT-1": 0 },
+    "items": [{
+      "itemId": "SYN-EXEC-ITEM-1",
+      "materialId": "SYN-MAT-1",
+      "quantity": 1,
+      "reservationDocumentId": "SYN-NEC-1",
+      "reservationDocumentVersion": 1,
+      "reservationItemId": "SYN-ITEM-1"
+    }]
+  }
+}
