@@ -421,7 +421,7 @@ window.EG = (function () {
   const POLITICAS_DEFAULT = {
     OUTBOX_DESCARTE_DIAS:   { valor: 7,  unidade: "dias"     }, // outbox.js — descarte de item terminal da fila
     OFERTA_EXPIRACAO_HORAS: { valor: 24, unidade: "horas"    }, // portal-alocacao.html — prazo padrão da oferta
-    KM_DESVIO_PCT:          { valor: 20, unidade: "porcento" }  // os.html — limiar de desvio de KM (regra DESLIGADA, C5)
+    KM_DESVIO_PCT:          { valor: (typeof KmDesvio !== "undefined" ? KmDesvio.LIMIAR_PADRAO_PCT : 15), unidade: "porcento" }  // os.html — limiar de desvio de KM (regra DESLIGADA, C5)
   };
 
   // Chave AAAA-MM-DD. Campo DateOnly chega do Graph como "2026-08-04T00:00:00Z":
