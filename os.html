@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Eletrium ERP — Ordens de Serviço</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
+  <script src="km-desvio.js"></script>
   <script src="graph.js"></script>
   <!-- B2 — outbox offline (fila IndexedDB + idempotência client-side). Opt-in:
        só os fluxos com Operation_ID desviam pra fila, e SÓ sem conexão. -->
@@ -153,7 +154,7 @@
     // parametriza o limiar, NÃO religa a validação. Religar segue dependendo de
     // referência de rota homologada e de decisão do dono, não desta lista.
     // LIMITAÇÃO: cálculo/aplicação são client-side (gateway B1 inexistente).
-    const KM_DESVIO_PCT_DEFAULT = 20;
+    const KM_DESVIO_PCT_DEFAULT = KmDesvio.LIMIAR_PADRAO_PCT; // 15 (fallback)
     let KM_VALIDACAO_DESVIO = { ativa: false, pct: KM_DESVIO_PCT_DEFAULT }; // C5: só religar com referência de rota homologada.
 
     // lê KM_DESVIO_PCT e atualiza SÓ o pct. Nunca lança; nunca mexe em `ativa`.
@@ -606,7 +607,7 @@
                  oculto/desabilitado (o hint abaixo explica) e NADA de divergência
                  é calculado ou gravado. -->
             ${KM_VALIDACAO_DESVIO.ativa
-              ? `<label>KM esperado (referência — não gravado) <input type="number" step="0.1" id="eKM_Ref" /></label>`
+              ? `<label>KM esperado (referência — não gravado; mesma base do hodômetro, ida/volta) <input type="number" step="0.1" id="eKM_Ref" /></label>`
               : `<label><span>KM esperado (referência)</span>
                    <input type="number" step="0.1" id="eKM_Ref" disabled hidden />
                    <span class="ed-msg">validação de desvio desativada — aguardando referência homologada</span></label>`}
@@ -786,12 +787,15 @@
           const iniAtual = ("KM_Inicial" in campos) ? campos.KM_Inicial
             : ((f.KM_Inicial != null && f.KM_Inicial !== "" && isFinite(Number(f.KM_Inicial))) ? Number(f.KM_Inicial) : null);
           if (iniAtual != null) {
-            const pct = Math.abs(campos.KM_Final - iniAtual - refKm) / refKm * 100;
-            campos.KM_Divergencia_Pct = Math.round(pct * 100) / 100;
-            // acima do limiar liga o alerta; abaixo disso um alerta antigo NÃO é
-            // limpo aqui — limpar alerta é decisão de gestão, não efeito
-            // colateral de recálculo.
-            if (pct > KM_VALIDACAO_DESVIO.pct) campos.Alerta_KM_Divergente = true;
+            // regra pura em km-desvio.js: desvio com sinal, nunca bloqueia.
+            // KM_Ref deve usar a MESMA base do hodômetro (ida/volta).
+            const av = KmDesvio.avaliar(iniAtual, campos.KM_Final, refKm, KM_VALIDACAO_DESVIO.pct);
+            if (av.avaliado) {
+              campos.KM_Divergencia_Pct = Math.round(av.desvioPct * 100) / 100;
+              // acima do limiar liga o alerta (exigeJustificativa=av.exigeJustificativa,
+              // tela de justificativa fora deste item); abaixo, alerta antigo NÃO é limpo.
+              if (av.alerta) campos.Alerta_KM_Divergente = true;
+            }
           }
         }
       }
