@@ -6,6 +6,7 @@
   <title>Eletrium ERP — Ordens de Serviço</title>
   <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3.10.0/lib/msal-browser.min.js"></script>
   <script src="graph.js"></script>
+  <script src="km-desvio.js"></script>
   <!-- B2 — outbox offline (fila IndexedDB + idempotência client-side). Opt-in:
        só os fluxos com Operation_ID desviam pra fila, e SÓ sem conexão. -->
   <script src="outbox.js"></script>
@@ -147,13 +148,13 @@
     // pct), atrás deste flag.
     // POLÍTICA VERSIONADA — só o LIMIAR (pct) saiu do código: virou KM_DESVIO_PCT
     // em Politicas_Operacionais_Versoes (mesmo padrão do B5/Tarifas_Versoes;
-    // resolução em EG.politica). O 20 abaixo NÃO sumiu: é o DEFAULT/fail-safe,
-    // idêntico ao de antes da migração.
+    // resolução em EG.politica). O 15 abaixo é o DEFAULT/fail-safe (D-OS-005),
+    // igual ao default de graph.js.
     // *** `ativa` NÃO é política e continua false (C5) *** — a política
     // parametriza o limiar, NÃO religa a validação. Religar segue dependendo de
     // referência de rota homologada e de decisão do dono, não desta lista.
     // LIMITAÇÃO: cálculo/aplicação são client-side (gateway B1 inexistente).
-    const KM_DESVIO_PCT_DEFAULT = 20;
+    const KM_DESVIO_PCT_DEFAULT = 15;
     let KM_VALIDACAO_DESVIO = { ativa: false, pct: KM_DESVIO_PCT_DEFAULT }; // C5: só religar com referência de rota homologada.
 
     // lê KM_DESVIO_PCT e atualiza SÓ o pct. Nunca lança; nunca mexe em `ativa`.
@@ -213,7 +214,7 @@
        Politicas_Operacionais_Versoes: SOMENTE LEITURA aqui. Dono = gestão, que
        versiona pelo SharePoint (nenhuma tela escreve nesta lista). Esta tela
        consome KM_DESVIO_PCT como limiar de desvio; sem versão vigente cai no
-       default 20% (valor pré-migração). A política NÃO controla o liga/desliga
+       default 15% (D-OS-005). A política NÃO controla o liga/desliga
        da validação — `ativa` segue false por decisão do dono (C5).
 
        NOVOS (Roadmap OS v2.1 — escritos por ESTA tela):
@@ -610,6 +611,11 @@
               : `<label><span>KM esperado (referência)</span>
                    <input type="number" step="0.1" id="eKM_Ref" disabled hidden />
                    <span class="ed-msg">validação de desvio desativada — aguardando referência homologada</span></label>`}
+            ${KM_VALIDACAO_DESVIO.ativa
+              ? `<label>Justificativa do desvio de KM (opcional)
+                   <textarea id="eKM_Justificativa"></textarea>
+                   <span class="ed-msg" id="eKM_JustAviso"></span></label>`
+              : ""}
           </div>
           <label>Descrição <textarea id="eDescricao"></textarea></label>
           <label>Observações da gestão (não é a obs. de campo do técnico) <textarea id="eObservacoes"></textarea></label>
@@ -752,6 +758,16 @@
       $("eDescricao").value = f.Descricao ?? "";
       $("eObservacoes").value = f.Observacoes ?? "";
 
+      if ($("eKM_Justificativa")) {
+        const atualizaAviso = () => {
+          const ini = $("eKM_Inicial").value !== "" ? $("eKM_Inicial").value : f.KM_Inicial;
+          const av = KmDesvio.avaliar(ini, $("eKM_Final").value, $("eKM_Ref").value, KM_VALIDACAO_DESVIO.pct);
+          $("eKM_JustAviso").textContent = av.alerta
+            ? "Desvio de " + av.desvioPct + "% acima de " + KM_VALIDACAO_DESVIO.pct + "% — informe a justificativa (opcional, não bloqueia o salvamento)."
+            : "";
+        };
+        ["eKM_Inicial", "eKM_Final", "eKM_Ref"].forEach(id => $(id).addEventListener("input", atualizaAviso));
+      }
       $("eSalvar").onclick = () => salvarOS(o);
     }
 
@@ -782,16 +798,21 @@
       if (KM_VALIDACAO_DESVIO.ativa) {
         const refEl = $("eKM_Ref");
         const refKm = refEl && refEl.value !== "" ? Number(refEl.value) : NaN;
-        if ("KM_Final" in campos && campos.KM_Final != null && isFinite(refKm) && refKm > 0) {
+        if ("KM_Final" in campos && campos.KM_Final != null) {
           const iniAtual = ("KM_Inicial" in campos) ? campos.KM_Inicial
             : ((f.KM_Inicial != null && f.KM_Inicial !== "" && isFinite(Number(f.KM_Inicial))) ? Number(f.KM_Inicial) : null);
-          if (iniAtual != null) {
-            const pct = Math.abs(campos.KM_Final - iniAtual - refKm) / refKm * 100;
-            campos.KM_Divergencia_Pct = Math.round(pct * 100) / 100;
-            // acima do limiar liga o alerta; abaixo disso um alerta antigo NÃO é
-            // limpo aqui — limpar alerta é decisão de gestão, não efeito
-            // colateral de recálculo.
-            if (pct > KM_VALIDACAO_DESVIO.pct) campos.Alerta_KM_Divergente = true;
+          const av = KmDesvio.avaliar(iniAtual, campos.KM_Final, refKm, KM_VALIDACAO_DESVIO.pct);
+          // avaliação válida liga (>limiar) ou desliga (<=limiar) o alerta;
+          // sem avaliação válida o alerta existente não é tocado.
+          Object.assign(campos, KmDesvio.aplicarNosCampos(campos, av));
+          // Justificativa opcional: nunca bloqueia o salvamento.
+          const jEl = $("eKM_Justificativa");
+          const txt = jEl ? jEl.value : "";
+          if (av.avaliado && txt && txt.trim()) {
+            const h = new Date();
+            const hoje = h.getFullYear() + "-" + String(h.getMonth() + 1).padStart(2, "0") + "-" + String(h.getDate()).padStart(2, "0");
+            const base = ("Observacoes" in campos) ? campos.Observacoes : f.Observacoes;
+            campos.Observacoes = KmDesvio.anexarJustificativa(base, txt, av.desvioPct, hoje);
           }
         }
       }
